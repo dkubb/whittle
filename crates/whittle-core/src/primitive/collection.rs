@@ -161,7 +161,7 @@ mod tests {
         AllItems, CollectionError, IdentityKey, LenItems, UniqueByKey,
     };
     use crate::primitive::{NumericError, Within};
-    use crate::rule::{Refined, Rule};
+    use crate::rule::Refined;
 
     #[test]
     fn len_items_inclusive_bounds() {

@@ -167,7 +167,7 @@ mod tests {
         AsciiAlphanumeric, EachChar, IdentChar, LenBytes, LenChars,
         NonControl, NonEmpty, StringError,
     };
-    use crate::rule::{Refined, Rule};
+    use crate::rule::Refined;
 
     #[test]
     fn len_chars_inclusive_bounds() {

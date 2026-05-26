@@ -94,7 +94,7 @@ mod tests {
         AtLeast, AtMost, EachChar, IdentChar, LenChars, NonZero,
         NumericError, StringError,
     };
-    use crate::rule::{Refined, Rule};
+    use crate::rule::Refined;
 
     #[test]
     fn and_passes_through_canonicalised_output() {
