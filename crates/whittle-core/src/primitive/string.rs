@@ -29,6 +29,18 @@ pub struct NonEmpty;
 /// Every character must satisfy the predicate `P`.
 pub struct EachChar<P>(PhantomData<P>);
 
+/// The first character must satisfy the predicate `P`.
+///
+/// The empty string is admissible (there is no first character to
+/// reject). Compose with a length bound — typically `LenChars<1,
+/// MAX>` — when the caller wants to reject empty inputs.
+///
+/// Used to encode head/tail grammars: e.g. an identifier whose
+/// first character is alpha or underscore, and whose remaining
+/// characters are alphanumeric or underscore, is
+/// `And<EachChar<IdentChar>, FirstChar<IdentStart>>`.
+pub struct FirstChar<P>(PhantomData<P>);
+
 /// Errors common to every string primitive.
 ///
 /// `length` and `index` fields carry the offending observation so
@@ -85,6 +97,16 @@ impl CharPredicate for IdentChar {
     #[inline]
     fn test(ch: char) -> bool {
         ch.is_ascii_alphanumeric() || ch == '_'
+    }
+}
+
+/// Predicate: ASCII alphabetic or underscore. Matches the usual
+/// identifier-head grammar (leading digits are excluded).
+pub struct IdentStart;
+impl CharPredicate for IdentStart {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch.is_ascii_alphabetic() || ch == '_'
     }
 }
 
@@ -157,6 +179,20 @@ impl<P: CharPredicate> Rule<String> for EachChar<P> {
     }
 }
 
+impl<P: CharPredicate> Rule<String> for FirstChar<P> {
+    type Error = StringError;
+
+    #[inline]
+    fn refine(raw: String) -> Result<String, Self::Error> {
+        if let Some(ch) = raw.chars().next()
+            && !P::test(ch)
+        {
+            return Err(StringError::BadChar { offset: 0 });
+        }
+        Ok(raw)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used,
         reason = "explicit in test code")]
@@ -164,9 +200,10 @@ mod tests {
     use alloc::string::{String, ToString};
 
     use super::{
-        AsciiAlphanumeric, EachChar, IdentChar, LenBytes, LenChars,
-        NonControl, NonEmpty, StringError,
+        AsciiAlphanumeric, EachChar, FirstChar, IdentChar, IdentStart,
+        LenBytes, LenChars, NonControl, NonEmpty, StringError,
     };
+    use crate::composition::And;
     use crate::rule::Refined;
 
     #[test]
@@ -258,6 +295,49 @@ mod tests {
         let bad: Result<Refined<String, EachChar<IdentChar>>, _>
             = Refined::try_new("user.42".to_string());
         assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 4 });
+    }
+
+    // ─── FirstChar / IdentStart. ─────────────────────────────────
+
+    #[test]
+    fn first_char_accepts_admissible_head() {
+        let r: Refined<String, FirstChar<IdentStart>>
+            = Refined::try_new("name".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "name");
+    }
+
+    #[test]
+    fn first_char_admits_empty_string() {
+        // Empty string carries no first character. Composition with
+        // a length bound is the way to forbid empty; FirstChar
+        // itself stays minimal.
+        let r: Refined<String, FirstChar<IdentStart>>
+            = Refined::try_new(String::new()).unwrap();
+        assert!(r.as_inner().is_empty());
+    }
+
+    #[test]
+    fn first_char_rejects_inadmissible_head() {
+        let result: Result<Refined<String, FirstChar<IdentStart>>, _>
+            = Refined::try_new("1abc".to_string());
+        assert_eq!(
+            result.unwrap_err(),
+            StringError::BadChar { offset: 0 },
+        );
+    }
+
+    #[test]
+    fn ident_grammar_via_composition_rejects_leading_digit() {
+        // A real identifier grammar: leading char alpha/underscore,
+        // rest alnum/underscore.
+        type IdentRule = And<EachChar<IdentChar>, FirstChar<IdentStart>>;
+        let good: Refined<String, IdentRule>
+            = Refined::try_new("user_42".to_string()).unwrap();
+        assert_eq!(good.as_inner(), "user_42");
+
+        let bad: Result<Refined<String, IdentRule>, _>
+            = Refined::try_new("1abc".to_string());
+        assert!(bad.is_err());
     }
 
     #[test]

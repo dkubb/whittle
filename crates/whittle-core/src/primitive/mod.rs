@@ -15,6 +15,6 @@ pub use numeric::{
     Positive, Within,
 };
 pub use string::{
-    AsciiAlphanumeric, CharPredicate, EachChar, IdentChar, LenBytes,
-    LenChars, NonControl, NonEmpty, StringError,
+    AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, IdentChar,
+    IdentStart, LenBytes, LenChars, NonControl, NonEmpty, StringError,
 };
