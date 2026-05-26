@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+pub mod primitive;
 mod rule;
 
 pub use rule::{Refined, Rule};
