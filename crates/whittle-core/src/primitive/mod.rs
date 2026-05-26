@@ -5,7 +5,8 @@ pub mod numeric;
 pub mod string;
 
 pub use collection::{
-    AllItems, CollectionError, KeyOf, LenItems, UniqueByKey,
+    AllItems, CollectionError, IdentityKey, KeyOf, LenItems,
+    UniqueByKey,
 };
 pub use numeric::{
     AtLeast, AtMost, Negative, NonZero, Numeric, NumericError,

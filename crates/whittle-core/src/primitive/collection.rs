@@ -40,6 +40,22 @@ pub trait KeyOf<T>: 'static {
     fn key_of(value: &T) -> Self::Key;
 }
 
+/// Identity key: `T` is its own ordering key. Requires
+/// `T: Ord + Clone + 'static`.
+///
+/// Useful when the element type is itself an identifier or a
+/// fingerprint that should be unique across the collection without
+/// projecting a sub-field.
+pub struct IdentityKey<T>(PhantomData<T>);
+
+impl<T: 'static + Ord + Clone> KeyOf<T> for IdentityKey<T> {
+    type Key = T;
+    #[inline]
+    fn key_of(value: &T) -> T {
+        value.clone()
+    }
+}
+
 /// Errors common to every collection primitive.
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
@@ -141,10 +157,8 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use core::marker::PhantomData;
-
     use super::{
-        AllItems, CollectionError, KeyOf, LenItems, UniqueByKey,
+        AllItems, CollectionError, IdentityKey, LenItems, UniqueByKey,
     };
     use crate::primitive::{NumericError, Within};
     use crate::rule::{Refined, Rule};
@@ -204,16 +218,6 @@ mod tests {
                 source: NumericError::OutOfRange { value: 101 },
             },
         ));
-    }
-
-    /// Key extractor used by `unique_by_key_*` tests below.
-    struct IdentityKey<T>(PhantomData<T>);
-
-    impl<T: 'static + Ord + Clone> KeyOf<T> for IdentityKey<T> {
-        type Key = T;
-        fn key_of(value: &T) -> T {
-            value.clone()
-        }
     }
 
     #[test]
