@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members  = ["crates/whittle-core", "crates/whittle-macros", "crates/whittle-it"]
+
+[workspace.package]
+edition      = "2024"
+rust-version = "1.94"
+license      = "MIT OR Apache-2.0"
+authors      = ["Dan Kubb <dan.kubb@gmail.com>"]
+repository   = "https://github.com/dkubb/whittle"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all      = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery  = { level = "deny", priority = -1 }
+cargo    = { level = "deny", priority = -1 }
+# Hand-selected restriction lints (the full `restriction` group
+# contains contradictory lints meant for case-by-case enabling).
+panic                     = "deny"
+todo                      = "deny"
+unimplemented             = "deny"
+dbg_macro                 = "deny"
+print_stdout              = "deny"
+print_stderr              = "deny"
+mem_forget                = "deny"
+exit                      = "deny"
+# Tests use these freely; production code is reviewed at PR time.
+unwrap_used               = "warn"
+expect_used               = "warn"
+# Cargo lints that don't apply to v0 placeholder packages.
+cargo_common_metadata     = "allow"
+multiple_crate_versions   = "allow"
+
+[workspace.dependencies]
+proptest    = { version = "1", default-features = false, features = ["std"] }
+serde       = { version = "1", default-features = false }
+thiserror   = { version = "2", default-features = false }
+proc-macro2 = "1"
+quote       = "1"
+syn         = { version = "2", features = ["full"] }
+
+[package]
+name        = "whittle"
+version     = "0.0.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+description = "Parse-don't-validate types in Rust: narrow values at the boundary, trust them downstream."
+
+[dependencies]
+whittle-core = { version = "0.0.0", path = "crates/whittle-core" }
+
+[features]
+default  = []
+proptest = ["whittle-core/proptest"]
+serde    = ["whittle-core/serde"]
+
+[lints]
+workspace = true

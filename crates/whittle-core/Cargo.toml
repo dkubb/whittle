@@ -1,0 +1,25 @@
+[package]
+name        = "whittle-core"
+version     = "0.0.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+description = "Whittle kernel: Rule trait, Refined carrier, library primitives."
+
+[features]
+default  = []
+proptest = ["dep:proptest"]
+serde    = ["dep:serde"]
+
+[dependencies]
+proptest  = { workspace = true, optional = true }
+serde     = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
