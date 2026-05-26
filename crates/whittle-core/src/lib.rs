@@ -7,7 +7,9 @@
 
 extern crate alloc;
 
+pub mod composition;
 pub mod primitive;
 mod rule;
 
+pub use composition::{And, AndError, Or, OrError};
 pub use rule::{Refined, Rule};
