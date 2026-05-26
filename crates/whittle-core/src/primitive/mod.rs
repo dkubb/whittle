@@ -4,7 +4,9 @@ pub mod collection;
 pub mod numeric;
 pub mod string;
 
-pub use collection::{AllItems, CollectionError, LenItems};
+pub use collection::{
+    AllItems, CollectionError, KeyOf, LenItems, UniqueByKey,
+};
 pub use numeric::{
     AtLeast, AtMost, Negative, NonZero, Numeric, NumericError,
     Positive, Within,

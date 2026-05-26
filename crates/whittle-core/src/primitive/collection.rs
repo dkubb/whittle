@@ -1,9 +1,11 @@
 //! Collection primitive rules.
 //!
-//! Length bounds and per-element refinement for `Vec<T>`. Other
-//! collection shapes (`BTreeSet`, `BTreeMap`, custom ordered sets)
-//! land in later commits once a real consumer needs them.
+//! Length bounds, per-element refinement, and key-based uniqueness
+//! for `Vec<T>`. Other collection shapes (`BTreeSet`, `BTreeMap`,
+//! custom ordered sets) land in later commits once a real consumer
+//! needs them.
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -17,6 +19,26 @@ pub struct LenItems<const MIN: usize, const MAX: usize>;
 
 /// Every item in the collection must satisfy the inner rule `R`.
 pub struct AllItems<R>(PhantomData<R>);
+
+/// Items must be unique under a key derived from each item by the
+/// `K: KeyOf<T>` extractor.
+///
+/// Order is preserved: the first occurrence of each key wins. A
+/// second occurrence is reported as
+/// `CollectionError::DuplicateKey { index, … }`.
+pub struct UniqueByKey<T, K>(PhantomData<(T, K)>);
+
+/// Extracts a comparable, ownable key from a `&T`.
+///
+/// Used by `UniqueByKey<T, K>` to detect duplicates without
+/// requiring `T: Ord + Clone` directly.
+pub trait KeyOf<T>: 'static {
+    /// The key type. Must be comparable (`Ord`) and ownable
+    /// (`Clone`) so the set under the hood is `BTreeSet<Key>`.
+    type Key: Ord + Clone;
+    /// Extract a key from `value`.
+    fn key_of(value: &T) -> Self::Key;
+}
 
 /// Errors common to every collection primitive.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -39,6 +61,14 @@ pub enum CollectionError<EI = core::convert::Infallible> {
         /// The inner rule's error.
         #[source]
         source: EI,
+    },
+
+    /// `UniqueByKey<T, K>` saw a duplicate key. The second
+    /// occurrence's index is reported; the first wins.
+    #[error("duplicate key at index {index}")]
+    DuplicateKey {
+        /// Position of the duplicate (the second occurrence).
+        index: usize,
     },
 }
 
@@ -85,6 +115,25 @@ where
     }
 }
 
+impl<T, K> Rule<Vec<T>> for UniqueByKey<T, K>
+where
+    T: 'static,
+    K: KeyOf<T>,
+{
+    type Error = CollectionError;
+
+    #[inline]
+    fn refine(raw: Vec<T>) -> Result<Vec<T>, Self::Error> {
+        let mut seen: BTreeSet<K::Key> = BTreeSet::new();
+        for (index, item) in raw.iter().enumerate() {
+            if !seen.insert(K::key_of(item)) {
+                return Err(CollectionError::DuplicateKey { index });
+            }
+        }
+        Ok(raw)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used,
         reason = "explicit in test code")]
@@ -92,7 +141,11 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::{AllItems, CollectionError, LenItems};
+    use core::marker::PhantomData;
+
+    use super::{
+        AllItems, CollectionError, KeyOf, LenItems, UniqueByKey,
+    };
     use crate::primitive::{NumericError, Within};
     use crate::rule::{Refined, Rule};
 
@@ -151,6 +204,38 @@ mod tests {
                 source: NumericError::OutOfRange { value: 101 },
             },
         ));
+    }
+
+    /// Key extractor used by `unique_by_key_*` tests below.
+    struct IdentityKey<T>(PhantomData<T>);
+
+    impl<T: 'static + Ord + Clone> KeyOf<T> for IdentityKey<T> {
+        type Key = T;
+        fn key_of(value: &T) -> T {
+            value.clone()
+        }
+    }
+
+    #[test]
+    fn unique_by_key_accepts_distinct_keys() {
+        let r: Refined<Vec<i32>, UniqueByKey<i32, IdentityKey<i32>>>
+            = Refined::try_new(vec![1, 2, 3, 4]).unwrap();
+        assert_eq!(r.as_inner(), &[1, 2, 3, 4]);
+    }
+
+    type UniqueI32 = Refined<
+        alloc::vec::Vec<i32>,
+        UniqueByKey<i32, IdentityKey<i32>>,
+    >;
+
+    #[test]
+    fn unique_by_key_reports_duplicate_index() {
+        let result: Result<UniqueI32, _>
+            = Refined::try_new(vec![1, 2, 1, 3]);
+        assert_eq!(
+            result.unwrap_err(),
+            CollectionError::DuplicateKey { index: 2 },
+        );
     }
 
     proptest::proptest! {
