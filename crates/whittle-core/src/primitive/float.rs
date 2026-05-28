@@ -118,7 +118,7 @@ impl Float for f64 {
 /// range) are rejected at compile time via `const { assert!(...) }`
 /// blocks inside `Rule::refine`, so their error variants are
 /// unrepresentable.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FloatError {
     /// Value was NaN.
