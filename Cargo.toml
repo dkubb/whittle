@@ -129,3 +129,18 @@ unicode  = ["whittle-core/unicode"]
 
 [lints]
 workspace = true
+
+[[test]]
+name             = "hex-and-normalization"
+path             = "tests/hex-and-normalization.rs"
+required-features = ["hex"]
+
+[[test]]
+name             = "proptest-arbitrary"
+path             = "tests/proptest-arbitrary.rs"
+required-features = ["proptest", "hex"]
+
+[[test]]
+name             = "serde-roundtrip"
+path             = "tests/serde-roundtrip.rs"
+required-features = ["serde"]
