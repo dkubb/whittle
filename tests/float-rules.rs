@@ -73,7 +73,7 @@ fn in_closed_range_admits_endpoints_via_rational_constants() {
     assert_eq!(*prob.as_inner(), 0.5);
 
     let oor = Refined::<f64, UnitInterval>::try_new(1.5).unwrap_err();
-    assert_eq!(oor, FloatError::OutOfRange);
+    assert_eq!(oor, FloatError::OutOfRange { value: 1.5 });
 
     let half: Refined<f64, SignedHalf> = Refined::try_new(-0.25).unwrap();
     assert_eq!(*half.as_inner(), -0.25);

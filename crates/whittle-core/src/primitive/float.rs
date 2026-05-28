@@ -68,6 +68,24 @@ pub trait Float: Copy + PartialOrd + 'static + sealed::Sealed {
     /// assert_eq!(<f32 as Float>::from_ratio(-1, 4), -0.25_f32);
     /// ```
     fn from_ratio(num: i64, den: i64) -> Self;
+
+    /// Widen `self` into an `f64` for diagnostic reporting.
+    ///
+    /// Used by `FloatError::OutOfRange` to carry the offending
+    /// value in a type-erased way (parity with
+    /// `NumericError::OutOfRange { value: i128 }` and
+    /// `StringError::CharCountOutOfRange { actual: usize }`). The
+    /// widening is lossless for `f32` and identity for `f64`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Float;
+    ///
+    /// assert_eq!(<f64 as Float>::into_f64(1.5_f64), 1.5_f64);
+    /// assert_eq!(<f32 as Float>::into_f64(0.25_f32), 0.25_f64);
+    /// ```
+    fn into_f64(self) -> f64;
 }
 
 mod sealed {
@@ -76,33 +94,51 @@ mod sealed {
     impl Sealed for f64 {}
 }
 
-// Both `f32` and `f64` implement `Float` with bodies that differ
-// only in `Self`. Expand a single template for each.
-macro_rules! impl_float {
+// Both `f32` and `f64` implement `Float`. The four shared method
+// bodies (NaN/infinite check, ratio lift) differ only in `Self`,
+// so they expand from a shared macro. `into_f64` differs
+// structurally — `f64::from` on `f32`, identity on `f64` — so it
+// lives on each impl directly. Covering `f32::into_f64` requires
+// a non-closure call site so `cargo coverage` attributes the
+// region to a named function.
+macro_rules! impl_float_shared {
     ($ty:ty) => {
-        impl Float for $ty {
-            #[inline]
-            fn float_is_nan(self) -> bool {
-                self.is_nan()
-            }
-            #[inline]
-            fn float_is_infinite(self) -> bool {
-                self.is_infinite()
-            }
-            #[inline]
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "endpoints intended to be small integers"
-            )]
-            fn from_ratio(num: i64, den: i64) -> Self {
-                (num as Self) / (den as Self)
-            }
+        #[inline]
+        fn float_is_nan(self) -> bool {
+            self.is_nan()
+        }
+        #[inline]
+        fn float_is_infinite(self) -> bool {
+            self.is_infinite()
+        }
+        #[inline]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "endpoints intended to be small integers"
+        )]
+        fn from_ratio(num: i64, den: i64) -> Self {
+            (num as Self) / (den as Self)
         }
     };
 }
 
-impl_float!(f32);
-impl_float!(f64);
+impl Float for f32 {
+    impl_float_shared!(f32);
+
+    #[inline]
+    fn into_f64(self) -> f64 {
+        f64::from(self)
+    }
+}
+
+impl Float for f64 {
+    impl_float_shared!(f64);
+
+    #[inline]
+    fn into_f64(self) -> f64 {
+        self
+    }
+}
 
 /// `Float` types that expose `proptest` strategies for the float
 /// primitive rules to consume.
@@ -210,7 +246,15 @@ impl ArbitraryFloat for f64 {
 /// range) are rejected at compile time via `const { assert!(...) }`
 /// blocks inside `Rule::refine`, so their error variants are
 /// unrepresentable.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// Only `PartialEq` (not `Eq`) is derived: `OutOfRange` carries an
+/// `f64` payload and `f64` does not satisfy reflexivity (`NaN !=
+/// NaN`). The `OutOfRange` path is unreachable for NaN inputs (NaN
+/// surfaces as `IsNan` first), so partial-equality is sufficient in
+/// practice and matches the sibling error enums' carrying-the-value
+/// pattern (`NumericError::OutOfRange { value: i128 }`,
+/// `StringError::CharCountOutOfRange { actual: usize }`).
+#[derive(Debug, PartialEq)]
 #[non_exhaustive]
 pub enum FloatError {
     /// Value was NaN.
@@ -219,8 +263,13 @@ pub enum FloatError {
     /// Value was `+INF` or `-INF`.
     IsInfinite,
 
-    /// Value is outside the admissible closed range.
-    OutOfRange,
+    /// Value is outside the admissible closed range. Carries the
+    /// offending value widened to `f64` for diagnostic parity with
+    /// `NumericError::OutOfRange { value: i128 }`.
+    OutOfRange {
+        /// Offending value widened losslessly into `f64`.
+        value: f64,
+    },
 }
 
 impl core::fmt::Display for FloatError {
@@ -228,7 +277,9 @@ impl core::fmt::Display for FloatError {
         match *self {
             Self::IsNan => f.write_str("value is NaN"),
             Self::IsInfinite => f.write_str("value is infinite"),
-            Self::OutOfRange => f.write_str("value is outside the admissible range"),
+            Self::OutOfRange { value } => {
+                write!(f, "value {value} out of admissible range")
+            }
         }
     }
 }
@@ -361,7 +412,7 @@ impl<F: Float> Rule<F> for Finite {
 ///
 /// // Reject: a value above the range.
 /// let err = Refined::<f64, UnitInterval>::try_new(1.5_f64).unwrap_err();
-/// assert_eq!(err, FloatError::OutOfRange);
+/// assert_eq!(err, FloatError::OutOfRange { value: 1.5_f64 });
 /// ```
 pub struct InClosedRange<
     const MIN_NUM: i64,
@@ -407,7 +458,9 @@ impl<F: Float, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const
             return Err(FloatError::IsNan);
         }
         if !(lo..=hi).contains(&raw) {
-            return Err(FloatError::OutOfRange);
+            return Err(FloatError::OutOfRange {
+                value: raw.into_f64(),
+            });
         }
         Ok(raw)
     }
@@ -556,6 +609,31 @@ mod tests {
         assert_eq!(*r.as_inner(), 0.5_f32);
     }
 
+    #[test]
+    fn closed_range_rejects_above_max_f32() {
+        // Reaches `f32::into_f64`'s widening arm via the `OutOfRange`
+        // path. The exact-value match also documents that f32 -> f64
+        // widening is lossless for the test endpoint.
+        type UnitF32 = InClosedRange<0, 1, 1, 1>;
+        let result: Result<Refined<f32, UnitF32>, _> = Refined::try_new(1.5_f32);
+        assert_eq!(
+            result.unwrap_err(),
+            FloatError::OutOfRange {
+                value: f64::from(1.5_f32),
+            },
+        );
+    }
+
+    #[test]
+    fn into_f64_widens_f32_and_returns_f64_identity() {
+        // Direct exercise of `Float::into_f64` on both types so the
+        // per-monomorphization regions both reach 100% (the f32 arm
+        // is only otherwise reached through the `OutOfRange` path).
+        use super::Float;
+        assert_eq!(<f32 as Float>::into_f64(0.25_f32), 0.25_f64);
+        assert_eq!(<f64 as Float>::into_f64(1.5_f64), 1.5_f64);
+    }
+
     // ─── Finite. ─────────────────────────────────────────────────
 
     #[test]
@@ -599,13 +677,19 @@ mod tests {
     #[test]
     fn closed_range_rejects_below_min() {
         let result: Result<Refined<f64, UnitInterval>, _> = Refined::try_new(-0.5_f64);
-        assert_eq!(result.unwrap_err(), FloatError::OutOfRange);
+        assert_eq!(
+            result.unwrap_err(),
+            FloatError::OutOfRange { value: -0.5_f64 },
+        );
     }
 
     #[test]
     fn closed_range_rejects_above_max() {
         let result: Result<Refined<f64, UnitInterval>, _> = Refined::try_new(1.5_f64);
-        assert_eq!(result.unwrap_err(), FloatError::OutOfRange);
+        assert_eq!(
+            result.unwrap_err(),
+            FloatError::OutOfRange { value: 1.5_f64 },
+        );
     }
 
     #[test]
@@ -639,8 +723,8 @@ mod tests {
         assert_eq!(FloatError::IsNan.to_string(), "value is NaN");
         assert_eq!(FloatError::IsInfinite.to_string(), "value is infinite");
         assert_eq!(
-            FloatError::OutOfRange.to_string(),
-            "value is outside the admissible range",
+            FloatError::OutOfRange { value: 1.5_f64 }.to_string(),
+            "value 1.5 out of admissible range",
         );
         let dyn_err: &dyn core::error::Error = &FloatError::IsNan;
         assert!(dyn_err.source().is_none());
@@ -653,7 +737,7 @@ mod tests {
         let r: Refined<f64, Half> = Refined::try_new(0.25_f64).unwrap();
         assert_eq!(*r.as_inner(), 0.25_f64);
         let bad: Result<Refined<f64, Half>, _> = Refined::try_new(0.75_f64);
-        assert_eq!(bad.unwrap_err(), FloatError::OutOfRange);
+        assert_eq!(bad.unwrap_err(), FloatError::OutOfRange { value: 0.75_f64 },);
     }
 
     proptest::proptest! {
