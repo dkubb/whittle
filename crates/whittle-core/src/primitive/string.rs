@@ -251,7 +251,7 @@ pub trait CharPredicate: 'static {
 ///
 /// Available behind the `proptest` feature.
 #[cfg(feature = "proptest")]
-pub trait CharStrategy: CharPredicate {
+pub trait ArbitraryChar: CharPredicate {
     /// Strategy type yielding admissible `char` values.
     type Strategy: proptest::strategy::Strategy<Value = char>;
 
@@ -287,7 +287,7 @@ impl CharPredicate for AsciiAlphanumeric {
 }
 
 /// Build a `proptest::char::CharStrategy` from a set of inclusive
-/// `char` ranges. Used by the `CharStrategy` impls below to express
+/// `char` ranges. Used by the `ArbitraryChar` impls below to express
 /// "pick a char from the union of these ranges" without rejection
 /// sampling against the full Unicode space.
 #[cfg(feature = "proptest")]
@@ -298,7 +298,7 @@ fn char_strategy_from_ranges(
 }
 
 #[cfg(feature = "proptest")]
-impl CharStrategy for AsciiAlphanumeric {
+impl ArbitraryChar for AsciiAlphanumeric {
     type Strategy = proptest::char::CharStrategy<'static>;
 
     #[inline]
@@ -334,7 +334,7 @@ impl CharPredicate for IdentChar {
 }
 
 #[cfg(feature = "proptest")]
-impl CharStrategy for IdentChar {
+impl ArbitraryChar for IdentChar {
     type Strategy = proptest::char::CharStrategy<'static>;
 
     #[inline]
@@ -372,7 +372,7 @@ impl CharPredicate for IdentStart {
 }
 
 #[cfg(feature = "proptest")]
-impl CharStrategy for IdentStart {
+impl ArbitraryChar for IdentStart {
     type Strategy = proptest::char::CharStrategy<'static>;
 
     #[inline]
@@ -416,7 +416,7 @@ fn char_is_not_control(ch: &char) -> bool {
 }
 
 #[cfg(feature = "proptest")]
-impl CharStrategy for NonControl {
+impl ArbitraryChar for NonControl {
     // Control chars are sparse in the Unicode space (the C0 range
     // `\x00..=\x1F`, DEL `\x7F`, and the C1 range `\x80..=\x9F`),
     // so filtering `proptest::char::any()` admits the vast
@@ -468,7 +468,7 @@ impl CharPredicate for HexChar {
 }
 
 #[cfg(all(feature = "hex", feature = "proptest"))]
-impl CharStrategy for HexChar {
+impl ArbitraryChar for HexChar {
     type Strategy = proptest::char::CharStrategy<'static>;
 
     #[inline]
@@ -542,7 +542,7 @@ fn char_is_printable_line(ch: &char) -> bool {
 }
 
 #[cfg(all(feature = "unicode", feature = "proptest"))]
-impl CharStrategy for PrintableLine {
+impl ArbitraryChar for PrintableLine {
     // The forbidden set is small; filter `proptest::char::any()`.
     type Strategy =
         proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
@@ -605,7 +605,7 @@ fn char_is_printable_multiline(ch: &char) -> bool {
 }
 
 #[cfg(all(feature = "unicode", feature = "proptest"))]
-impl CharStrategy for PrintableMultiline {
+impl ArbitraryChar for PrintableMultiline {
     type Strategy =
         proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
 
@@ -646,7 +646,7 @@ impl CharPredicate for IdentDashChar {
 }
 
 #[cfg(feature = "proptest")]
-impl CharStrategy for IdentDashChar {
+impl ArbitraryChar for IdentDashChar {
     type Strategy = proptest::char::CharStrategy<'static>;
 
     #[inline]
@@ -1027,7 +1027,7 @@ impl<const LEN: usize> StableUnderAsciiUppercase for HexFixedAny<LEN> {}
 // Length-bounded strings draw their `char`s from a single ASCII
 // range so the per-char count and the post-`String` byte length
 // line up; per-character rules draw from their predicate's
-// `CharStrategy`. Each rule's strategy emits admissible-by-
+// `ArbitraryChar`. Each rule's strategy emits admissible-by-
 // construction values — no rejection sampling inside the
 // blanket `Refined` Arbitrary impl.
 
@@ -1099,10 +1099,10 @@ impl ArbitraryRule<String> for NonEmpty {
 #[cfg(feature = "proptest")]
 impl<P> ArbitraryRule<String> for EachChar<P>
 where
-    P: CharStrategy,
+    P: ArbitraryChar,
 {
     type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<<P as CharStrategy>::Strategy>,
+        proptest::collection::VecStrategy<<P as ArbitraryChar>::Strategy>,
         fn(alloc::vec::Vec<char>) -> String,
     >;
 
@@ -1117,7 +1117,7 @@ where
 #[cfg(feature = "proptest")]
 impl<P> ArbitraryRule<String> for FirstChar<P>
 where
-    P: CharStrategy,
+    P: ArbitraryChar,
 {
     type Strategy = proptest::strategy::BoxedStrategy<String>;
 

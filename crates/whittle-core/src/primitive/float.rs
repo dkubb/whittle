@@ -109,7 +109,7 @@ impl_float!(f64);
 ///
 /// Available behind the `proptest` feature.
 #[cfg(feature = "proptest")]
-pub trait FloatArbitrary: Float {
+pub trait ArbitraryFloat: Float {
     /// Strategy that emits any value of this float type — NaN,
     /// infinities, and finite values all included. Used by `NotNan`
     /// and `NotInfinite`, whose admissible regions are dense.
@@ -134,7 +134,7 @@ pub trait FloatArbitrary: Float {
 }
 
 #[cfg(feature = "proptest")]
-impl FloatArbitrary for f32 {
+impl ArbitraryFloat for f32 {
     type AnyStrategy = proptest::num::f32::Any;
     type FiniteStrategy = proptest::num::f32::Any;
     type ClosedRangeStrategy = proptest::strategy::BoxedStrategy<Self>;
@@ -171,7 +171,7 @@ impl FloatArbitrary for f32 {
 }
 
 #[cfg(feature = "proptest")]
-impl FloatArbitrary for f64 {
+impl ArbitraryFloat for f64 {
     type AnyStrategy = proptest::num::f64::Any;
     type FiniteStrategy = proptest::num::f64::Any;
     type ClosedRangeStrategy = proptest::strategy::BoxedStrategy<Self>;
@@ -411,12 +411,12 @@ fn float_is_not_infinite<F: Float>(value: &F) -> bool {
 #[cfg(feature = "proptest")]
 impl<F> ArbitraryRule<F> for NotNan
 where
-    F: FloatArbitrary + core::fmt::Debug,
+    F: ArbitraryFloat + core::fmt::Debug,
 {
     // `NotNan` admits every value except NaN; the admissible
     // region is dense, so a single `prop_filter` on the
     // unrestricted `any` strategy is cheap.
-    type Strategy = proptest::strategy::Filter<<F as FloatArbitrary>::AnyStrategy, fn(&F) -> bool>;
+    type Strategy = proptest::strategy::Filter<<F as ArbitraryFloat>::AnyStrategy, fn(&F) -> bool>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -428,11 +428,11 @@ where
 #[cfg(feature = "proptest")]
 impl<F> ArbitraryRule<F> for NotInfinite
 where
-    F: FloatArbitrary + core::fmt::Debug,
+    F: ArbitraryFloat + core::fmt::Debug,
 {
     // Admits every value except `+/-INF`; the admissible region is
     // dense.
-    type Strategy = proptest::strategy::Filter<<F as FloatArbitrary>::AnyStrategy, fn(&F) -> bool>;
+    type Strategy = proptest::strategy::Filter<<F as ArbitraryFloat>::AnyStrategy, fn(&F) -> bool>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -444,11 +444,11 @@ where
 #[cfg(feature = "proptest")]
 impl<F> ArbitraryRule<F> for Finite
 where
-    F: FloatArbitrary + core::fmt::Debug,
+    F: ArbitraryFloat + core::fmt::Debug,
 {
     // Use the finite-only strategy directly: every emitted value
     // is admissible by construction.
-    type Strategy = <F as FloatArbitrary>::FiniteStrategy;
+    type Strategy = <F as ArbitraryFloat>::FiniteStrategy;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -460,9 +460,9 @@ where
 impl<F, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DEN: i64>
     ArbitraryRule<F> for InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>
 where
-    F: FloatArbitrary + core::fmt::Debug,
+    F: ArbitraryFloat + core::fmt::Debug,
 {
-    type Strategy = <F as FloatArbitrary>::ClosedRangeStrategy;
+    type Strategy = <F as ArbitraryFloat>::ClosedRangeStrategy;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -685,7 +685,7 @@ mod tests {
             proptest::prop_assert!((0.0_f64..=1.0_f64).contains(&value));
         }
 
-        // ─── `FloatArbitrary` impls for f32. Each rule's strategy
+        // ─── `ArbitraryFloat` impls for f32. Each rule's strategy
         //     is its own monomorphisation; touching one per rule
         //     pins the f32 impl's branches to the coverage graph.
 
@@ -727,15 +727,15 @@ mod tests {
     #[cfg(feature = "proptest")]
     #[test]
     fn closed_range_singleton_strategy_is_well_formed() {
-        use super::FloatArbitrary;
+        use super::ArbitraryFloat;
         use proptest::strategy::Strategy as _;
         use proptest::test_runner::TestRunner;
-        let strategy_f32 = <f32 as FloatArbitrary>::arbitrary_in_closed_range(1.0_f32, 1.0_f32);
+        let strategy_f32 = <f32 as ArbitraryFloat>::arbitrary_in_closed_range(1.0_f32, 1.0_f32);
         let mut runner = TestRunner::default();
         let tree = strategy_f32.new_tree(&mut runner).unwrap();
         assert_eq!(tree.current(), 1.0_f32);
 
-        let strategy_f64 = <f64 as FloatArbitrary>::arbitrary_in_closed_range(1.0_f64, 1.0_f64);
+        let strategy_f64 = <f64 as ArbitraryFloat>::arbitrary_in_closed_range(1.0_f64, 1.0_f64);
         let tree = strategy_f64.new_tree(&mut runner).unwrap();
         assert_eq!(tree.current(), 1.0_f64);
     }

@@ -261,7 +261,7 @@ pub trait Predicate<T: ?Sized>: 'static {
 ///
 /// Available behind the `proptest` feature.
 #[cfg(feature = "proptest")]
-pub trait PredicateStrategy<T>: Predicate<T>
+pub trait ArbitraryPredicate<T>: Predicate<T>
 where
     T: 'static,
 {
@@ -547,7 +547,7 @@ where
 // guarantee uniqueness at construction time without rejection
 // sampling. `Sorted` post-`sort_by_key`s. `NoneOf` filters the
 // element strategy; `AnyOf` seeds the collection with a guaranteed
-// match supplied by `PredicateStrategy`.
+// match supplied by `ArbitraryPredicate`.
 
 /// Cap on the number of items generated when an admissible-length
 /// upper bound is unbounded.
@@ -681,7 +681,7 @@ where
 impl<T, P> ArbitraryRule<Vec<T>> for AnyOf<P>
 where
     T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
-    P: PredicateStrategy<T>,
+    P: ArbitraryPredicate<T>,
 {
     type Strategy = proptest::strategy::BoxedStrategy<Vec<T>>;
 
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[cfg(feature = "proptest")]
-    impl super::PredicateStrategy<i32> for IsZero {
+    impl super::ArbitraryPredicate<i32> for IsZero {
         type Strategy = proptest::strategy::Just<i32>;
         fn arbitrary_matching() -> Self::Strategy {
             proptest::strategy::Just(0_i32)
