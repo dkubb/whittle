@@ -16,10 +16,10 @@
     reason = "integration test: unwrap keeps the focus on the API"
 )]
 
-use whittle::Refined;
 use whittle::primitive::{
     AsciiAlphanumeric, EachChar, FirstChar, IdentStart, LenBytes, LenChars, NonEmpty, StringError,
 };
+use whittle::{And, Refined};
 
 #[test]
 fn len_chars_counts_scalar_values_not_bytes() {
@@ -67,5 +67,29 @@ fn first_char_checks_only_the_head_and_is_vacuous_on_empty_input() {
     assert_eq!(head.as_inner(), "name");
     let bad_head =
         Refined::<String, FirstChar<IdentStart>>::try_new("1abc".to_string()).unwrap_err();
+    assert_eq!(bad_head, StringError::BadFirstChar);
+}
+
+#[test]
+fn first_char_combined_with_len_chars_rejects_empty_and_bad_head() {
+    // Recommended pattern: combine `FirstChar` with `LenChars<1,
+    // MAX>` so empty strings don't slip through (`FirstChar` is
+    // vacuous on empty input). `LenChars` runs first and rejects
+    // empty before `FirstChar` ever sees the string.
+    let ident: Refined<String, And<LenChars<1, 16>, FirstChar<IdentStart>>> =
+        Refined::try_new("foo".to_string()).unwrap();
+    assert_eq!(ident.as_inner(), "foo");
+
+    // Empty rejects on the `LenChars` side, not on `FirstChar`.
+    let empty =
+        Refined::<String, And<LenChars<1, 16>, FirstChar<IdentStart>>>::try_new(String::new())
+            .unwrap_err();
+    assert_eq!(empty, StringError::CharCountOutOfRange { actual: 0 });
+
+    // Non-empty but with a bad leading character rejects on the
+    // `FirstChar` side.
+    let bad_head =
+        Refined::<String, And<LenChars<1, 16>, FirstChar<IdentStart>>>::try_new("1abc".to_string())
+            .unwrap_err();
     assert_eq!(bad_head, StringError::BadFirstChar);
 }
