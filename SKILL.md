@@ -344,18 +344,29 @@ returned strategy MUST satisfy `R::refine`. The blanket impl `expect`s
 on `try_new`, so a strategy bug surfaces as a panic at test time, not
 as silently dropped samples.
 
-Three sub-traits expose building blocks rule strategies need:
+Four sub-traits expose building blocks rule strategies need:
 
-- `NumericArbitrary` — per-integer-type range strategy. Each numeric
+- `ArbitraryNumeric` — per-integer-type range strategy. Each numeric
   primitive uses it: `Within<MIN, MAX>` calls
   `T::arbitrary_in_range(MIN, MAX)` to get exactly the admissible region.
-- `CharStrategy` — per-`CharPredicate` `char` strategy. `EachChar<P>`
+- `ArbitraryFloat` — per-float-type strategies (`any`, `finite`,
+  closed-range). The float primitives (`NotNan`, `NotInfinite`,
+  `Finite`, `InClosedRange`) use these.
+- `ArbitraryChar` — per-`CharPredicate` `char` strategy. `EachChar<P>`
   and `FirstChar<P>` compose it into a `String` strategy. Every
   library-supplied predicate (`AsciiAlphanumeric`, `IdentChar`,
   `IdentStart`, `IdentDashChar`, `NonControl`, `HexChar`,
-  `PrintableLine`, `PrintableMultiline`) has a `CharStrategy` impl.
-- `PredicateStrategy<T>` — per-`Predicate<T>` value strategy used by
+  `PrintableLine`, `PrintableMultiline`) has an `ArbitraryChar` impl.
+- `ArbitraryPredicate<T>` — per-`Predicate<T>` value strategy used by
   `AnyOf<P>` to seed the generated collection with a guaranteed match.
+
+Every public `Strategy` associated type resolves to
+`proptest::strategy::BoxedStrategy<T>`, so consumers see an opaque
+strategy type instead of a concrete combinator stack
+(`Map<VecStrategy<CharStrategy<'static>>, fn(...) -> String>`). The
+boxing adds one heap allocation per strategy instantiation
+(per-property-test, not per-sample) and keeps the public surface
+tractable to read.
 
 For a custom rule that wraps the library primitives:
 
@@ -374,6 +385,31 @@ Transformers are reflected in the `Arbitrary` distribution: the inner
 rule's strategy generates raw `T`, the transformer normalises, and the
 stored carrier is the canonical form. Property tests that assert "every
 stored value equals its own canonical form" hold by construction.
+
+**Don't use filtering to make sparse rules pass.** When a custom
+`Rule<T>` admits only a sparse region of `T` (e.g., a numeric rule
+that admits 100 values out of 2³²), the cost of writing a smart
+`ArbitraryRule` strategy is critical. The wrong reflex is to define a
+generic `Rule<T>` strategy that filters from `T::arbitrary()` — that
+is the rejection-sampling pattern that breaks on sparse rules. The
+right pattern: encode the admissible-set shape directly. For
+range-restricted rules, use proptest's range strategies; for
+character-set rules, use `prop_oneof!` over admissible chars; for
+collection rules, use `proptest::collection::vec` over the inner
+element strategy.
+
+**Transformers need stability proofs.** Wrapping a rule `R` in a
+transformer like `Trim<R>`, `AsciiLowercase<R>`, or
+`AsciiUppercase<R>` requires `R` to be *stable under the
+transformation*: if `R` admits some `v` but rejects `f(v)`, then
+`Refined<String, Transform<R>>::try_new(v)` will fail at the strategy
+level — the `expect` in the blanket `Arbitrary` impl panics.
+Whittle's kernel encodes this with capability marker traits
+(`StableUnderTrim`, `StableUnderAsciiLowercase`,
+`StableUnderAsciiUppercase`) that each rule implements only when it
+genuinely satisfies the property. Custom rule authors should add
+their own marker impls for transformers they want to compose with;
+`And<A, B>` and `Or<A, B>` carry the marker when both operands do.
 
 ### Feature gating
 
