@@ -971,7 +971,9 @@ abstraction the user wants to expose.
 `whittle-core::arbitrary` (under the `proptest` feature) MUST
 contain property tests proving that every
 value the derived strategy generates passes the rule's `refine`. This
-is the "no rejection sampling" guarantee in code.
+encodes the blanket `Refined<T, R>: Arbitrary` impl's no-rejection
+guarantee in code; primitive and composition strategies may apply
+bounded filtering on dense or composed regions.
 
 ### 15.4. Integration tests
 

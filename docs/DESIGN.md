@@ -311,10 +311,12 @@ Every library-supplied rule and every macro-generated rule emits a
 runtime-introspectable `Schema` description. The schema is enough to
 derive:
 
-- **Property generators** for `proptest::Strategy` that generate only
-  admissible values — no rejection sampling. A `u8` refined by
-  `Within<0, 100>` gets a `0..=100` strategy, not a `0..=255` strategy
-  with a `prop_filter`.
+- **Property generators** for `proptest::Strategy` that target the
+  admissible region directly. The blanket `Refined<T, R>: Arbitrary`
+  impl does no rejection sampling; primitive and composition strategies
+  may apply bounded filtering where the admissible region is dense or
+  composed. A `u8` refined by `Within<0, 100>` gets a `0..=100` strategy,
+  not a `0..=255` strategy with a `prop_filter`.
 - **JSON Schema** fragments behind the `schemars` feature.
 - **Human-readable rule descriptions** for default `Display` on error
   types and for generated documentation.

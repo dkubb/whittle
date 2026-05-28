@@ -1,12 +1,15 @@
 //! `Refined<T, R>: Arbitrary` for proptest.
 //!
 //! Whittle implements `Arbitrary` for every `Refined<T, R>` where
-//! `R: ArbitraryRule<T>`. Each rule supplies a strategy that emits
-//! admissible-by-construction values; the carrier's `Arbitrary` impl
-//! maps that strategy through `Refined::try_new`. Sparse rules
-//! (`Within<0, 100>` over `i32` admits 101 values out of 2³²) are as
-//! cheap to sample as dense ones (`NonZero` admits every i32 except
-//! 0) — no rejection sampling, no retry-budget exhaustion.
+//! `R: ArbitraryRule<T>`. Each rule supplies a strategy that targets
+//! the admissible region directly; the carrier's `Arbitrary` impl
+//! maps that strategy through `Refined::try_new`. The blanket impl
+//! does no rejection sampling; primitive rules over dense regions
+//! (`NonZero`, `NotNan`) may apply a single `prop_filter` whose
+//! reject rate is negligible, and `And<A, B>` may filter its right
+//! operand. Sparse rules (`Within<0, 100>` over `i32` admits 101
+//! values out of 2³²) are as cheap to sample as dense ones (`NonZero`
+//! admits every i32 except 0) — no retry-budget exhaustion.
 //!
 //! Downstream property tests can write
 //! `let r in any::<Refined<T, R>>()` for any library-supplied rule

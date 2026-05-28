@@ -774,10 +774,11 @@ mod tests {
 
     proptest::proptest! {
         // ─── Self-hosted Arbitrary on `Refined<f64, R>`. Float's
-        //     default `Arbitrary` strategy includes NaN and the
-        //     two infinities, so the kernel's rejection-sampling
-        //     filter is the only thing keeping values admissible
-        //     downstream.
+        //     default `Arbitrary` strategy includes NaN and the two
+        //     infinities, so `NotNan`/`NotInfinite`/`Finite` apply a
+        //     `prop_filter` on the dense admissible region (see the
+        //     `prop_filter` calls in this file). The filter rate is
+        //     one in ~2^N for IEEE-754 floats — negligible cost.
 
         #[test]
         fn arbitrary_not_nan_value_is_not_nan(

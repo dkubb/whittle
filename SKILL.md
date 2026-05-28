@@ -327,10 +327,13 @@ amount of filtering: `And<A, B>`'s strategy filters `A`'s output through
 stays tractable. For sparse intersections, a future n-ary `All<(...)>`
 may admit direct intersection generators.
 
-For the primitive rules themselves the strategy is admissible by
-construction: `Within<0, 100>` over `i32` (101 values out of 2^32) is as
-cheap to sample as `NonZero` (every i32 except 0) because each rule's
-strategy targets the admissible region directly.
+Each primitive rule's strategy targets the admissible region directly.
+Rules over dense regions (`NotNan`, `NonZero`, `NoneOf<P>`, ...) use a
+single `prop_filter` whose reject rate is negligible; rules over sparse
+regions (`Within<MIN, MAX>`, `LenChars<MIN, MAX>`, hex) construct values
+inside the admissible region without filtering. `Within<0, 100>` over
+`i32` (101 values out of 2^32) is as cheap to sample as `NonZero` (every
+i32 except 0).
 
 Downstream tests can write `let r in any::<Refined<T, R>>()` for any
 library-supplied rule and trust every generated value satisfies the
