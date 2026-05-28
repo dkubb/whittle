@@ -1,14 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! `Refined<T, R>: Arbitrary` for proptest.
 //!
 //! Whittle implements `Arbitrary` for every `Refined<T, R>` where
@@ -26,15 +15,20 @@
 //! out of 2³² ≈ 4 billion), the default sampler can exhaust its
 //! retry budget; route a narrower inner strategy through
 //! `Refined::try_new` instead.
-//!
-//! Run with `cargo run --example proptest-arbitrary --all-features`.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
 
 use proptest::proptest;
+use whittle::Refined;
 use whittle::primitive::{HexFixedAny, NonZero, NotNan, Within};
 use whittle::transform::AsciiLowercase;
-use whittle::Refined;
 
-fn main() {
+#[test]
+fn dense_rule_non_zero_arbitrary_uses_rejection_sampling_without_retries() {
     // ─── Dense rule: `Refined<T, R>: Arbitrary` directly.  ──────
     //
     // `NonZero` over `i32` admits every i32 except `0` — a single
@@ -46,7 +40,10 @@ fn main() {
     proptest!(|(r in proptest::arbitrary::any::<Refined<i32, NonZero>>())| {
         assert!(*r.as_inner() != 0);
     });
+}
 
+#[test]
+fn dense_rule_not_nan_arbitrary_admits_every_non_nan_f64() {
     // `NotNan` over `f64` is also dense: only NaN is excluded.
     // Every other f64 (including the two infinities) is admitted,
     // so the sampler accepts nearly every generated value.
@@ -54,7 +51,10 @@ fn main() {
     proptest!(|(r in proptest::arbitrary::any::<Refined<f64, NotNan>>())| {
         assert!(!r.as_inner().is_nan());
     });
+}
 
+#[test]
+fn sparse_rule_within_drives_narrower_strategy_through_try_new() {
     // ─── Sparse rule: drive a narrower strategy through `try_new`.
     //
     // `Within<0, 100>` over `i32` admits only 101 values out of 2³².
@@ -70,7 +70,10 @@ fn main() {
         let r: Refined<i32, Within<0, 100>> = Refined::try_new(x).unwrap();
         assert!((0..=100).contains(r.as_inner()));
     });
+}
 
+#[test]
+fn transformer_rule_canonicalises_arbitrary_input_inside_try_new() {
     // ─── Transformer rule: the post-transform invariant.  ───────
     //
     // Every value emitted by the strategy must already equal its
@@ -84,11 +87,4 @@ fn main() {
             Refined::try_new(raw).unwrap();
         assert_eq!(r.as_inner(), &r.as_inner().to_ascii_lowercase());
     });
-
-    println!(
-        "OK: use `any::<Refined<T, R>>()` for dense rules; route a narrower \
-         strategy through `try_new` for sparse rules. The self-hosted \
-         `Arbitrary` impl ensures every generated value satisfies the rule \
-         (transformers included)."
-    );
 }

@@ -1,15 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::missing_errors_doc,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Serde round-trip with refined domain newtypes.
 //!
 //! A user struct embeds two domain newtypes (`UserName` and
@@ -36,12 +24,19 @@
 //!    responsibility.** `Refined<T, R>` has no visibility into the
 //!    outer field map, so the attribute lives on `UserInput`.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    clippy::missing_errors_doc,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
+
 use core::error::Error;
 use core::fmt;
 
 use serde::{Deserialize, Serialize};
-use whittle::primitive::{LenChars, NumericError, StringError, Within};
 use whittle::Refined;
+use whittle::primitive::{LenChars, NumericError, StringError, Within};
 
 // ─── UserName: 3..=32 character display name. ────────────────
 
@@ -156,7 +151,8 @@ struct UserInput {
     age: Age,
 }
 
-fn main() {
+#[test]
+fn user_input_round_trips_through_json_transparently() {
     // Round-trip an admissible value.
     let original = UserInput {
         name: UserName::try_new("Alice".to_string()).unwrap(),
@@ -168,19 +164,30 @@ fn main() {
     assert_eq!(json, r#"{"name":"Alice","age":30}"#);
     let parsed: UserInput = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, original);
+    assert_eq!(parsed.name.as_str(), "Alice");
+    assert_eq!(parsed.age.get(), 30);
+}
 
+#[test]
+fn deserialize_runs_try_new_and_rejects_invalid_name() {
     // Reject at deserialize time: name is too short (fails
     // `LenChars<3, 32>`). `Refined::deserialize` runs `try_new`,
     // which surfaces the rule's error as a serde custom error.
     let bad_name: Result<UserInput, _> = serde_json::from_str(r#"{"name":"AB","age":30}"#);
     assert!(bad_name.is_err());
+}
 
+#[test]
+fn deserialize_runs_try_new_and_rejects_out_of_range_age() {
     // Reject at deserialize time: age out of range. Same
     // mechanism — `Refined<u8, Within<0, 150>>::deserialize` runs
     // `Within::refine` on the parsed `u8` and rejects 200.
     let bad_age: Result<UserInput, _> = serde_json::from_str(r#"{"name":"Alice","age":200}"#);
     assert!(bad_age.is_err());
+}
 
+#[test]
+fn deny_unknown_fields_rejects_extra_keys_on_outer_struct() {
     // Reject at deserialize time: unknown field.
     // `deny_unknown_fields` lives on `UserInput` because the outer
     // type controls its own field map — `Refined` has no hook for
@@ -188,13 +195,17 @@ fn main() {
     let unknown_field: Result<UserInput, _> =
         serde_json::from_str(r#"{"name":"Alice","age":30,"email":"x"}"#);
     assert!(unknown_field.is_err());
+}
 
+#[test]
+fn flat_domain_errors_implement_display_and_error_traits() {
     // The flat domain errors implement `Display` and `Error`, so
     // they work with `?`, `anyhow`, and stdlib error machinery
     // without depending on `thiserror`.
     let _: &dyn Error = &UserNameError::Length { actual: 1 };
     let _: &dyn Error = &AgeError::OutOfRange { value: 200 };
-
-    println!("wire: {json}");
-    println!("OK: domain newtypes serialize transparently; deserialize runs try_new");
+    assert_eq!(
+        UserNameError::Length { actual: 1 }.to_string(),
+        "user name length 1 not in 3..=32",
+    );
 }

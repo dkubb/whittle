@@ -1,15 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::float_cmp,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Float primitives: NaN-free, infinity-free, finite, bounded.
 //!
 //! Covers `NotNan`, `NotInfinite`, `Finite`, and
@@ -25,8 +13,15 @@
 //! `InClosedRange` takes endpoints as `(numerator, denominator)`
 //! because Rust 2024 does not yet permit `f64` const generics.
 
-use whittle::primitive::{Finite, FloatError, InClosedRange, NotInfinite, NotNan};
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    clippy::float_cmp,
+    reason = "integration test: unwrap keeps the focus on the API; exact float comparisons assert canonical values"
+)]
+
 use whittle::Refined;
+use whittle::primitive::{Finite, FloatError, InClosedRange, NotInfinite, NotNan};
 
 /// Unit interval `[0.0, 1.0]` for probabilities or normalized
 /// scalars.
@@ -35,21 +30,28 @@ type UnitInterval = InClosedRange<0, 1, 1, 1>;
 /// Half-open band `[-0.5, 0.5]` expressed via rational endpoints.
 type SignedHalf = InClosedRange<-1, 2, 1, 2>;
 
-fn main() {
+#[test]
+fn not_nan_admits_infinities_and_rejects_nan() {
     // `NotNan` admits infinities; only NaN is rejected.
     let inf: Refined<f64, NotNan> = Refined::try_new(f64::INFINITY).unwrap();
     assert!(inf.as_inner().is_infinite());
 
     let nan_err = Refined::<f64, NotNan>::try_new(f64::NAN).unwrap_err();
     assert_eq!(nan_err, FloatError::IsNan);
+}
 
+#[test]
+fn not_infinite_admits_nan_and_rejects_infinities() {
     // `NotInfinite` admits NaN; only infinities are rejected.
     let zero: Refined<f64, NotInfinite> = Refined::try_new(0.0).unwrap();
     assert_eq!(*zero.as_inner(), 0.0);
 
     let inf_err = Refined::<f64, NotInfinite>::try_new(f64::INFINITY).unwrap_err();
     assert_eq!(inf_err, FloatError::IsInfinite);
+}
 
+#[test]
+fn finite_admits_finite_values_and_rejects_nan_and_infinities_with_flat_error() {
     // `Finite` is the nominal newtype. Its flat `FloatError`
     // surfaces directly — no `AndError<FloatError, FloatError>`,
     // even though the implementation composes `NotNan` + `NotInfinite`.
@@ -59,7 +61,10 @@ fn main() {
     assert_eq!(finite_nan, FloatError::IsNan);
     let finite_inf = Refined::<f64, Finite>::try_new(f64::NEG_INFINITY).unwrap_err();
     assert_eq!(finite_inf, FloatError::IsInfinite);
+}
 
+#[test]
+fn in_closed_range_admits_endpoints_via_rational_constants() {
     // `InClosedRange` with `(num, den)` endpoints. The two type
     // aliases above name the interval; clients call `try_new`.
     let prob: Refined<f64, UnitInterval> = Refined::try_new(0.5).unwrap();
@@ -70,6 +75,4 @@ fn main() {
 
     let half: Refined<f64, SignedHalf> = Refined::try_new(-0.25).unwrap();
     assert_eq!(*half.as_inner(), -0.25);
-
-    println!("OK: float primitives — Finite carries the flat FloatError");
 }

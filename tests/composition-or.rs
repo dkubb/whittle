@@ -1,15 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::items_after_statements,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! `Or<R1, R2>`: either rule may accept.
 //!
 //! `A::refine` runs first; on `Ok` its output is the result. On
@@ -20,17 +8,24 @@
 //! **Anti-pattern warning.** Same lesson as `And`: `OrError<EA,
 //! EB>` is fine internally but ugly as a domain error. Wrap the
 //! `Or` in a nominal newtype and present a flat enum the caller
-//! can pattern-match against. The closing snippet shows the
+//! can pattern-match against. The closing test shows the
 //! pattern; `flat-domain-error.rs` is the canonical reference.
 //!
 //! Note: `Or` requires `T: Clone` because the original input must
 //! be preserved for the second attempt. This is the only `Clone`
 //! constraint in the kernel.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
+
 use whittle::primitive::{AtLeast, AtMost, NumericError};
 use whittle::{Or, OrError, Refined};
 
-fn main() {
+#[test]
+fn or_admits_via_either_alternative_and_returns_both_errors_when_neither_accepts() {
     // "Out of the middle band": value <= 10 OR value >= 100.
     type OutsideMiddle = Or<AtMost<10>, AtLeast<100>>;
 
@@ -48,12 +43,16 @@ fn main() {
     let both: OrError<NumericError, NumericError> = stuck;
     assert_eq!(both.left, NumericError::OutOfRange { value: 50 });
     assert_eq!(both.right, NumericError::OutOfRange { value: 50 });
+}
 
+#[test]
+fn newtype_flattens_or_error_into_a_flat_domain_enum() {
     // ─── Flattening `OrError` into a domain enum. ───────────────
     //
     // The pattern to copy: a newtype with a flat error enum.
     // Callers see one variant ("not extreme"), not the composition
     // shape ("Left and Right both rejected with NumericError").
+    type OutsideMiddle = Or<AtMost<10>, AtLeast<100>>;
 
     #[derive(Debug, PartialEq, Eq)]
     enum ExtremeError {
@@ -84,6 +83,4 @@ fn main() {
 
     let stuck = Extreme::try_new(50).unwrap_err();
     assert_eq!(stuck, ExtremeError::NotExtreme { value: 50 });
-
-    println!("OK: Or<L, R> admits either side; flat domain enum hides OrError");
 }

@@ -1,16 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::missing_errors_doc,
-    clippy::items_after_statements,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Collection primitives: length, items, uniqueness, ordering.
 //!
 //! Covers `LenItems`, `AllItems`, `Distinct`, `UniqueByKey`,
@@ -24,6 +11,13 @@
 //! on its shape (length, ordering, duplicate freedom) rather than
 //! the per-item content alone. `AllItems<R>` is the bridge: lift
 //! any item-level `Rule<T>` into a `Rule<Vec<T>>`.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    clippy::missing_errors_doc,
+    reason = "integration test: unwrap keeps the focus on the API; pedagogical try_new omits doc"
+)]
 
 use core::error::Error;
 use core::fmt;
@@ -51,83 +45,6 @@ impl Predicate<i32> for IsZero {
     }
 }
 
-fn main() {
-    // `LenItems<MIN, MAX>` bounds the length inclusively.
-    let bounded: Refined<Vec<i32>, LenItems<1, 3>> = Refined::try_new(vec![1, 2]).unwrap();
-    assert_eq!(bounded.as_inner(), &[1, 2]);
-
-    // `AllItems<R>` lifts an item-level rule to the collection.
-    // `Within<0, 100>` is nominal, so its flat `NumericError` is
-    // what the collection's `BadItem` carries as `source`.
-    let bad =
-        Refined::<Vec<i32>, AllItems<Within<0, 100>>>::try_new(vec![0, 50, 101]).unwrap_err();
-    assert_eq!(
-        bad,
-        CollectionError::BadItem {
-            index: 2,
-            source: NumericError::OutOfRange { value: 101 },
-        },
-    );
-
-    // `Distinct<T>` is the identity-keyed shorthand. Equivalent
-    // to `UniqueByKey<T, IdentityKey<T>>`.
-    let distinct: Refined<Vec<i32>, Distinct<i32>> = Refined::try_new(vec![1, 2, 3]).unwrap();
-    assert_eq!(distinct.as_inner(), &[1, 2, 3]);
-
-    // `UniqueByKey<T, K>` with a custom extractor: deduplicate
-    // by the second tuple field. Use a type alias to keep the
-    // declaration readable.
-    type UniqueBySecond = Refined<Vec<(i32, i32)>, UniqueByKey<(i32, i32), BySecond>>;
-    let by_key: UniqueBySecond = Refined::try_new(vec![(1, 10), (2, 20), (3, 30)]).unwrap();
-    assert_eq!(by_key.as_inner().len(), 3);
-
-    // `Sorted<T, K>` enforces ascending order (non-strict).
-    let sorted: Refined<Vec<i32>, Sorted<i32, IdentityKey<i32>>> =
-        Refined::try_new(vec![1, 2, 2, 5]).unwrap();
-    assert_eq!(sorted.as_inner(), &[1, 2, 2, 5]);
-
-    // `NoneOf<P>`: forbid any item matching the predicate.
-    let no_zeros: Refined<Vec<i32>, NoneOf<IsZero>> = Refined::try_new(vec![1, 2, 3]).unwrap();
-    assert_eq!(no_zeros.as_inner(), &[1, 2, 3]);
-
-    // `AnyOf<P>`: require at least one item to match.
-    let has_zero: Refined<Vec<i32>, AnyOf<IsZero>> = Refined::try_new(vec![1, 0, 2]).unwrap();
-    assert_eq!(has_zero.as_inner(), &[1, 0, 2]);
-
-    // ─── Domain newtype around a composed collection rule.  ─────
-    //
-    // The pattern below is the load-bearing one: a *collection*
-    // invariant (bounded length, distinct, sorted) gets the same
-    // nominal-newtype-plus-flat-error treatment as a scalar
-    // invariant. The composed rule's nested `AndError` tree is an
-    // implementation detail; `OrderItemListError` is the public
-    // surface.
-
-    let ok = OrderItemList::try_new(vec![ItemId(1), ItemId(2), ItemId(5)]).unwrap();
-    assert_eq!(ok.as_inner(), &[ItemId(1), ItemId(2), ItemId(5)]);
-
-    let too_short = OrderItemList::try_new(vec![]).unwrap_err();
-    assert_eq!(too_short, OrderItemListError::Length { actual: 0 });
-
-    let duplicate =
-        OrderItemList::try_new(vec![ItemId(1), ItemId(2), ItemId(2)]).unwrap_err();
-    assert_eq!(duplicate, OrderItemListError::Duplicate { index: 2 });
-
-    let out_of_order =
-        OrderItemList::try_new(vec![ItemId(1), ItemId(5), ItemId(2)]).unwrap_err();
-    assert_eq!(out_of_order, OrderItemListError::OutOfOrder { index: 2 });
-
-    println!("OK: collection primitives — length, items, uniqueness, ordering");
-}
-
-// ─── Domain newtype: `OrderItemList`.  ─────────────────────────────
-//
-// `ItemId` is a tiny carrier so the example stays self-contained.
-// The interesting part is `OrderItemList`: a bounded, distinct,
-// ascending list of IDs, packaged with a flat domain error that
-// hides the underlying `And<LenItems, And<Distinct, Sorted>>`
-// composition.
-
 /// Opaque order-line identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ItemId(pub u32);
@@ -140,10 +57,8 @@ pub struct ItemId(pub u32);
 ///
 /// The order is deliberate: length first, distinctness next,
 /// ordering last. Each step assumes the previous step's invariant.
-type OrderItemListRule = And<
-    LenItems<1, 100>,
-    And<Distinct<ItemId>, Sorted<ItemId, IdentityKey<ItemId>>>,
->;
+type OrderItemListRule =
+    And<LenItems<1, 100>, And<Distinct<ItemId>, Sorted<ItemId, IdentityKey<ItemId>>>>;
 
 /// Nominal domain newtype. The inner `Refined<...>` is private,
 /// so the only construction path is `try_new`.
@@ -218,4 +133,93 @@ impl OrderItemList {
     pub fn as_inner(&self) -> &[ItemId] {
         self.0.as_inner()
     }
+}
+
+#[test]
+fn len_items_bounds_collection_length_inclusively() {
+    // `LenItems<MIN, MAX>` bounds the length inclusively.
+    let bounded: Refined<Vec<i32>, LenItems<1, 3>> = Refined::try_new(vec![1, 2]).unwrap();
+    assert_eq!(bounded.as_inner(), &[1, 2]);
+}
+
+#[test]
+fn all_items_lifts_item_rule_and_carries_index_with_source_error() {
+    // `AllItems<R>` lifts an item-level rule to the collection.
+    // `Within<0, 100>` is nominal, so its flat `NumericError` is
+    // what the collection's `BadItem` carries as `source`.
+    let bad =
+        Refined::<Vec<i32>, AllItems<Within<0, 100>>>::try_new(vec![0, 50, 101]).unwrap_err();
+    assert_eq!(
+        bad,
+        CollectionError::BadItem {
+            index: 2,
+            source: NumericError::OutOfRange { value: 101 },
+        },
+    );
+}
+
+#[test]
+fn distinct_admits_unique_items() {
+    // `Distinct<T>` is the identity-keyed shorthand. Equivalent
+    // to `UniqueByKey<T, IdentityKey<T>>`.
+    let distinct: Refined<Vec<i32>, Distinct<i32>> = Refined::try_new(vec![1, 2, 3]).unwrap();
+    assert_eq!(distinct.as_inner(), &[1, 2, 3]);
+}
+
+#[test]
+fn unique_by_key_admits_unique_by_custom_projection() {
+    // `UniqueByKey<T, K>` with a custom extractor: deduplicate
+    // by the second tuple field. Use a type alias to keep the
+    // declaration readable.
+    type UniqueBySecond = Refined<Vec<(i32, i32)>, UniqueByKey<(i32, i32), BySecond>>;
+    let by_key: UniqueBySecond = Refined::try_new(vec![(1, 10), (2, 20), (3, 30)]).unwrap();
+    assert_eq!(by_key.as_inner().len(), 3);
+}
+
+#[test]
+fn sorted_admits_ascending_order_non_strict() {
+    // `Sorted<T, K>` enforces ascending order (non-strict).
+    let sorted: Refined<Vec<i32>, Sorted<i32, IdentityKey<i32>>> =
+        Refined::try_new(vec![1, 2, 2, 5]).unwrap();
+    assert_eq!(sorted.as_inner(), &[1, 2, 2, 5]);
+}
+
+#[test]
+fn none_of_admits_when_no_item_matches_predicate() {
+    // `NoneOf<P>`: forbid any item matching the predicate.
+    let no_zeros: Refined<Vec<i32>, NoneOf<IsZero>> = Refined::try_new(vec![1, 2, 3]).unwrap();
+    assert_eq!(no_zeros.as_inner(), &[1, 2, 3]);
+}
+
+#[test]
+fn any_of_admits_when_at_least_one_item_matches_predicate() {
+    // `AnyOf<P>`: require at least one item to match.
+    let has_zero: Refined<Vec<i32>, AnyOf<IsZero>> = Refined::try_new(vec![1, 0, 2]).unwrap();
+    assert_eq!(has_zero.as_inner(), &[1, 0, 2]);
+}
+
+#[test]
+fn order_item_list_newtype_flattens_composed_collection_error() {
+    // ─── Domain newtype around a composed collection rule.  ─────
+    //
+    // The pattern below is the load-bearing one: a *collection*
+    // invariant (bounded length, distinct, sorted) gets the same
+    // nominal-newtype-plus-flat-error treatment as a scalar
+    // invariant. The composed rule's nested `AndError` tree is an
+    // implementation detail; `OrderItemListError` is the public
+    // surface.
+
+    let ok = OrderItemList::try_new(vec![ItemId(1), ItemId(2), ItemId(5)]).unwrap();
+    assert_eq!(ok.as_inner(), &[ItemId(1), ItemId(2), ItemId(5)]);
+
+    let too_short = OrderItemList::try_new(vec![]).unwrap_err();
+    assert_eq!(too_short, OrderItemListError::Length { actual: 0 });
+
+    let duplicate =
+        OrderItemList::try_new(vec![ItemId(1), ItemId(2), ItemId(2)]).unwrap_err();
+    assert_eq!(duplicate, OrderItemListError::Duplicate { index: 2 });
+
+    let out_of_order =
+        OrderItemList::try_new(vec![ItemId(1), ItemId(5), ItemId(2)]).unwrap_err();
+    assert_eq!(out_of_order, OrderItemListError::OutOfOrder { index: 2 });
 }

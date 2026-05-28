@@ -1,15 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::missing_errors_doc,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Flat domain error: the central whittle pattern.
 //!
 //! A `FlightCode` is "3 to 8 ASCII alphanumeric characters". The
@@ -38,6 +26,13 @@
 //! trait only needs `Debug + Display + core::error::Error` on
 //! `Rule::Error`; the derive macro is your choice. See the
 //! trailing comment for the `thiserror`-derived equivalent.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    clippy::missing_errors_doc,
+    reason = "integration test: unwrap keeps the focus on the API; pedagogical try_new omits doc"
+)]
 
 use core::error::Error;
 use core::fmt;
@@ -117,31 +112,39 @@ impl FlightCode {
     }
 }
 
-fn main() {
+#[test]
+fn flight_code_admits_valid_alphanumeric_input() {
     // Admit: 6 alphanumerics.
     let code = FlightCode::try_new("BA2490".to_string()).unwrap();
     assert_eq!(code.as_str(), "BA2490");
+}
 
+#[test]
+fn flight_code_rejects_short_input_with_flat_length_error() {
     // Reject — too short. The flat error names the failure mode.
     let too_short = FlightCode::try_new("AB".to_string()).unwrap_err();
     assert_eq!(too_short, FlightCodeError::Length { actual: 2 });
+}
 
+#[test]
+fn flight_code_rejects_bad_character_with_flat_offset_error() {
     // Reject — forbidden character. The flat error pinpoints the
     // offset in the original input.
     let bad_char = FlightCode::try_new("BA 490".to_string()).unwrap_err();
     assert_eq!(bad_char, FlightCodeError::BadChar { offset: 2 });
+}
 
+#[test]
+fn flight_code_error_implements_display_and_error_traits() {
     // The flat error implements `Display` and `Error`, so it works
     // with `?`, `anyhow`, and stdlib error machinery — no
     // `thiserror` dependency required.
+    let bad_char = FlightCode::try_new("BA 490".to_string()).unwrap_err();
     let _: &dyn Error = &bad_char;
     assert_eq!(
         FlightCodeError::Length { actual: 2 }.to_string(),
         "flight code length 2 not in 3..=8",
     );
-
-    println!("flight code: {}", code.as_str());
-    println!("OK: FlightCode wraps And<...> with a flat FlightCodeError");
 }
 
 // ─── Alternative: `thiserror`-derived equivalent. ────────────
@@ -159,4 +162,3 @@ fn main() {
 //     BadChar { offset: usize },
 // }
 // ```
-

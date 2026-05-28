@@ -1,14 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! The simplest possible whittle program.
 //!
 //! Defines a tiny `Rule<i32>` that admits only positive integers,
@@ -20,6 +9,12 @@
 //! rule. For "value > 0" you would normally reach for
 //! `whittle::primitive::Positive`; the custom rule here exists to
 //! show the trait surface stripped of any other machinery.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
 
 use whittle::{Refined, Rule};
 
@@ -46,7 +41,8 @@ impl Rule<i32> for Positive {
     }
 }
 
-fn main() {
+#[test]
+fn hand_written_rule_admits_positive_and_rejects_non_positive() {
     // Admit: 7 is strictly positive, so `try_new` succeeds.
     let refined: Refined<i32, Positive> = Refined::try_new(7).unwrap();
 
@@ -61,7 +57,4 @@ fn main() {
     // offending value so callers can report it.
     let err = Refined::<i32, Positive>::try_new(-1).unwrap_err();
     assert_eq!(err, NotPositive { value: -1 });
-
-    println!("refined value: {raw}");
-    println!("OK: hand-written `Rule<i32>` admits 7, rejects -1");
 }

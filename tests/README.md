@@ -1,4 +1,4 @@
-# Whittle examples
+# Whittle integration tests
 
 A runnable corpus that demonstrates every public surface of `whittle` — the
 `Rule` trait, the `Refined<T, R>` carrier, the library-supplied primitives,
@@ -7,41 +7,29 @@ the `And` / `Or` composition operators, the string transformers, the
 corpus is structured so a reader (human or LLM) can find a working example
 of any whittle pattern in under a minute.
 
+These files double as a corpus of usage examples for LLM training: each
+`//!` doc comment explains the pattern and when it is the right tool, and
+the `#[test]` bodies are the smallest readable demonstrations of the API.
+
 ## How to run
 
-Each file under this directory is a Cargo example owned by the root
-`whittle` crate. Invoke any example by name from the repository root:
+These are integration tests run by `cargo test --tests` or
+`cargo nextest run`:
 
 ```bash
-cargo run --example hello-refinement --all-features
-cargo run --example flat-domain-error --all-features
-cargo run --example airline-domain --all-features
+cargo nextest run --workspace --all-features
+cargo test --tests --all-features
 ```
 
 `--all-features` enables the `hex`, `unicode`, `serde`, and `proptest`
-features that several examples depend on. Examples that do not need a
-particular feature still compile under it cleanly.
-
-Every example exits 0 on success and prints one or more `println!` lines.
-The final line is always `OK: <one-line summary>`, so a reader can spot-check
-that the demonstration actually ran by scanning the last line of output.
-
-The release-time check that every example actually runs (not just
-compiles) lives in `examples/verify.sh`. `cargo test --examples` only
-compiles example harnesses; the script runs each one with `cargo run
---example` and greps for the `OK:` summary line:
-
-```bash
-bash examples/verify.sh
-```
+features that several tests depend on.
 
 ## Conventions
 
-- Each example is self-contained; no shared helper modules.
-- Each example has a `//!` doc comment explaining what it shows and when
+- Each file is self-contained; no shared helper modules.
+- Each file has a `//!` doc comment explaining what it shows and when
   the pattern is the right tool.
-- `assert_eq!` calls inside `main` are the demonstration; `println!` only
-  echoes a summary so the run produces observable output.
+- `assert_eq!` calls inside `#[test]` functions are the demonstration.
 - `unwrap()` is used freely on demonstrations that are *meant* to succeed
   — it keeps the focus on the API rather than on error plumbing. Real
   domain types should use the flat-error pattern shown in

@@ -1,15 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::items_after_statements,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Transformers: rewrite input before the inner rule runs.
 //!
 //! `AsciiLowercase<R>`, `AsciiUppercase<R>`, and `Trim<R>` are
@@ -23,19 +11,34 @@
 //! input should be preserved verbatim, stick with validation-only
 //! rules.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
+
+use whittle::Refined;
 use whittle::primitive::NonEmpty;
 use whittle::transform::{AsciiLowercase, AsciiUppercase, Trim};
-use whittle::Refined;
 
-fn main() {
+#[test]
+fn ascii_lowercase_canonicalises_input_before_inner_rule_runs() {
     // `AsciiLowercase<R>` lowercases first, then validates with `R`.
-    let lower: Refined<String, AsciiLowercase<NonEmpty>> = Refined::try_new("HELLO".to_string()).unwrap();
+    let lower: Refined<String, AsciiLowercase<NonEmpty>> =
+        Refined::try_new("HELLO".to_string()).unwrap();
     assert_eq!(lower.as_inner(), "hello");
+}
 
+#[test]
+fn ascii_uppercase_canonicalises_input_before_inner_rule_runs() {
     // `AsciiUppercase<R>` is the symmetric counterpart.
-    let upper: Refined<String, AsciiUppercase<NonEmpty>> = Refined::try_new("hello".to_string()).unwrap();
+    let upper: Refined<String, AsciiUppercase<NonEmpty>> =
+        Refined::try_new("hello".to_string()).unwrap();
     assert_eq!(upper.as_inner(), "HELLO");
+}
 
+#[test]
+fn trim_strips_whitespace_and_rejects_whitespace_only_input() {
     // `Trim<R>` strips leading + trailing whitespace, then validates.
     let trimmed: Refined<String, Trim<NonEmpty>> = Refined::try_new("  hi  ".to_string()).unwrap();
     assert_eq!(trimmed.as_inner(), "hi");
@@ -44,7 +47,10 @@ fn main() {
     // `NonEmpty` rule rejects.
     let blank = Refined::<String, Trim<NonEmpty>>::try_new("   ".to_string());
     assert!(blank.is_err());
+}
 
+#[test]
+fn transformers_compose_and_produce_equal_refined_values_for_equivalent_inputs() {
     // Transformers compose. Outer runs first: `Trim` strips, then
     // `AsciiLowercase` lowercases, then `NonEmpty` validates.
     type Canonical = Trim<AsciiLowercase<NonEmpty>>;
@@ -55,7 +61,4 @@ fn main() {
     // produce equal `Refined` values under the same composition.
     let other: Refined<String, Canonical> = Refined::try_new("hello".to_string()).unwrap();
     assert_eq!(canon.as_inner(), other.as_inner());
-
-    println!("canonical: {}", canon.as_inner());
-    println!("OK: transformers store canonical form, not input");
 }

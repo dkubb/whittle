@@ -1,14 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Smart-constructor newtype via the `refinement!` macro.
 //!
 //! Defines a nominal type `UserName` that wraps
@@ -21,6 +10,12 @@
 //! bare `String` or `i32`. The newtype gives the concept a name
 //! that the type system tracks; the macro keeps the boilerplate
 //! to a single line.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
 
 use whittle::primitive::NonEmpty;
 use whittle::refinement;
@@ -36,7 +31,8 @@ refinement! {
     pub UserName: String, NonEmpty;
 }
 
-fn main() {
+#[test]
+fn user_name_admits_non_empty_and_supports_clone_and_into_inner() {
     // Admit: non-empty input passes the rule.
     let name = UserName::try_new("Ada".to_string()).unwrap();
     assert_eq!(name.as_inner(), "Ada");
@@ -51,11 +47,10 @@ fn main() {
     // downstream code doesn't have to re-check.
     let owned: String = name.into_inner();
     assert_eq!(owned, "Ada");
+}
 
-    // Reject: empty string fails the rule.
+#[test]
+fn user_name_rejects_empty() {
     let bad = UserName::try_new(String::new());
     assert!(bad.is_err());
-
-    println!("user: {}", cloned.as_inner());
-    println!("OK: `refinement!` newtype admits \"Ada\", rejects empty");
 }

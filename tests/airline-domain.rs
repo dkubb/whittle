@@ -1,16 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::missing_errors_doc,
-    clippy::must_use_candidate,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Airline booking domain: three refined types and an itinerary.
 //!
 //! - `IataAirportCode`: 3 uppercase ASCII letters (e.g. "LHR").
@@ -23,6 +10,14 @@
 //! applied three times. The parent `Itinerary` struct composes
 //! the three; the type signature alone tells a reader (or another
 //! LLM) which invariants hold.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    reason = "integration test: unwrap keeps the focus on the API; helper impls are pedagogical"
+)]
 
 use whittle::primitive::{
     AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, LenChars, StringError,
@@ -56,7 +51,8 @@ type PnrRule = AsciiUppercase<And<LenChars<6, 6>, EachChar<AsciiAlphanumeric>>>;
 // alphanumeric body. The `LenChars` bound runs first so the empty /
 // over-long inputs reject before `FirstChar` / `EachChar` could
 // vacuously accept.
-type FlightRule = And<LenChars<3, 7>, And<FirstChar<UppercaseAscii>, EachChar<UppercaseAlphanumeric>>>;
+type FlightRule =
+    And<LenChars<3, 7>, And<FirstChar<UppercaseAscii>, EachChar<UppercaseAlphanumeric>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IataAirportCode(Refined<String, IataRule>);
@@ -155,7 +151,8 @@ pub struct Itinerary {
     pub pnr: BookingReference,
 }
 
-fn main() {
+#[test]
+fn itinerary_composes_three_refined_newtypes() {
     let it = Itinerary {
         origin: IataAirportCode::try_new("LHR".to_string()).unwrap(),
         destination: IataAirportCode::try_new("JFK".to_string()).unwrap(),
@@ -164,11 +161,19 @@ fn main() {
         pnr: BookingReference::try_new("ab12CD".to_string()).unwrap(),
     };
     assert_eq!(it.pnr.as_str(), "AB12CD");
+    assert_eq!(it.origin.as_str(), "LHR");
+    assert_eq!(it.destination.as_str(), "JFK");
+    assert_eq!(it.flight.as_str(), "BA117");
+}
 
-    // ─── IATA rejections.  ──────────────────────────────────────
+#[test]
+fn iata_airport_code_rejects_short_input_with_length_error() {
     let bad_iata = IataAirportCode::try_new("LH".to_string()).unwrap_err();
     assert_eq!(bad_iata, IataError::Length { actual: 2 });
+}
 
+#[test]
+fn booking_reference_distinguishes_length_and_bad_char_with_exact_variants() {
     // ─── PNR rejections — exact variant match, not `matches!`.  ─
     // `AB-12CD` has 7 chars, so the length bound rejects before the
     // body predicate sees the `-`. Asserting the exact variant
@@ -177,9 +182,10 @@ fn main() {
     assert_eq!(bad_pnr_len, PnrError::Length { actual: 7 });
     let bad_pnr_char = BookingReference::try_new("AB-2CD".to_string()).unwrap_err();
     assert_eq!(bad_pnr_char, PnrError::BadChar { offset: 2 });
+}
 
-    // ─── FlightCode admit/reject.  ──────────────────────────────
-    //
+#[test]
+fn flight_code_admits_each_valid_shape() {
     // Length bounds: 3..=7. Head must be uppercase; body must be
     // uppercase alphanumeric (no lowercase, no separator).
 
@@ -197,7 +203,10 @@ fn main() {
     // Admit at max length (7 chars).
     let max_len = FlightCode::try_new("BA12345".to_string()).unwrap();
     assert_eq!(max_len.as_str(), "BA12345");
+}
 
+#[test]
+fn flight_code_rejects_each_invalid_shape_with_a_named_variant() {
     // Reject: 1 char, below min length.
     let too_short = FlightCode::try_new("B".to_string()).unwrap_err();
     assert_eq!(too_short, FlightCodeError::Length { actual: 1 });
@@ -213,13 +222,4 @@ fn main() {
     // Reject: separator in body.
     let bad_body = FlightCode::try_new("BA-117".to_string()).unwrap_err();
     assert_eq!(bad_body, FlightCodeError::BadChar { offset: 2 });
-
-    println!(
-        "{} -> {} on {} ({})",
-        it.origin.as_str(),
-        it.destination.as_str(),
-        it.flight.as_str(),
-        it.pnr.as_str(),
-    );
-    println!("OK: airline-domain newtypes with flat errors compose into Itinerary");
 }

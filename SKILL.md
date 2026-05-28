@@ -446,12 +446,16 @@ hand-write `impl Display` + `impl Error` — whittle is agnostic.
 
 ## Examples
 
-See `./examples/` for runnable Cargo examples covering each pattern.
-(If absent, the kernel's own doctests in
-`crates/whittle-core/src/primitive/` are the next-best reading list:
-every primitive includes admit-and-reject doctests, and the `Within` /
-`Finite` newtype-hiding-composition pattern is illustrated by their own
-implementations.)
+See `./tests/` for integration tests that double as runnable examples
+covering each pattern. Each file is a self-contained Cargo integration
+test binary with a `//!` doc comment explaining what it shows and one or
+more `#[test]` functions whose bodies are the demonstration. Run them
+with `cargo nextest run --workspace --all-features` or
+`cargo test --tests --all-features`. (If absent, the kernel's own
+doctests in `crates/whittle-core/src/primitive/` are the next-best
+reading list: every primitive includes admit-and-reject doctests, and
+the `Within` / `Finite` newtype-hiding-composition pattern is
+illustrated by their own implementations.)
 
 ## Validation Checklist
 

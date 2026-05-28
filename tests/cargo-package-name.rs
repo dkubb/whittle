@@ -1,15 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    clippy::missing_errors_doc,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! `CargoPackageName`: bounded length, leading alnum + alnum/underscore/dash body.
 //!
 //! Cargo-style identifier rules: the name is 1..=64 characters
@@ -36,10 +24,19 @@
 //! DNS-label-style identifiers, or any "URL-slug" shape where the
 //! leading character is restricted but the body admits the dash.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    clippy::missing_errors_doc,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
+
 use core::error::Error;
 use core::fmt;
 
-use whittle::primitive::{AsciiAlphanumeric, EachChar, FirstChar, IdentDashChar, LenChars, StringError};
+use whittle::primitive::{
+    AsciiAlphanumeric, EachChar, FirstChar, IdentDashChar, LenChars, StringError,
+};
 use whittle::{And, AndError, Refined};
 
 /// Inner composition rule. `LenChars` runs first so empty input is
@@ -131,7 +128,8 @@ impl CargoPackageName {
     }
 }
 
-fn main() {
+#[test]
+fn cargo_package_name_admits_typical_crate_names() {
     // Admit: a typical Cargo crate name.
     let ok = CargoPackageName::try_new("my-crate_42".to_string()).unwrap();
     assert_eq!(ok.as_str(), "my-crate_42");
@@ -139,7 +137,10 @@ fn main() {
     // Admit: leading digit is fine — `AsciiAlphanumeric` covers it.
     let digit_head = CargoPackageName::try_new("2fa-helper".to_string()).unwrap();
     assert_eq!(digit_head.as_str(), "2fa-helper");
+}
 
+#[test]
+fn cargo_package_name_rejects_empty_and_too_long_with_length_variant() {
     // Reject: empty string. The length bound fires first; without
     // it, `FirstChar` and `EachChar` would both vacuously accept
     // and the empty string would slip through.
@@ -150,7 +151,10 @@ fn main() {
     let too_long_input = "a".repeat(65);
     let too_long = CargoPackageName::try_new(too_long_input).unwrap_err();
     assert_eq!(too_long, CargoPackageNameError::Length { actual: 65 });
+}
 
+#[test]
+fn cargo_package_name_rejects_leading_dash_and_underscore_with_bad_first_char() {
     // Reject: leading `-` is not `AsciiAlphanumeric`.
     let bad_head = CargoPackageName::try_new("-leading-dash".to_string()).unwrap_err();
     assert_eq!(bad_head, CargoPackageNameError::BadFirstChar);
@@ -159,18 +163,21 @@ fn main() {
     // predicate is tighter than the body predicate on purpose).
     let bad_head_under = CargoPackageName::try_new("_under".to_string()).unwrap_err();
     assert_eq!(bad_head_under, CargoPackageNameError::BadFirstChar);
+}
 
+#[test]
+fn cargo_package_name_rejects_dot_in_body_with_bad_char_offset() {
     // Reject: `.` is not in the body alphabet.
     let bad_body = CargoPackageName::try_new("my.crate".to_string()).unwrap_err();
     assert_eq!(bad_body, CargoPackageNameError::BadChar { offset: 2 });
+}
 
+#[test]
+fn cargo_package_name_error_implements_display_and_error() {
     // The flat error implements `Display` and `Error`, so it works
     // with `?`, `anyhow`, and the stdlib error machinery without
     // depending on `thiserror`.
     let _: &dyn Error = &CargoPackageNameError::BadFirstChar;
     let rendered = CargoPackageNameError::Length { actual: 0 }.to_string();
     assert!(rendered.contains("1..=64"));
-
-    println!("crate: {}", ok.as_str());
-    println!("OK: CargoPackageName wraps And<LenChars, And<FirstChar, EachChar>> with a flat error");
 }

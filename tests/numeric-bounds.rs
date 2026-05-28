@@ -1,14 +1,3 @@
-// Examples are interactive demonstrations: they use `println!` to
-// confirm what was demonstrated and `unwrap()` to keep the focus on
-// the API, not error plumbing. The workspace lints would otherwise
-// deny both.
-#![expect(
-    clippy::print_stdout,
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
-)]
-
 //! Numeric primitives: bounded ranges, sign, non-zero.
 //!
 //! Walks through `Within`, `AtLeast`, `AtMost`, `NonZero`,
@@ -22,10 +11,17 @@
 //! for a new domain type: which primitive expresses the
 //! invariant, and what error variant surfaces to the caller.
 
-use whittle::primitive::{AtLeast, AtMost, Negative, NonZero, NumericError, Positive, Within};
-use whittle::Refined;
+#![expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    reason = "integration test: unwrap keeps the focus on the API"
+)]
 
-fn main() {
+use whittle::Refined;
+use whittle::primitive::{AtLeast, AtMost, Negative, NonZero, NumericError, Positive, Within};
+
+#[test]
+fn within_admits_in_range_and_rejects_out_of_range_with_flat_error() {
     // `Within<MIN, MAX>` admits values in `MIN..=MAX` inclusive.
     let mid: Refined<i32, Within<0, 100>> = Refined::try_new(50).unwrap();
     assert_eq!(*mid.as_inner(), 50);
@@ -38,14 +34,20 @@ fn main() {
     assert_eq!(low_err, NumericError::OutOfRange { value: -1 });
     let high_err = Refined::<i32, Within<0, 100>>::try_new(101).unwrap_err();
     assert_eq!(high_err, NumericError::OutOfRange { value: 101 });
+}
 
+#[test]
+fn at_least_and_at_most_admit_boundary_values() {
     // `AtLeast` / `AtMost` are the one-sided primitives `Within`
     // composes from; both also expose the flat error.
     let above: Refined<i32, AtLeast<10>> = Refined::try_new(10).unwrap();
     let below: Refined<i32, AtMost<100>> = Refined::try_new(100).unwrap();
     assert_eq!(*above.as_inner(), 10);
     assert_eq!(*below.as_inner(), 100);
+}
 
+#[test]
+fn sign_and_non_zero_primitives_admit_and_reject_with_flat_error() {
     // Sign and non-zero rules use the same `NumericError`.
     let pos: Refined<i32, Positive> = Refined::try_new(1).unwrap();
     let neg: Refined<i32, Negative> = Refined::try_new(-1).unwrap();
@@ -68,6 +70,4 @@ fn main() {
     // the universal carrier across every `Numeric` impl.
     let nz_zero = Refined::<u32, NonZero>::try_new(0).unwrap_err();
     assert_eq!(nz_zero, NumericError::OutOfRange { value: 0 });
-
-    println!("OK: numeric primitives admit/reject with flat NumericError");
 }
