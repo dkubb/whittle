@@ -14,10 +14,13 @@
 #![expect(
     clippy::unwrap_used,
     clippy::disallowed_methods,
+    reason = "integration test asserts via unwrap"
+)]
+#![expect(
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
     missing_docs,
-    reason = "integration test: unwrap keeps the focus on the API; helper impls are pedagogical"
+    reason = "demo code does not need crate-level docs"
 )]
 
 use whittle::primitive::{
