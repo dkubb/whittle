@@ -16,10 +16,12 @@ serde    = ["dep:serde"]
 [dependencies]
 proptest  = { workspace = true, optional = true }
 serde     = { workspace = true, optional = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
+proptest   = { workspace = true }
+serde      = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_test = { workspace = true }
 
 [lints]
 workspace = true

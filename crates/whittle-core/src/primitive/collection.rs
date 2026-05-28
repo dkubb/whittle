@@ -9,8 +9,6 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use thiserror::Error;
-
 use crate::rule::Rule;
 
 /// Inclusive bound on the number of items in a `Vec<T>`:
@@ -57,35 +55,62 @@ impl<T: 'static + Ord + Clone> KeyOf<T> for IdentityKey<T> {
 }
 
 /// Errors common to every collection primitive.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CollectionError<EI = core::convert::Infallible> {
     /// `LenItems<MIN, MAX>` declared with `MIN > MAX`. No collection
     /// is admissible.
-    #[error("empty length range")]
     EmptyRange,
 
     /// Length not in the admissible range.
-    #[error("length {actual} not in admissible range")]
     LenOutOfRange { actual: usize },
 
     /// `AllItems<R>` rejected the item at the given index.
-    #[error("item at index {index}: {source}")]
     BadItem {
         /// Position of the rejected item in the original collection.
         index: usize,
         /// The inner rule's error.
-        #[source]
         source: EI,
     },
 
     /// `UniqueByKey<T, K>` saw a duplicate key. The second
     /// occurrence's index is reported; the first wins.
-    #[error("duplicate key at index {index}")]
     DuplicateKey {
         /// Position of the duplicate (the second occurrence).
         index: usize,
     },
+}
+
+impl<EI> core::fmt::Display for CollectionError<EI>
+where
+    EI: core::fmt::Display,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptyRange => f.write_str("empty length range"),
+            Self::LenOutOfRange { actual } => {
+                write!(f, "length {actual} not in admissible range")
+            }
+            Self::BadItem { index, source } => {
+                write!(f, "item at index {index}: {source}")
+            }
+            Self::DuplicateKey { index } => {
+                write!(f, "duplicate key at index {index}")
+            }
+        }
+    }
+}
+
+impl<EI> core::error::Error for CollectionError<EI>
+where
+    EI: core::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::BadItem { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 impl<T, const MIN: usize, const MAX: usize> Rule<Vec<T>> for LenItems<MIN, MAX>

@@ -12,8 +12,6 @@
 use alloc::string::String;
 use core::marker::PhantomData;
 
-use thiserror::Error;
-
 use crate::rule::Rule;
 
 /// Inclusive bound on the number of Unicode scalar values: `MIN <=
@@ -45,31 +43,46 @@ pub struct FirstChar<P>(PhantomData<P>);
 ///
 /// `length` and `index` fields carry the offending observation so
 /// callers can produce precise diagnostics.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StringError {
     /// `LenChars<MIN, MAX>` or `LenBytes<MIN, MAX>` declared with
     /// `MIN > MAX`. The interval is empty so no input is admissible.
-    #[error("empty length range")]
     EmptyRange,
 
     /// Character count not in the admissible range.
-    #[error("character count {actual} not in admissible range")]
     CharCountOutOfRange { actual: usize },
 
     /// Byte length not in the admissible range.
-    #[error("byte length {actual} not in admissible range")]
     ByteLenOutOfRange { actual: usize },
 
     /// `NonEmpty` received an empty string.
-    #[error("empty string")]
     Empty,
 
     /// `EachChar<P>` rejected a character at the given UTF-8 byte
     /// offset.
-    #[error("character at byte offset {offset} not admissible")]
     BadChar { offset: usize },
 }
+
+impl core::fmt::Display for StringError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::EmptyRange => f.write_str("empty length range"),
+            Self::CharCountOutOfRange { actual } => {
+                write!(f, "character count {actual} not in admissible range")
+            }
+            Self::ByteLenOutOfRange { actual } => {
+                write!(f, "byte length {actual} not in admissible range")
+            }
+            Self::Empty => f.write_str("empty string"),
+            Self::BadChar { offset } => {
+                write!(f, "character at byte offset {offset} not admissible")
+            }
+        }
+    }
+}
+
+impl core::error::Error for StringError {}
 
 /// A pure predicate over a single `char`.
 ///

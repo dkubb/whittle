@@ -9,7 +9,7 @@ pub use collection::{
     AllItems, CollectionError, IdentityKey, KeyOf, LenItems,
     UniqueByKey,
 };
-pub use float::{Finite, Float, FloatError, InClosedRange, NotNan};
+pub use float::{Finite, Float, FloatError, InClosedRange, NotInfinite, NotNan};
 pub use numeric::{
     AtLeast, AtMost, Negative, NonZero, Numeric, NumericError,
     Positive, Within,
