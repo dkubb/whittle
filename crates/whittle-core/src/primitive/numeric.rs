@@ -888,18 +888,13 @@ mod tests {
         //     must satisfy `R` by construction.
 
         #[test]
-        fn arbitrary_within_is_in_range(x in 0_i32..=100_i32) {
-            // `Within<0, 100>` admits 101 values out of 2^32 — too
-            // sparse for `arbitrary::any::<Refined<…>>()` rejection
-            // sampling. Drive with a bounded inner strategy and
-            // route through `try_new` to exercise the rule on the
-            // full admissible region instead.
-            //
-            // kernel-only: domain code wraps this composition in a
-            // newtype with a flat error enum — see SKILL.md
-            // "Newtype hiding rule composition".
-            let r: Refined<i32, Within<0, 100>>
-                = Refined::try_new(x).unwrap();
+        fn arbitrary_within_is_in_range(
+            r in proptest::arbitrary::any::<Refined<i32, Within<0, 100>>>()
+        ) {
+            // `Within<0, 100>`'s `ArbitraryRule` strategy emits
+            // values directly in `[0, 100]`, so the carrier is
+            // admissible by construction without rejection
+            // sampling against the full `i32` range.
             proptest::prop_assert!((0..=100).contains(r.as_inner()));
         }
 

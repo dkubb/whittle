@@ -1,26 +1,16 @@
 //! `Refined<T, R>: Arbitrary` for proptest.
 //!
 //! Whittle implements `Arbitrary` for every `Refined<T, R>` where
-//! `T: Arbitrary` and `R: Rule<T>`. The strategy drives the inner
-//! `T::arbitrary` distribution and runs the result through
-//! `R::refine`, keeping only admissible values. Downstream
-//! property tests never need `prop_assume!` filtering — the
-//! admissibility invariant is generated, not asserted.
+//! `R: ArbitraryRule<T>`. Each rule supplies a strategy that emits
+//! admissible-by-construction values; the carrier's `Arbitrary` impl
+//! maps that strategy through `Refined::try_new`. Sparse rules
+//! (`Within<0, 100>` over `i32` admits 101 values out of 2³²) are as
+//! cheap to sample as dense ones (`NonZero` admits every i32 except
+//! 0) — no rejection sampling, no retry-budget exhaustion.
 //!
-//! The default strategy uses rejection sampling, which is fine for
-//! rules whose admissible region is *dense* in `T` (such as
-//! `NonZero` over `i32`: every i32 except `0` is admitted, so the
-//! sampler practically never rejects). For *sparse* rules
-//! (`Within<0, 100>` over the whole `i32` range admits 101 values
-//! out of 2³² ≈ 4 billion), the default sampler can exhaust its
-//! retry budget; route a narrower inner strategy through
-//! `Refined::try_new` instead.
-
-#![expect(
-    clippy::unwrap_used,
-    clippy::disallowed_methods,
-    reason = "integration test: unwrap keeps the focus on the API"
-)]
+//! Downstream property tests can write
+//! `let r in any::<Refined<T, R>>()` for any library-supplied rule
+//! and trust that every generated value satisfies the rule.
 
 use proptest::proptest;
 use whittle::Refined;
@@ -28,14 +18,13 @@ use whittle::primitive::{HexFixedAny, NonZero, NotNan, Within};
 use whittle::transform::AsciiLowercase;
 
 #[test]
-fn dense_rule_non_zero_arbitrary_uses_rejection_sampling_without_retries() {
+fn dense_rule_non_zero_arbitrary_admits_every_non_zero_value() {
     // ─── Dense rule: `Refined<T, R>: Arbitrary` directly.  ──────
     //
-    // `NonZero` over `i32` admits every i32 except `0` — a single
-    // excluded value in a ~4-billion-value domain. The default
-    // `Arbitrary` sampler can take the rejection-sampling path
-    // without ever exhausting its retry budget. No workaround
-    // needed.
+    // `NonZero` over `i32` admits every i32 except `0`. The rule's
+    // `ArbitraryRule` strategy emits the full range filtered for
+    // non-zero; every value passes `Refined::try_new` by
+    // construction.
 
     proptest!(|(r in proptest::arbitrary::any::<Refined<i32, NonZero>>())| {
         assert!(*r.as_inner() != 0);
@@ -45,8 +34,7 @@ fn dense_rule_non_zero_arbitrary_uses_rejection_sampling_without_retries() {
 #[test]
 fn dense_rule_not_nan_arbitrary_admits_every_non_nan_f64() {
     // `NotNan` over `f64` is also dense: only NaN is excluded.
-    // Every other f64 (including the two infinities) is admitted,
-    // so the sampler accepts nearly every generated value.
+    // The rule's strategy emits any `f64` filtered for non-NaN.
 
     proptest!(|(r in proptest::arbitrary::any::<Refined<f64, NotNan>>())| {
         assert!(!r.as_inner().is_nan());
@@ -54,20 +42,17 @@ fn dense_rule_not_nan_arbitrary_admits_every_non_nan_f64() {
 }
 
 #[test]
-fn sparse_rule_within_drives_narrower_strategy_through_try_new() {
-    // ─── Sparse rule: drive a narrower strategy through `try_new`.
+fn sparse_rule_within_arbitrary_stays_in_admissible_range() {
+    // ─── Sparse rule: introspective generation, no workaround.
     //
     // `Within<0, 100>` over `i32` admits only 101 values out of 2³².
-    // Calling `any::<Refined<i32, Within<0, 100>>>()` would force
-    // proptest into rejection sampling against an extremely sparse
-    // target and likely exhaust the retry budget. The workaround is
-    // to drive a narrower input strategy (`0..=100`) and route each
-    // candidate through `Refined::try_new`. Every generated value
-    // satisfies the rule by construction, with no rejection
-    // sampling involved.
+    // Before `ArbitraryRule`, calling `any::<Refined<i32, Within<0,
+    // 100>>>()` forced proptest into rejection sampling against an
+    // extremely sparse target and exhausted the retry budget. The
+    // rule now supplies its own range-bounded strategy, so the
+    // sparse case is just as cheap as the dense one.
 
-    proptest!(|(x in 0_i32..=100_i32)| {
-        let r: Refined<i32, Within<0, 100>> = Refined::try_new(x).unwrap();
+    proptest!(|(r in proptest::arbitrary::any::<Refined<i32, Within<0, 100>>>())| {
         assert!((0..=100).contains(r.as_inner()));
     });
 }
@@ -82,9 +67,7 @@ fn transformer_rule_canonicalises_arbitrary_input_inside_try_new() {
     // strategy generates mixed-case input; the transformer runs
     // inside `try_new`, so the stored carrier is canonical.
 
-    proptest!(|(raw in "[0-9a-fA-F]{2}")| {
-        let r: Refined<String, AsciiLowercase<HexFixedAny<2>>> =
-            Refined::try_new(raw).unwrap();
+    proptest!(|(r in proptest::arbitrary::any::<Refined<String, AsciiLowercase<HexFixedAny<2>>>>())| {
         assert_eq!(r.as_inner(), &r.as_inner().to_ascii_lowercase());
     });
 }

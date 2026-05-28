@@ -317,24 +317,61 @@ derives flow through the same path.
 
 ### Property-based testing
 
-With the `proptest` feature, `Refined<T, R>` implements `Arbitrary` as
-`T::arbitrary_with(args).prop_filter_map(...)`. Generated values are
-guaranteed to satisfy `R` — downstream tests can write
-`let r in any::<Refined<T, R>>()` without `prop_assume!` filtering.
+With the `proptest` feature, `Refined<T, R>` implements `Arbitrary` for
+every `R: ArbitraryRule<T>`. Each rule supplies its own strategy that
+emits admissible-by-construction values; the carrier's `Arbitrary` impl
+maps the strategy through `Refined::try_new` and `expect`s success.
+There is no rejection sampling — sparse rules (`Within<0, 100>` over
+`i32` admits 101 values out of 2^32) are as cheap to sample as dense
+ones (`NonZero` admits every i32 except 0).
 
-The strategy uses rejection sampling, so for sparse rules (`Within<0,
-100>` over `i32` admits 101 out of 2^32 values) proptest may exhaust its
-retry budget. Two ways out:
+Downstream tests can write `let r in any::<Refined<T, R>>()` for any
+library-supplied rule and trust every generated value satisfies the
+invariant — no `prop_assume!` filtering, no narrower-strategy
+workarounds.
 
-- Drive a narrower inner strategy and pipe it through `Refined::try_new`
-  manually: `let r: Refined<i32, Within<0, 100>> = Refined::try_new(x)?;`
-  where `x in 0..=100`. See
-  `crates/whittle-core/src/primitive/numeric.rs:651`.
-- Write a custom strategy that emits admissible values directly and have
-  the newtype's `Arbitrary` impl use it.
+`ArbitraryRule<T>` is a sub-trait of `Rule<T>` with one method:
+
+```text
+trait ArbitraryRule<T>: Rule<T> {
+    type Strategy: proptest::strategy::Strategy<Value = T>;
+    fn arbitrary_strategy() -> Self::Strategy;
+}
+```
+
+Implementers carry a soundness obligation: every value emitted by the
+returned strategy MUST satisfy `R::refine`. The blanket impl `expect`s
+on `try_new`, so a strategy bug surfaces as a panic at test time, not
+as silently dropped samples.
+
+Three sub-traits expose building blocks rule strategies need:
+
+- `NumericArbitrary` — per-integer-type range strategy. Each numeric
+  primitive uses it: `Within<MIN, MAX>` calls
+  `T::arbitrary_in_range(MIN, MAX)` to get exactly the admissible region.
+- `CharStrategy` — per-`CharPredicate` `char` strategy. `EachChar<P>`
+  and `FirstChar<P>` compose it into a `String` strategy. Every
+  library-supplied predicate (`AsciiAlphanumeric`, `IdentChar`,
+  `IdentStart`, `IdentDashChar`, `NonControl`, `HexChar`,
+  `PrintableLine`, `PrintableMultiline`) has a `CharStrategy` impl.
+- `PredicateStrategy<T>` — per-`Predicate<T>` value strategy used by
+  `AnyOf<P>` to seed the generated collection with a guaranteed match.
+
+For a custom rule that wraps the library primitives:
+
+- Delegate to the inner rule's strategy. `refinement! { pub Foo: Inner,
+  Rule; }` does not implement `ArbitraryRule` for the newtype; if you
+  want `proptest::any::<Foo>()` to work, hand-write `ArbitraryRule<...>`
+  on the rule type and call `proptest::strategy::Strategy::prop_map` to
+  wrap the inner value in your newtype.
+- For composed rules, `And<A, B>` and `Or<A, B>` derive `ArbitraryRule`
+  automatically when their components do. `And` uses `A`'s strategy
+  filtered through `B::refine`; pick `A` to be the
+  generator-shaped rule and `B` to be the predicate-shaped one. `Or`
+  is `prop_oneof!`.
 
 Transformers are reflected in the `Arbitrary` distribution: the inner
-strategy generates raw `T`, `try_new` runs the transformer, and the
+rule's strategy generates raw `T`, the transformer normalises, and the
 stored carrier is the canonical form. Property tests that assert "every
 stored value equals its own canonical form" hold by construction.
 

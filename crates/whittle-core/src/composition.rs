@@ -321,19 +321,14 @@ mod tests {
 
         #[test]
         fn arbitrary_and_admits_only_in_range(
-            x in 0_i32..=100_i32
+            r in proptest::arbitrary::any::<Refined<i32, And<AtLeast<0>, AtMost<100>>>>()
         ) {
-            // `And<AtLeast<0>, AtMost<100>>` admits 101 / 2^32
-            // values — too sparse for `arbitrary::any::<Refined<…>>`
-            // rejection sampling. Drive with a bounded inner
-            // strategy and route through `try_new` so the rule's
-            // composed refine path is still exercised.
-            //
-            // kernel-only: domain code wraps this composition in a
-            // newtype with a flat error enum — see SKILL.md
-            // "Newtype hiding rule composition".
-            let r: Refined<i32, And<AtLeast<0>, AtMost<100>>>
-                = Refined::try_new(x).unwrap();
+            // `And<A, B>`'s `ArbitraryRule` impl uses `A`'s
+            // strategy filtered through `B::refine`. `AtLeast<0>`
+            // emits values in `[0, i32::MAX]`; `AtMost<100>` then
+            // accepts only `[0, 100]`. The admissible region is
+            // generated directly without 2^32-wide rejection
+            // sampling.
             proptest::prop_assert!((0..=100).contains(r.as_inner()));
         }
 
@@ -343,10 +338,11 @@ mod tests {
                 Refined<i32, Or<AtMost<0>, AtLeast<100>>>,
             >()
         ) {
+            // `Or<A, B>`'s `ArbitraryRule` impl is `prop_oneof!`
+            // over `A`'s and `B`'s strategies; every emitted value
+            // is admissible under at least one alternative by
+            // construction.
             let value = *r.as_inner();
-            // `Or<AtMost<0>, AtLeast<100>>` admits roughly half
-            // of i32 (everything except the 1..=99 band), so
-            // rejection sampling is cheap here.
             proptest::prop_assert!(value <= 0 || value >= 100);
         }
     }
