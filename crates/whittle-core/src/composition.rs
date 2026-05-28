@@ -5,9 +5,9 @@
 //! `Left` / `Right` wrapping is exposed to callers. Domain newtypes
 //! pattern-match on the rules' flat error enum directly.
 //!
-//! N-ary composition is expressed by nesting (`And<A, And<B, C>>`);
-//! the planned `All<(...)>` / `Any<(...)>` operators will collapse
-//! the nesting on the user's behalf.
+//! N-ary composition is expressed via nesting until N-ary lands —
+//! `And<A, And<B, C>>` today; the `All<(...)>` / `Any<(...)>`
+//! operators are planned follow-up.
 
 use core::marker::PhantomData;
 
@@ -110,10 +110,9 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
-        // `Or` retries the original input against `B` if `A`
-        // rejects, so the input must be cloned before the first
-        // attempt. This is the only place in the kernel that
-        // requires `T: Clone`.
+        // Clone first so the second attempt can run against the
+        // original input if `A` rejects. This is the only place in
+        // the kernel that requires `T: Clone`.
         let snapshot = raw.clone();
         match A::refine(raw) {
             Ok(value) => Ok(value),

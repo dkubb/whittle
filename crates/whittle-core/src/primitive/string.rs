@@ -220,7 +220,10 @@ pub trait CharPredicate: 'static {
     /// assert!(<AsciiAlphanumeric as CharPredicate>::test('A'));
     /// assert!(!<AsciiAlphanumeric as CharPredicate>::test('-'));
     ///
-    /// // Custom predicate: ASCII vowels only.
+    /// // Custom predicate: ASCII lowercase vowels only. The
+    /// // example is intentionally narrow — real callers can match
+    /// // additional cases (e.g. uppercase or Unicode vowels) by
+    /// // extending the `matches!` arm.
     /// pub struct Vowel;
     /// impl CharPredicate for Vowel {
     ///     fn test(ch: char) -> bool {

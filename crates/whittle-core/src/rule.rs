@@ -431,7 +431,7 @@ mod tests {
     fn pass_through_hash() {
         use core::hash::{Hash, Hasher};
 
-        /// Trivial no_std-friendly hasher: a running sum of the
+        /// Trivial no_std-friendly hasher: a wrapping sum of the
         /// bytes the hashed value's `Hash` impl writes. Exists only
         /// to exercise `Refined`'s `Hash` impl in tests.
         struct CountingHasher(u64);
