@@ -6,8 +6,8 @@ pub mod numeric;
 pub mod string;
 
 pub use collection::{
-    AllItems, CollectionError, IdentityKey, KeyOf, LenItems,
-    UniqueByKey,
+    AllItems, AnyOf, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf, Predicate,
+    Sorted, UniqueByKey,
 };
 pub use float::{Finite, Float, FloatError, InClosedRange, NotInfinite, NotNan};
 pub use numeric::{
