@@ -191,21 +191,35 @@ impl ArbitraryFloat for f32 {
     }
 
     #[inline]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality is the intended detector for the singleton case"
+    )]
     fn arbitrary_in_closed_range(lo: Self, hi: Self) -> Self::ClosedRangeStrategy {
-        // proptest's `Range<f32>` strategy is half-open
-        // `[lo, hi)`. Wrap the inner strategy in a post-`clamp` so
-        // the closed upper bound is reachable without rejection
-        // sampling; the closure capture is hidden behind
-        // `BoxedStrategy`. Guard the degenerate `lo == hi` case
-        // by widening the inner range by one ulp; `clamp` collapses
-        // it back to the singleton.
-        use proptest::strategy::Strategy as _;
-        let span_hi = if lo < hi {
-            hi
+        // `proptest::Range<F>` is half-open `[lo, hi)`, so the upper
+        // endpoint is never sampled and a post-`clamp` cannot
+        // synthesize it. The degenerate `lo == hi` case is even
+        // worse on negative inputs: IEEE 754 lays out negatives in
+        // reverse bit order, so `from_bits(lo.to_bits() + 1)` for
+        // `lo = -1.0` produces a value less than `-1.0`, making
+        // `lo..span_hi` empty / invalid. Split into a singleton
+        // branch plus a three-arm `prop_oneof!` that guarantees
+        // both endpoints are reachable.
+        use proptest::prelude::*;
+        if lo == hi {
+            // Degenerate: only one admissible value.
+            Just(lo).boxed()
         } else {
-            Self::from_bits(lo.to_bits().wrapping_add(1))
-        };
-        (lo..span_hi).prop_map(move |v| v.clamp(lo, hi)).boxed()
+            // Interior + both endpoints. proptest's half-open range
+            // `lo..hi` excludes `hi`; the `prop_oneof!` branches
+            // make both endpoints reachable as distinct samples.
+            prop_oneof![
+                1 => Just(lo),
+                1 => Just(hi),
+                8 => lo..hi,
+            ]
+            .boxed()
+        }
     }
 }
 
@@ -229,14 +243,26 @@ impl ArbitraryFloat for f64 {
     }
 
     #[inline]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality is the intended detector for the singleton case"
+    )]
     fn arbitrary_in_closed_range(lo: Self, hi: Self) -> Self::ClosedRangeStrategy {
-        use proptest::strategy::Strategy as _;
-        let span_hi = if lo < hi {
-            hi
+        // See `f32::arbitrary_in_closed_range` for the rationale;
+        // the structure is identical (the bit-widening trick is
+        // unsound on negative singletons, and the post-`clamp`
+        // version did not let `hi` be sampled).
+        use proptest::prelude::*;
+        if lo == hi {
+            Just(lo).boxed()
         } else {
-            Self::from_bits(lo.to_bits().wrapping_add(1))
-        };
-        (lo..span_hi).prop_map(move |v| v.clamp(lo, hi)).boxed()
+            prop_oneof![
+                1 => Just(lo),
+                1 => Just(hi),
+                8 => lo..hi,
+            ]
+            .boxed()
+        }
     }
 }
 
@@ -820,10 +846,13 @@ mod tests {
         }
     }
 
-    // ─── Degenerate `lo == hi` strategy: exercises the
-    //     `from_bits(...).wrapping_add(1)` fixup that lets
-    //     proptest's half-open `Range<F>` strategy still produce a
-    //     value when both endpoints collapse to a singleton.
+    // ─── Degenerate `lo == hi` strategy: the singleton branch
+    //     returns `Just(lo)`. Exercised on both positive and
+    //     negative singletons because the previous
+    //     `from_bits(...).wrapping_add(1)` widening trick was
+    //     unsound for negatives (IEEE 754 lays negatives out in
+    //     reverse bit order, so adding one ulp to `-1.0` produces a
+    //     value LESS than `-1.0`).
     #[cfg(feature = "proptest")]
     #[test]
     fn closed_range_singleton_strategy_is_well_formed() {
@@ -838,5 +867,27 @@ mod tests {
         let strategy_f64 = <f64 as ArbitraryFloat>::arbitrary_in_closed_range(1.0_f64, 1.0_f64);
         let tree = strategy_f64.new_tree(&mut runner).unwrap();
         assert_eq!(tree.current(), 1.0_f64);
+
+        // Negative singleton: regression for the bit-widening bug.
+        let strategy_neg = <f64 as ArbitraryFloat>::arbitrary_in_closed_range(-1.0_f64, -1.0_f64);
+        let tree = strategy_neg.new_tree(&mut runner).unwrap();
+        assert_eq!(tree.current(), -1.0_f64);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn arbitrary_in_closed_range_admits_endpoints_and_interior(
+            v in <f64 as super::ArbitraryFloat>::arbitrary_in_closed_range(-1.0, 1.0)
+        ) {
+            proptest::prop_assert!(v >= -1.0);
+            proptest::prop_assert!(v <= 1.0);
+        }
+
+        #[test]
+        fn arbitrary_in_closed_range_singleton_yields_exact_value(
+            v in <f64 as super::ArbitraryFloat>::arbitrary_in_closed_range(-3.5, -3.5)
+        ) {
+            proptest::prop_assert_eq!(v, -3.5);
+        }
     }
 }
