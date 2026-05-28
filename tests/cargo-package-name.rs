@@ -162,5 +162,5 @@ fn cargo_package_name_error_implements_display_and_error() {
     // elsewhere; whittle accepts either.
     let _: &dyn Error = &CargoPackageNameError::BadFirstChar;
     let rendered = CargoPackageNameError::Length { actual: 0 }.to_string();
-    assert!(rendered.contains("1..=64"));
+    assert_eq!(rendered, "cargo package name length 0 not in 1..=64");
 }
