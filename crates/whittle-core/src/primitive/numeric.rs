@@ -5,8 +5,6 @@
 //! Each primitive carries a typed error variant that includes the
 //! offending value so callers can construct precise diagnostics.
 
-use core::marker::PhantomData;
-
 use crate::rule::Rule;
 
 /// Inclusive numeric range: `MIN <= value <= MAX`.
@@ -385,11 +383,6 @@ where
         T::from_i128(widened)
     }
 }
-
-// `PhantomData` lives here so it's unused by the `impl`s above but
-// suppressed by the never-constructed marker shape; restate to keep
-// the import live.
-const _: PhantomData<()> = PhantomData;
 
 #[cfg(test)]
 #[expect(
