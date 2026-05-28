@@ -280,6 +280,10 @@ mod tests {
             // rejection sampling. Drive with a bounded inner
             // strategy and route through `try_new` so the rule's
             // composed refine path is still exercised.
+            //
+            // kernel-only: domain code wraps this composition in a
+            // newtype with a flat error enum — see SKILL.md
+            // "Newtype hiding rule composition".
             let r: Refined<i32, And<AtLeast<0>, AtMost<100>>>
                 = Refined::try_new(x).unwrap();
             proptest::prop_assert!((0..=100).contains(r.as_inner()));

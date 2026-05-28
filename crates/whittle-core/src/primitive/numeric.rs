@@ -645,6 +645,9 @@ mod tests {
 
         #[test]
         fn within_rejects_below_min(x in i32::MIN..0_i32) {
+            // kernel-only: domain code wraps this composition in a
+            // newtype with a flat error enum — see SKILL.md
+            // "Newtype hiding rule composition".
             let result: Result<Refined<i32, Within<0, 100>>, _>
                 = Refined::try_new(x);
             proptest::prop_assert_eq!(
@@ -680,6 +683,10 @@ mod tests {
             // sampling. Drive with a bounded inner strategy and
             // route through `try_new` to exercise the rule on the
             // full admissible region instead.
+            //
+            // kernel-only: domain code wraps this composition in a
+            // newtype with a flat error enum — see SKILL.md
+            // "Newtype hiding rule composition".
             let r: Refined<i32, Within<0, 100>>
                 = Refined::try_new(x).unwrap();
             proptest::prop_assert!((0..=100).contains(r.as_inner()));
