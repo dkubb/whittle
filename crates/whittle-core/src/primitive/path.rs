@@ -335,13 +335,17 @@ mod tests {
             ),
         ) {
             // Splice `..` between two clean segment lists.
+            let parent_index = head.len();
             let mut segments = head;
             segments.push("..".to_string());
             segments.extend(tail);
             let s = segments.join("/");
             let result: Result<Refined<String, RelativePath>, _>
                 = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                PathError::ParentTraversal { index: parent_index },
+            );
         }
 
         // ─── RelativePath reject: absolute Unix paths. ────────
@@ -354,7 +358,7 @@ mod tests {
             s.push_str(&tail);
             let result: Result<Refined<String, RelativePath>, _>
                 = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(result.unwrap_err(), PathError::Absolute);
         }
     }
 }

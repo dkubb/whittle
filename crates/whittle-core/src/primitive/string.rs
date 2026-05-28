@@ -1284,9 +1284,13 @@ mod tests {
         fn len_chars_rejects_too_long_via_proptest(
             s in "[a-z]{11,30}"
         ) {
+            let actual = s.chars().count();
             let result: Result<Refined<String, LenChars<1, 10>>, _>
                 = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                StringError::CharCountOutOfRange { actual },
+            );
         }
 
         // ─── LenBytes admit + reject. ─────────────────────────
@@ -1305,9 +1309,13 @@ mod tests {
         fn len_bytes_rejects_too_long_via_proptest(
             s in "[a-z]{6,20}"
         ) {
+            let actual = s.len();
             let result: Result<Refined<String, LenBytes<1, 5>>, _>
                 = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                StringError::ByteLenOutOfRange { actual },
+            );
         }
 
         // ─── NonEmpty admit + reject. ─────────────────────────
@@ -1329,7 +1337,7 @@ mod tests {
             // for symmetry with the other reject properties.
             let result: Result<Refined<String, NonEmpty>, _>
                 = Refined::try_new(String::new());
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(result.unwrap_err(), StringError::Empty);
         }
 
         // ─── EachChar<AsciiAlphanumeric> admit + reject. ─────
@@ -1349,7 +1357,9 @@ mod tests {
             tail in "[a-zA-Z0-9]{0,5}",
         ) {
             // Inject a `-` so the resulting string has at least one
-            // forbidden character.
+            // forbidden character; head is ASCII so byte offset of
+            // the `-` equals head.len().
+            let offset = head.len();
             let mut s = head;
             s.push('-');
             s.push_str(&tail);
@@ -1357,7 +1367,10 @@ mod tests {
                 Refined<String, EachChar<AsciiAlphanumeric>>,
                 _,
             > = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                StringError::BadChar { offset },
+            );
         }
 
         // ─── IdentDashChar admit + reject. ───────────────────
@@ -1376,6 +1389,7 @@ mod tests {
             head in "[a-zA-Z0-9_-]{0,5}",
             tail in "[a-zA-Z0-9_-]{0,5}",
         ) {
+            let offset = head.len();
             let mut s = head;
             s.push('.');
             s.push_str(&tail);
@@ -1383,7 +1397,10 @@ mod tests {
                 Refined<String, EachChar<IdentDashChar>>,
                 _,
             > = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                StringError::BadChar { offset },
+            );
         }
     }
 
@@ -1406,9 +1423,13 @@ mod tests {
             s in "[0-9a-f]{0,3}"
         ) {
             use super::HexFixedLower;
+            let actual = s.len();
             let result: Result<Refined<String, HexFixedLower<4>>, _>
                 = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                StringError::BadHexLength { actual },
+            );
         }
 
         // ─── HexFixedAny<4> admit + reject. ──────────────────
@@ -1428,9 +1449,13 @@ mod tests {
             s in "[0-9a-fA-F]{5,10}"
         ) {
             use super::HexFixedAny;
+            let actual = s.len();
             let result: Result<Refined<String, HexFixedAny<4>>, _>
                 = Refined::try_new(s);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                StringError::BadHexLength { actual },
+            );
         }
     }
 }

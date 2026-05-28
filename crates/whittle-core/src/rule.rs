@@ -484,7 +484,7 @@ mod tests {
         #[test]
         fn try_new_rejects_all_negative(x in i32::MIN..0_i32) {
             let result: Result<Refined<i32, NonNeg>, _> = Refined::try_new(x);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(result.unwrap_err(), Negative);
         }
 
         #[test]

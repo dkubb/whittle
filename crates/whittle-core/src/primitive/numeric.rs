@@ -647,13 +647,19 @@ mod tests {
         fn within_rejects_below_min(x in i32::MIN..0_i32) {
             let result: Result<Refined<i32, Within<0, 100>>, _>
                 = Refined::try_new(x);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                NumericError::OutOfRange { value: i128::from(x) },
+            );
         }
 
         #[test]
         fn at_least_rejects_below_min(x in i32::MIN..10_i32) {
             let result: Result<Refined<i32, AtLeast<10>>, _> = Refined::try_new(x);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                NumericError::OutOfRange { value: i128::from(x) },
+            );
         }
 
         #[test]
@@ -720,7 +726,10 @@ mod tests {
         fn within_rejects_strictly_above_max(x in 101_i32..=i32::MAX) {
             let result: Result<Refined<i32, Within<0, 100>>, _>
                 = Refined::try_new(x);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                NumericError::OutOfRange { value: i128::from(x) },
+            );
         }
 
         #[test]
@@ -729,7 +738,10 @@ mod tests {
         ) {
             let result: Result<Refined<i32, AtLeast<10>>, _>
                 = Refined::try_new(x);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                NumericError::OutOfRange { value: i128::from(x) },
+            );
         }
 
         #[test]
@@ -738,7 +750,10 @@ mod tests {
         ) {
             let result: Result<Refined<i32, AtMost<10>>, _>
                 = Refined::try_new(x);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                NumericError::OutOfRange { value: i128::from(x) },
+            );
         }
     }
 }

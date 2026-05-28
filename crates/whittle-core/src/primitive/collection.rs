@@ -858,9 +858,13 @@ mod tests {
                 6_usize..=10_usize,
             )
         ) {
+            let actual = v.len();
             let result: Result<Refined<Vec<i32>, LenItems<1, 5>>, _>
                 = Refined::try_new(v);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                CollectionError::LenOutOfRange { actual },
+            );
         }
 
         // ─── AllItems<Within<0, 100>>. ───────────────────────
@@ -881,7 +885,9 @@ mod tests {
             tail in proptest::collection::vec(0_i32..=100_i32, 0_usize..=5_usize),
         ) {
             // Splice an out-of-range item into the middle so at
-            // least one element guarantees rejection.
+            // least one element guarantees rejection; the bad item
+            // sits at index head.len().
+            let index = head.len();
             let mut v = head;
             v.push(bad);
             v.extend(tail);
@@ -889,7 +895,13 @@ mod tests {
                 Refined<Vec<i32>, AllItems<Within<0, 100>>>,
                 _,
             > = Refined::try_new(v);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                CollectionError::BadItem {
+                    index,
+                    source: NumericError::OutOfRange { value: i128::from(bad) },
+                },
+            );
         }
 
         // ─── UniqueByKey. ────────────────────────────────────
@@ -910,14 +922,23 @@ mod tests {
 
         #[test]
         fn unique_by_key_rejects_when_duplicate_present(
-            head in proptest::collection::vec(0_i32..=100_i32, 1_usize..=5_usize)
+            // BTreeSet seed guarantees head is already distinct, so
+            // the only duplicate is the appended head[0] at index
+            // head.len().
+            head in proptest::collection::btree_set(
+                0_i32..=100_i32,
+                1_usize..=5_usize,
+            )
         ) {
-            // Append the first element again so the result has at
-            // least one duplicate.
+            let head: Vec<i32> = head.into_iter().collect();
+            let index = head.len();
             let mut v = head.clone();
             v.push(head[0]);
             let result: Result<UniqueI32, _> = Refined::try_new(v);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                CollectionError::DuplicateKey { index },
+            );
         }
 
         // ─── NoneOf<IsZero>. ─────────────────────────────────
@@ -939,12 +960,18 @@ mod tests {
             head in proptest::collection::vec(1_i32..=100_i32, 0_usize..=5_usize),
             tail in proptest::collection::vec(1_i32..=100_i32, 0_usize..=5_usize),
         ) {
+            // Head is non-zero by strategy, so the first zero sits
+            // at index head.len().
+            let index = head.len();
             let mut v = head;
             v.push(0);
             v.extend(tail);
             let result: Result<Refined<Vec<i32>, NoneOf<IsZero>>, _>
                 = Refined::try_new(v);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                CollectionError::MatchingItem { index },
+            );
         }
 
         // ─── AnyOf<IsZero>. ──────────────────────────────────
@@ -971,7 +998,10 @@ mod tests {
         ) {
             let result: Result<Refined<Vec<i32>, AnyOf<IsZero>>, _>
                 = Refined::try_new(v);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                CollectionError::NoMatchingItem,
+            );
         }
 
         // ─── Distinct. ───────────────────────────────────────
@@ -992,15 +1022,24 @@ mod tests {
 
         #[test]
         fn distinct_rejects_when_duplicate_present(
-            head in proptest::collection::vec(0_i32..=100_i32, 1_usize..=5_usize)
+            // BTreeSet seed guarantees head is distinct, so the
+            // only duplicate is the appended head[0] at index
+            // head.len().
+            head in proptest::collection::btree_set(
+                0_i32..=100_i32,
+                1_usize..=5_usize,
+            )
         ) {
-            // Splice the first element again so the result has at
-            // least one duplicate.
+            let head: Vec<i32> = head.into_iter().collect();
+            let index = head.len();
             let mut v = head.clone();
             v.push(head[0]);
             let result: Result<Refined<Vec<i32>, Distinct<i32>>, _>
                 = Refined::try_new(v);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                CollectionError::DuplicateKey { index },
+            );
         }
 
         // ─── Sorted. ─────────────────────────────────────────
@@ -1025,7 +1064,10 @@ mod tests {
             let mut v = alloc::vec![head, 0];
             v.extend(extra);
             let result: Result<SortedIdent, _> = Refined::try_new(v);
-            proptest::prop_assert!(result.is_err());
+            proptest::prop_assert_eq!(
+                result.unwrap_err(),
+                CollectionError::NotSorted { index: 1 },
+            );
         }
     }
 }
