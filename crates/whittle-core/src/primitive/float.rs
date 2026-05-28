@@ -292,8 +292,14 @@ pub enum FloatError {
     /// Value is outside the admissible closed range. Carries the
     /// offending value widened to `f64` for diagnostic parity with
     /// `NumericError::OutOfRange { value: i128 }`.
+    ///
+    /// `value` is guaranteed to be non-NaN:
+    /// `InClosedRange<...>::refine` rejects NaN inputs with
+    /// `FloatError::IsNan` before the range check runs, so
+    /// `OutOfRange.value` carries only finite or infinite floats.
     OutOfRange {
-        /// Offending value widened losslessly into `f64`.
+        /// Offending value widened losslessly into `f64`. Guaranteed
+        /// non-NaN (see the variant doc); finite or infinite only.
         value: f64,
     },
 }
