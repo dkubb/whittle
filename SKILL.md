@@ -61,11 +61,14 @@ There is no escape hatch. See `crates/whittle-core/src/rule.rs:122`,
 `crates/whittle-core/src/rule.rs:287`, and `crates/whittle-core/src/rule.rs:314`.
 
 Composition is at the type level via `And<A, B>` and `Or<A, B>` (see
-`crates/whittle-core/src/composition.rs:43` and
-`crates/whittle-core/src/composition.rs:71`). `And` short-circuits on
-left failure; `Or` retries the right side with a clone of the original
-input. Their error types are `AndError<EA, EB>` and `OrError<EA, EB>`. These
-machinery errors should not appear in your public domain surface.
+`crates/whittle-core/src/composition.rs`). Both rules must share the
+same `Rule::Error` type: `And<A, B>` short-circuits on left failure
+and returns the shared `E` directly; `Or<A, B>` retries the right
+side with a clone of the original input and returns `[E; 2]` when
+both reject. There is no positional `Left`/`Right` wrapping in the
+composition's `Self::Error` — the rules' flat error enum surfaces to
+callers as-is. N-ary `All<(...)>` / `Any<(...)>` operators are
+planned follow-up.
 
 Transformers (`AsciiLowercase<R>`, `AsciiUppercase<R>`, `Trim<R>`, see
 `crates/whittle-core/src/transform.rs`) normalise before delegating to
@@ -76,9 +79,10 @@ verbatim — `try_new("ABCD")` and `try_new("abcd")` through
 The load-bearing pattern is: the user-facing type is a hand-written or
 macro-generated newtype around `Refined<T, R>`, with a hand-written
 flat error enum. The `And`/`Or` composition is the rule machinery
-underneath; the `AndError`/`OrError` tree is flattened to a domain enum
-inside the newtype's `try_new`. The newtype is the domain; `Refined<T, R>`
-is implementation.
+underneath; because both inner rules share an error type, the
+composition surfaces a flat enum (or `[E; 2]` for `Or`) that the
+newtype's `try_new` maps into named domain variants. The newtype is
+the domain; `Refined<T, R>` is implementation.
 
 ## Core API
 
@@ -98,16 +102,17 @@ is implementation.
   flatten errors — `Foo::try_new` returns `<Rule as Rule<Inner>>::Error`
   unchanged. When the rule is a composition and you need a flat domain
   error, hand-write the newtype.
-- `And<A, B>` (`crates/whittle-core/src/composition.rs:43`): both rules
+- `And<A, B>` (`crates/whittle-core/src/composition.rs`): both rules
   must accept; `A::refine` runs first, output threaded into `B::refine`.
-  `Self::Error = AndError<A::Error, B::Error>`.
-- `Or<A, B>` (`crates/whittle-core/src/composition.rs:71`): either rule
+  Both rules must share `Rule::Error = E`. `Self::Error = E` — the
+  shared flat enum surfaces directly with no positional wrapping.
+- `Or<A, B>` (`crates/whittle-core/src/composition.rs`): either rule
   may accept; on left failure the right rule runs against a clone of the
-  original input. Requires `T: Clone`. `Self::Error = OrError<A::Error,
-  B::Error>` (both sides rejected).
-- `AndError<EA, EB>` / `OrError<EA, EB>`: machinery error types. Do not
-  expose in your public API unless the left/right structure is genuinely
-  meaningful — flatten to a domain enum inside `try_new` instead.
+  original input. Requires `T: Clone`. Both rules must share
+  `Rule::Error = E`. `Self::Error = [E; 2]` when both reject — the
+  left rejection first, the right rejection second.
+- N-ary `All<(...)>` / `Any<(...)>` operators that collapse the
+  binary nesting are planned follow-up.
 - Transformers (`crates/whittle-core/src/transform.rs`): `AsciiLowercase<R>`,
   `AsciiUppercase<R>`, `Trim<R>`. Each is a `Rule<String>` that normalises
   the input then delegates to `R`; `Self::Error = R::Error`.
@@ -190,19 +195,21 @@ Path (`crates/whittle-core/src/primitive/path.rs`, `Rule<String>`, returns
 
 ### Newtype hiding rule composition (the load-bearing pattern)
 
-When the underlying rule is `And<X, Y, ...>` (or anything else that ends
-up with a tree-shaped error), wrap it in a hand-written tuple newtype with
-a private field and define a flat domain error enum. Implement `try_new`
-to call `Refined::try_new` and match-flatten the rule's `AndError` tree
-into your flat domain variants.
+When the underlying rule is `And<X, Y, ...>` (or `Or<...>`), wrap it
+in a hand-written tuple newtype with a private field and define a
+flat domain error enum. Implement `try_new` to call `Refined::try_new`
+and map the rules' shared error variants into your flat domain
+variants. The composition's `Self::Error` is the rules' shared flat
+enum (or `[E; 2]` for `Or`), so the match is a direct 1:1 mapping —
+no positional indirection.
 
 Anti-pattern (do not do this):
 
 ```rust
 // Leaks whittle into the public API: callers must import And, AtLeast,
-// AtMost, AndError, NumericError just to read the error type.
+// AtMost, StringError just to read the error type.
 pub type FlightNumber = Refined<String, And<LenChars<3, 7>, EachChar<...>>>;
-pub type FlightNumberError = AndError<StringError, StringError>;
+pub type FlightNumberError = StringError;
 ```
 
 Pattern:
@@ -235,12 +242,15 @@ impl core::error::Error for FlightNumberError {}
 
 impl FlightNumber {
     pub fn try_new(raw: String) -> Result<Self, FlightNumberError> {
-        Refined::try_new(raw).map(Self).map_err(|err| match err {
-            AndError::Left(StringError::CharCountOutOfRange { actual }) =>
+        Refined::try_new(raw).map(Self).map_err(|err: StringError| match err {
+            StringError::CharCountOutOfRange { actual } =>
                 FlightNumberError::BadLength { actual },
-            AndError::Right(StringError::BadChar { offset }) =>
+            StringError::BadChar { offset } =>
                 FlightNumberError::BadCharacter { offset },
-            // ...flatten remaining StringError variants...
+            // `StringError` is #[non_exhaustive]; the catch-all is
+            // required even though the composition only emits the
+            // two variants above.
+            other => unreachable!("unexpected: {other:?}"),
         })
     }
     // as_inner / into_inner delegate to self.0.
@@ -248,24 +258,10 @@ impl FlightNumber {
 ```
 
 The user's flight-number example, the kernel's own `Within<MIN, MAX>`
-(see `crates/whittle-core/src/primitive/numeric.rs:285`), and `Finite`
-(see `crates/whittle-core/src/primitive/float.rs:230`) all follow this
-shape: domain newtype, flat domain error, composition machinery flattened
-in `refine` / `try_new`.
-
-### Composition (when `And` IS the domain)
-
-Rare. Only acceptable when the left/right split is itself the domain
-contract you want to preserve forever — typically a two-stage parse where
-"failed at stage A" and "failed at stage B" are different user-facing
-states that should never collapse. Exposing `AndError<EA, EB>` in your
-public API freezes the rule's internal structure (you cannot later
-restructure the composition without breaking callers), so the default
-should be: flatten.
-
-If you genuinely want this, `pub type FooRule = And<X, Y>;` is fine and
-`pub type FooError = AndError<X::Error, Y::Error>;` follows. Document the
-left/right split as part of the type's contract.
+(see `crates/whittle-core/src/primitive/numeric.rs`), and `Finite`
+(see `crates/whittle-core/src/primitive/float.rs`) all follow this
+shape: domain newtype, flat domain error, the composition's shared
+error variants mapped to named variants inside `try_new`.
 
 ### Transformers for canonical form
 
@@ -363,15 +359,12 @@ features are additive.
 - Do not write `pub type Foo = Refined<T, R>;` for a domain type. Same
   leak as above. Use the `refinement!` macro or hand-write a tuple
   newtype.
-- Do not write `pub type FooError = AndError<X, Y>;` for public domain
-  error types. Flatten the composition into a named enum via a
-  hand-written `try_new` that matches `AndError::Left | Right` into
-  domain variants. The rare exception is when the `Left`/`Right`
-  positional split genuinely IS the public domain semantic (a two-stage
-  parse where "failed at stage A" and "failed at stage B" are
-  user-facing states that should never collapse) — and even then,
-  prefer a flat enum if you might restructure the rule later, because
-  exposing `AndError` freezes the rule's internal shape into the API.
+- Do not expose the rules' shared error enum directly as your
+  domain error. Wrap it in a named domain enum inside `try_new`
+  even when both inner rules already share the same flat enum
+  (`StringError`, `NumericError`, etc.) — the rename is the
+  contract. For `Or<A, B>`, do not expose the raw `[E; 2]` pair;
+  collapse it into a single named variant.
 - Do not re-validate downstream. The whole point of the carrier is that
   `&Refined<T, R>` witnesses the invariant. If a function takes
   `&Refined<String, R>`, it does not need to re-check the rule. (If you
@@ -405,9 +398,10 @@ features are additive.
    - Inner rule is an `And` / `Or` composition: write a flat domain
      enum with `Debug + PartialEq + Eq` plus `Display` + `Error` impls
      (hand-rolled, or via any derive macro you prefer — see the
-     "Error derive macros are your choice" note below). Match the
-     `AndError` / `OrError` tree inside `try_new` and produce your
-     flat variants.
+     "Error derive macros are your choice" note below). For `And<A,
+     B>`, the composition's `Self::Error` is the rules' shared flat
+     enum, so the match is a flat 1:1 mapping. For `Or<A, B>`, it is
+     `[E; 2]` — destructure the array and produce your flat variant.
 4. Implement:
    - For single-error rules, `refinement! { pub Foo: Inner, Rule; }` is
      enough — it generates the newtype + `try_new` + `as_inner` +
@@ -437,10 +431,9 @@ features are additive.
 
 **Error derive macros are your choice.** Whittle's kernel is
 dep-free — `whittle-core`'s primitive errors (`NumericError`,
-`StringError`, `FloatError`, `CollectionError`, `PathError`,
-`AndError`, `OrError`) are hand-rolled `impl Display + impl Error`,
-so downstream `cargo tree` shows no `thiserror` (or any other
-error-derive crate) under whittle. The `Rule` trait does NOT require
+`StringError`, `FloatError`, `CollectionError`, `PathError`) are
+hand-rolled `impl Display + impl Error`, so downstream `cargo tree`
+shows no `thiserror` (or any other error-derive crate) under whittle. The `Rule` trait does NOT require
 any specific derive — `Rule::Error` only needs
 `Debug + Display + core::error::Error`. Your domain errors can use
 `thiserror`, `snafu`, `miette`, or hand-roll — whittle is agnostic.
@@ -478,8 +471,9 @@ A whittle domain type is well-formed when:
   `try_new`; access goes through `as_inner` / `into_inner`.
 - The public error type is a flat enum with `Debug + PartialEq + Eq`
   and `Display` + `Error` impls (derived with any macro you prefer or
-  hand-written). No `AndError` / `OrError` appears in any public
-  signature.
+  hand-written). The rules' shared error enum (or `[E; 2]` for `Or`)
+  is mapped to named domain variants — the underlying enum is not
+  the public surface.
 - Doctests cover at least one admit case and one reject case.
 - If `proptest` is on, an `Arbitrary` round-trip test confirms every
   generated value satisfies the invariant.

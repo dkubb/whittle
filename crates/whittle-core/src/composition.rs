@@ -1,8 +1,13 @@
 //! Binary rule composition: `And<A, B>` and `Or<A, B>`.
 //!
+//! Both rules must share the same `Rule::Error` type. The
+//! composition's `Self::Error` is that shared type — no positional
+//! `Left` / `Right` wrapping is exposed to callers. Domain newtypes
+//! pattern-match on the rules' flat error enum directly.
+//!
 //! N-ary composition is expressed by nesting (`And<A, And<B, C>>`);
-//! the future `refinement!` declarative macro performs the nesting
-//! on the user's behalf.
+//! the planned `All<(...)>` / `Any<(...)>` operators will collapse
+//! the nesting on the user's behalf.
 
 use core::marker::PhantomData;
 
@@ -11,32 +16,33 @@ use crate::rule::Rule;
 /// Both rules must accept. `A::refine` runs first; on success its
 /// (possibly canonicalised) output is passed to `B::refine`.
 ///
+/// Both rules' `Error` types must unify. The composition's
+/// `Self::Error` is that shared type — neither rule's failure is
+/// wrapped, so callers pattern-match the rules' flat error enum
+/// directly.
+///
 /// # Examples
 ///
 /// ```
-/// use whittle_core::{And, AndError, Refined};
+/// use whittle_core::{And, Refined};
 /// use whittle_core::primitive::{AtLeast, AtMost, NumericError};
 ///
-/// // `0..=100` expressed as `AtLeast<0> AND AtMost<100>`.
+/// // `0..=100` expressed as `AtLeast<0> AND AtMost<100>`. Both
+/// // rules produce `NumericError`, so the composition's error is
+/// // `NumericError` directly — no `Left` / `Right` wrapping.
 /// type InRange = And<AtLeast<0>, AtMost<100>>;
 ///
 /// // Admit: both rules accept.
 /// let ok: Refined<i32, InRange> = Refined::try_new(50).unwrap();
 /// assert_eq!(*ok.as_inner(), 50);
 ///
-/// // Reject from the left: below the lower bound.
+/// // Reject from the left rule (below the lower bound).
 /// let err_left = Refined::<i32, InRange>::try_new(-1).unwrap_err();
-/// assert_eq!(
-///     err_left,
-///     AndError::Left(NumericError::OutOfRange { value: -1 }),
-/// );
+/// assert_eq!(err_left, NumericError::OutOfRange { value: -1 });
 ///
-/// // Reject from the right: above the upper bound.
+/// // Reject from the right rule (above the upper bound).
 /// let err_right = Refined::<i32, InRange>::try_new(101).unwrap_err();
-/// assert_eq!(
-///     err_right,
-///     AndError::Right(NumericError::OutOfRange { value: 101 }),
-/// );
+/// assert_eq!(err_right, NumericError::OutOfRange { value: 101 });
 /// ```
 pub struct And<A, B>(PhantomData<(A, B)>);
 
@@ -44,13 +50,21 @@ pub struct And<A, B>(PhantomData<(A, B)>);
 /// output is the result, on `Err` `B::refine` is tried against the
 /// original input.
 ///
+/// Both rules' `Error` types must unify. When both rules reject, the
+/// composition's `Self::Error` is `[E; 2]` — the two errors are
+/// preserved positionally (`[left, right]`) so callers can inspect
+/// either rejection without the composition tree leaking into the
+/// public surface.
+///
 /// # Examples
 ///
 /// ```
 /// use whittle_core::{Or, Refined};
 /// use whittle_core::primitive::{AtLeast, AtMost, NumericError};
 ///
-/// // `value <= 10 OR value >= 100`.
+/// // `value <= 10 OR value >= 100`. Both alternatives produce
+/// // `NumericError`, so the composition's error is
+/// // `[NumericError; 2]`.
 /// type Either = Or<AtMost<10>, AtLeast<100>>;
 ///
 /// // Admit-via-left: 5 passes `AtMost<10>`.
@@ -61,100 +75,38 @@ pub struct And<A, B>(PhantomData<(A, B)>);
 /// let big: Refined<i32, Either> = Refined::try_new(150).unwrap();
 /// assert_eq!(*big.as_inner(), 150);
 ///
-/// // Reject: neither alternative accepts 50.
+/// // Reject: neither alternative accepts 50. Both errors are
+/// // returned in order.
 /// let err = Refined::<i32, Either>::try_new(50).unwrap_err();
-/// assert_eq!(err.left, NumericError::OutOfRange { value: 50 });
-/// assert_eq!(err.right, NumericError::OutOfRange { value: 50 });
+/// assert_eq!(err[0], NumericError::OutOfRange { value: 50 });
+/// assert_eq!(err[1], NumericError::OutOfRange { value: 50 });
 /// ```
 pub struct Or<A, B>(PhantomData<(A, B)>);
 
-/// Error from `And<A, B>`: the side that rejected and its rule's
-/// error value.
-#[derive(Debug, PartialEq, Eq)]
-pub enum AndError<EA, EB> {
-    /// `A::refine` rejected the input.
-    Left(EA),
-    /// `A::refine` accepted, but `B::refine` then rejected.
-    Right(EB),
-}
-
-impl<EA, EB> core::fmt::Display for AndError<EA, EB>
-where
-    EA: core::fmt::Display,
-    EB: core::fmt::Display,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Left(err) => write!(f, "left side: {err}"),
-            Self::Right(err) => write!(f, "right side: {err}"),
-        }
-    }
-}
-
-impl<EA, EB> core::error::Error for AndError<EA, EB>
-where
-    EA: core::error::Error + 'static,
-    EB: core::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Left(err) => Some(err),
-            Self::Right(err) => Some(err),
-        }
-    }
-}
-
-/// Error from `Or<A, B>`: both sides rejected.
-#[derive(Debug, PartialEq, Eq)]
-pub struct OrError<EA, EB> {
-    /// The left rule's error.
-    pub left: EA,
-    /// The right rule's error.
-    pub right: EB,
-}
-
-impl<EA, EB> core::fmt::Display for OrError<EA, EB>
-where
-    EA: core::fmt::Display,
-    EB: core::fmt::Display,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self { left, right } = self;
-        write!(f, "both sides rejected: left {left}, right {right}")
-    }
-}
-
-impl<EA, EB> core::error::Error for OrError<EA, EB>
-where
-    EA: core::error::Error + 'static,
-    EB: core::error::Error + 'static,
-{
-}
-
-impl<T, A, B> Rule<T> for And<A, B>
+impl<T, E, A, B> Rule<T> for And<A, B>
 where
     T: 'static,
-    A: Rule<T>,
-    B: Rule<T>,
+    E: 'static,
+    A: Rule<T, Error = E>,
+    B: Rule<T, Error = E>,
 {
-    type Error = AndError<A::Error, B::Error>;
+    type Error = E;
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
-        match A::refine(raw) {
-            Ok(value) => B::refine(value).map_err(AndError::Right),
-            Err(err) => Err(AndError::Left(err)),
-        }
+        let raw = A::refine(raw)?;
+        B::refine(raw)
     }
 }
 
-impl<T, A, B> Rule<T> for Or<A, B>
+impl<T, E, A, B> Rule<T> for Or<A, B>
 where
     T: 'static + Clone,
-    A: Rule<T>,
-    B: Rule<T>,
+    E: 'static,
+    A: Rule<T, Error = E>,
+    B: Rule<T, Error = E>,
 {
-    type Error = OrError<A::Error, B::Error>;
+    type Error = [E; 2];
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
@@ -167,7 +119,7 @@ where
             Ok(value) => Ok(value),
             Err(left) => match B::refine(snapshot) {
                 Ok(value) => Ok(value),
-                Err(right) => Err(OrError { left, right }),
+                Err(right) => Err([left, right]),
             },
         }
     }
@@ -182,7 +134,7 @@ where
 mod tests {
     use alloc::string::{String, ToString};
 
-    use super::{And, AndError, Or, OrError};
+    use super::{And, Or};
     use crate::primitive::{
         AtLeast, AtMost, EachChar, IdentChar, LenChars, NonZero, NumericError, StringError,
     };
@@ -212,29 +164,35 @@ mod tests {
     }
 
     #[test]
-    fn and_reports_left_failure() {
+    fn and_reports_left_failure_with_shared_error() {
+        // `AtLeast<0>` rejects first; its `NumericError` surfaces
+        // directly because both rules share the same error type.
         let result: Result<Refined<i32, And<AtLeast<0>, AtMost<100>>>, _> =
             Refined::try_new(-1_i32);
         assert_eq!(
             result.unwrap_err(),
-            AndError::Left(NumericError::OutOfRange { value: -1 }),
+            NumericError::OutOfRange { value: -1 },
         );
     }
 
     #[test]
-    fn and_reports_right_failure() {
+    fn and_reports_right_failure_with_shared_error() {
+        // `AtLeast<0>` accepts; `AtMost<100>` then rejects, and its
+        // `NumericError` surfaces directly.
         let result: Result<Refined<i32, And<AtLeast<0>, AtMost<100>>>, _> =
             Refined::try_new(101_i32);
         assert_eq!(
             result.unwrap_err(),
-            AndError::Right(NumericError::OutOfRange { value: 101 }),
+            NumericError::OutOfRange { value: 101 },
         );
     }
 
     #[test]
     fn and_combines_string_primitives() {
         // 1..=10 char identifier-body string — the shape an
-        // `AttributeName` would use.
+        // `AttributeName` would use. Both rules produce
+        // `StringError`, so the composition's error is
+        // `StringError`.
         type Ident = And<LenChars<1, 10>, EachChar<IdentChar>>;
         let ok: Refined<String, Ident> = Refined::try_new("user_42".to_string()).unwrap();
         assert_eq!(ok.as_inner(), "user_42");
@@ -242,13 +200,13 @@ mod tests {
         let bad_len: Result<Refined<String, Ident>, _> = Refined::try_new(String::new());
         assert_eq!(
             bad_len.unwrap_err(),
-            AndError::Left(StringError::CharCountOutOfRange { actual: 0 }),
+            StringError::CharCountOutOfRange { actual: 0 },
         );
 
         let bad_char: Result<Refined<String, Ident>, _> = Refined::try_new("user-42".to_string());
         assert_eq!(
             bad_char.unwrap_err(),
-            AndError::Right(StringError::BadChar { offset: 4 }),
+            StringError::BadChar { offset: 4 },
         );
     }
 
@@ -265,90 +223,57 @@ mod tests {
     }
 
     #[test]
-    fn or_reports_both_failures() {
+    fn or_reports_both_failures_as_array() {
+        // Both rules reject; the composition returns `[E; 2]` with
+        // the left error first, the right error second.
         type Either = Or<AtMost<10>, AtLeast<100>>;
         let result: Result<Refined<i32, Either>, _> = Refined::try_new(50_i32);
-        let err: OrError<NumericError, NumericError> = result.unwrap_err();
-        assert_eq!(err.left, NumericError::OutOfRange { value: 50 });
-        assert_eq!(err.right, NumericError::OutOfRange { value: 50 });
-    }
-
-    #[test]
-    fn and_error_display_and_source_chain() {
-        // Hand-rolled `Display` covers both `Left` / `Right` arms;
-        // `Error::source` chains the inner error for both arms.
-        let left: AndError<NumericError, NumericError> =
-            AndError::Left(NumericError::OutOfRange { value: -1_i128 });
-        let right: AndError<NumericError, NumericError> =
-            AndError::Right(NumericError::OutOfRange { value: 7_i128 });
-        assert_eq!(
-            left.to_string(),
-            "left side: value -1 not in admissible range",
-        );
-        assert_eq!(
-            right.to_string(),
-            "right side: value 7 not in admissible range",
-        );
-        let dyn_left: &dyn core::error::Error = &left;
-        let dyn_right: &dyn core::error::Error = &right;
-        assert!(dyn_left.source().is_some());
-        assert!(dyn_right.source().is_some());
-    }
-
-    #[test]
-    fn or_error_display_has_no_source_chain() {
-        // Hand-rolled `Display` joins both inner errors; `OrError`
-        // intentionally does not expose a source (no single inner
-        // error is "the" cause).
-        let err: OrError<NumericError, NumericError> = OrError {
-            left: NumericError::OutOfRange { value: 50_i128 },
-            right: NumericError::OutOfRange { value: 50_i128 },
-        };
-        assert_eq!(
-            err.to_string(),
-            "both sides rejected: left value 50 not in admissible range, \
-             right value 50 not in admissible range",
-        );
-        let dyn_err: &dyn core::error::Error = &err;
-        assert!(dyn_err.source().is_none());
+        let err: [NumericError; 2] = result.unwrap_err();
+        assert_eq!(err[0], NumericError::OutOfRange { value: 50 });
+        assert_eq!(err[1], NumericError::OutOfRange { value: 50 });
     }
 
     #[test]
     fn refinement_macro_bounded_admits_and_rejects_and() {
         // Macro-generated `And` newtype: admit a mid-range value,
-        // reject above MAX through the right branch.
+        // reject above MAX. The shared error type means the macro's
+        // forwarded error is the rules' flat enum directly.
         let ok = Bounded100::try_new(50_i32).unwrap();
         assert_eq!(*ok.as_inner(), 50_i32);
         let owned: i32 = ok.into_inner();
         assert_eq!(owned, 50_i32);
-        let bad = Bounded100::try_new(101_i32);
-        bad.unwrap_err();
+        let bad = Bounded100::try_new(101_i32).unwrap_err();
+        assert_eq!(bad, NumericError::OutOfRange { value: 101 });
     }
 
     #[test]
     fn refinement_macro_out_of_middle_admits_and_rejects_or() {
         // Macro-generated `Or` newtype: admit on either alternative,
-        // reject when both alternatives fail.
+        // reject when both alternatives fail. The shared error type
+        // means the rejection surfaces as `[NumericError; 2]`.
         let small = OutOfMiddle::try_new(5_i32).unwrap();
         let big = OutOfMiddle::try_new(150_i32).unwrap();
         assert_eq!(*small.as_inner(), 5_i32);
         assert_eq!(*big.as_inner(), 150_i32);
         let owned: i32 = big.into_inner();
         assert_eq!(owned, 150_i32);
-        let bad = OutOfMiddle::try_new(50_i32);
-        bad.unwrap_err();
+        let bad: [NumericError; 2] = OutOfMiddle::try_new(50_i32).unwrap_err();
+        assert_eq!(bad[0], NumericError::OutOfRange { value: 50 });
+        assert_eq!(bad[1], NumericError::OutOfRange { value: 50 });
     }
 
     #[test]
     fn nested_and_for_three_rules() {
-        // Compose three rules through binary nesting.
+        // Compose three rules through binary nesting. All three
+        // rules produce `NumericError`, so the composition's error
+        // is `NumericError` directly.
         type Triple = And<NonZero, And<AtLeast<-10>, AtMost<10>>>;
         let ok: Refined<i32, Triple> = Refined::try_new(5_i32).unwrap();
         assert_eq!(*ok.as_inner(), 5_i32);
         let bad: Result<Refined<i32, Triple>, _> = Refined::try_new(0_i32);
         assert_eq!(
             bad.unwrap_err(),
-            AndError::Left(NumericError::OutOfRange { value: 0 }),
+            NumericError::OutOfRange { value: 0 },
         );
     }
 

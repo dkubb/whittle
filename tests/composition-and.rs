@@ -2,16 +2,18 @@
 //!
 //! `And` is the primitive composition operator. `A::refine` runs
 //! first; on success its (possibly canonicalised) output flows
-//! into `B::refine`. Failures surface as `AndError::Left` or
-//! `AndError::Right`.
+//! into `B::refine`. Both rules must share the same `Rule::Error`
+//! type; that shared type is the composition's `Self::Error`, so
+//! the rules' flat enum surfaces directly with no positional
+//! `Left`/`Right` wrapping.
 //!
-//! **Anti-pattern warning.** `AndError<EA, EB>` is a fine internal
-//! representation, but it is a poor *domain* error type. A
+//! **Newtype pattern.** Even with the shared-error collapse,
 //! `Refined<String, And<LenChars<3, 8>, EachChar<...>>>` exposed as
-//! a public API leaks the composition shape into every caller.
-//! The fix: wrap the composition in a nominal newtype with a flat
-//! domain enum (see the closing test here, and
-//! `flat-domain-error.rs` for the headline pattern).
+//! a public API still leaks the composition shape into every
+//! caller's type signature. The fix is unchanged: wrap the
+//! composition in a nominal newtype with a flat domain enum
+//! (see the closing test here, and `flat-domain-error.rs` for the
+//! headline pattern).
 
 #![expect(
     clippy::unwrap_used,
@@ -22,29 +24,27 @@
 use whittle::primitive::{
     AtLeast, AtMost, EachChar, IdentChar, LenChars, NumericError, StringError,
 };
-use whittle::{And, AndError, Refined, Rule};
+use whittle::{And, Refined, Rule};
 
 #[test]
-fn and_admits_when_both_sides_accept_and_routes_errors_via_left_and_right() {
+fn and_admits_when_both_sides_accept_and_returns_the_rules_shared_error() {
     // `0..=100` expressed via `And`. `Within<0, 100>` would be a
     // better surface API for callers, but the explicit shape is
-    // what you reach for when no library primitive matches.
+    // what you reach for when no library primitive matches. Both
+    // inner rules produce `NumericError`, so the composition's
+    // error is `NumericError` directly.
     type InRange = And<AtLeast<0>, AtMost<100>>;
 
     let ok: Refined<i32, InRange> = Refined::try_new(50).unwrap();
     assert_eq!(*ok.as_inner(), 50);
 
-    // `Left` carries the inner-rule error from the first side.
+    // First rule rejects: the inner-rule error surfaces directly.
     let low = Refined::<i32, InRange>::try_new(-1).unwrap_err();
-    assert_eq!(low, AndError::Left(NumericError::OutOfRange { value: -1 }));
+    assert_eq!(low, NumericError::OutOfRange { value: -1 });
 
-    // `Right` carries the inner-rule error from the second side
-    // — only reached when `Left` already accepted.
+    // Second rule rejects (first accepted): same flat enum.
     let high = Refined::<i32, InRange>::try_new(101).unwrap_err();
-    assert_eq!(
-        high,
-        AndError::Right(NumericError::OutOfRange { value: 101 }),
-    );
+    assert_eq!(high, NumericError::OutOfRange { value: 101 });
 }
 
 #[test]
@@ -61,12 +61,14 @@ fn and_composes_string_length_and_character_predicate() {
 }
 
 #[test]
-fn newtype_flattens_and_error_into_a_flat_domain_enum() {
-    // ─── Flattening the composition into a domain error. ────────
+fn newtype_wraps_and_composition_with_a_flat_domain_enum() {
+    // ─── Domain newtype around an `And` composition. ────────────
     //
-    // The pattern to copy: hide `And` behind a newtype and present
-    // a flat enum. Callers see `LabelError::Length` or
-    // `LabelError::BadChar`, never `AndError::Left | Right`.
+    // Both inner rules now share `StringError`, so the match on
+    // `try_new`'s error is a direct 1:1 mapping into the flat
+    // domain enum. The catch-all is required because `StringError`
+    // is `#[non_exhaustive]`, but the named arms already cover
+    // every variant the composition can emit.
     type Ident = And<LenChars<1, 10>, EachChar<IdentChar>>;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -80,19 +82,13 @@ fn newtype_flattens_and_error_into_a_flat_domain_enum() {
 
     impl Label {
         fn try_new(raw: String) -> Result<Self, LabelError> {
-            Refined::try_new(raw).map(Self).map_err(|err| match err {
-                AndError::Left(StringError::CharCountOutOfRange { actual }) => {
-                    LabelError::Length { actual }
-                }
-                AndError::Right(StringError::BadChar { offset }) => {
-                    LabelError::BadChar { offset }
-                }
-                // Other variants of `StringError` are
-                // unreachable here because `LenChars` and
-                // `EachChar` only emit the two above.
-                AndError::Left(other) | AndError::Right(other) => {
-                    unreachable!("unexpected inner StringError variant: {other:?}")
-                }
+            Refined::try_new(raw).map(Self).map_err(|err: StringError| match err {
+                StringError::CharCountOutOfRange { actual } => LabelError::Length { actual },
+                StringError::BadChar { offset } => LabelError::BadChar { offset },
+                // `StringError` is `#[non_exhaustive]`; the
+                // catch-all is required even though `LenChars` and
+                // `EachChar` only emit the two variants above.
+                other => unreachable!("unexpected inner StringError variant: {other:?}"),
             })
         }
     }

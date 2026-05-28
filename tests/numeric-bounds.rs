@@ -29,7 +29,8 @@ fn within_admits_in_range_and_rejects_out_of_range_with_flat_error() {
     // `Within` is a nominal newtype. Both below-min and above-max
     // surface as the same flat `NumericError::OutOfRange`. The
     // internal `And<AtLeast<MIN>, AtMost<MAX>>` composition is an
-    // implementation detail — callers never see `AndError`.
+    // implementation detail — both inner rules share `NumericError`,
+    // so the composition's error is `NumericError` directly.
     let low_err = Refined::<i32, Within<0, 100>>::try_new(-1).unwrap_err();
     assert_eq!(low_err, NumericError::OutOfRange { value: -1 });
     let high_err = Refined::<i32, Within<0, 100>>::try_new(101).unwrap_err();

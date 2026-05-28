@@ -12,10 +12,10 @@ use crate::rule::Rule;
 /// Inclusive numeric range: `MIN <= value <= MAX`.
 ///
 /// `Within` is a nominal domain newtype. Internally it composes
-/// `AtLeast<MIN>` and `AtMost<MAX>` via `And<...>`, but the error
-/// type is flattened back to the domain's `NumericError` so callers
-/// never see the `AndError` composition machinery — `And`/`Or` are
-/// implementation details, not part of the domain surface.
+/// `AtLeast<MIN>` and `AtMost<MAX>` via `And<...>`. Both inner rules
+/// share `NumericError`, so the composition's error is `NumericError`
+/// directly — the `And`/`Or` machinery is an implementation detail,
+/// not part of the domain surface.
 ///
 /// `MIN > MAX` fails to compile: the `refine` impl carries a
 /// `const { assert!(MIN <= MAX) }` block that fires at
@@ -289,10 +289,9 @@ impl Numeric for isize {
 // ─── Rule impls. ──────────────────────────────────────────────────
 //
 // `Within<MIN, MAX>` is a nominal newtype that delegates to the
-// internal `And<AtLeast<MIN>, AtMost<MAX>>` composition. The
-// composition's `AndError<NumericError, NumericError>` is flattened
-// to the domain's plain `NumericError` so the composition machinery
-// does not leak through the domain surface.
+// internal `And<AtLeast<MIN>, AtMost<MAX>>` composition. Both inner
+// rules share `NumericError`, so the composition's error is
+// `NumericError` directly — no flattening shim is needed.
 
 impl<T, const MIN: i128, const MAX: i128> Rule<T> for Within<MIN, MAX>
 where
@@ -303,12 +302,7 @@ where
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
         const { assert!(MIN <= MAX, "Within: MIN must be <= MAX") };
-        <crate::composition::And<AtLeast<MIN>, AtMost<MAX>> as Rule<T>>::refine(raw).map_err(
-            |err| match err {
-                crate::composition::AndError::Left(inner)
-                | crate::composition::AndError::Right(inner) => inner,
-            },
-        )
+        <crate::composition::And<AtLeast<MIN>, AtMost<MAX>> as Rule<T>>::refine(raw)
     }
 }
 
@@ -429,8 +423,9 @@ mod tests {
 
     #[test]
     fn within_rejects_out_of_range() {
-        // `Within` flattens its internal composition error, so the
-        // domain `NumericError` surfaces directly for both sides.
+        // Both inner rules of `Within`'s composition share
+        // `NumericError`, so the domain error surfaces directly for
+        // both sides — no flattening shim required.
         let neg: Result<Refined<i32, Within<0, 100>>, _> = Refined::try_new(-1_i32);
         assert_eq!(
             neg.unwrap_err(),

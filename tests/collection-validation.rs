@@ -24,7 +24,7 @@ use whittle::primitive::{
     AllItems, AnyOf, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf, NumericError,
     Predicate, Sorted, UniqueByKey, Within,
 };
-use whittle::{And, AndError, Refined};
+use whittle::{And, Refined};
 
 /// Custom `KeyOf<(i32, i32)>`: project the second tuple field.
 enum BySecond {}
@@ -64,8 +64,8 @@ type OrderItemListRule =
 pub struct OrderItemList(Refined<Vec<ItemId>, OrderItemListRule>);
 
 /// Flat domain error. Each variant names one externally observable
-/// failure mode. The nested `AndError<CollectionError, AndError<...>>`
-/// is flattened away inside `try_new`.
+/// failure mode. The rule composition's shared `CollectionError` is
+/// mapped into the domain enum inside `try_new`.
 ///
 /// `thiserror` is one option for the `Display` + `Error` impls;
 /// whittle does not require any specific derive macro — hand-rolled
@@ -84,31 +84,24 @@ pub enum OrderItemListError {
 }
 
 impl OrderItemList {
-    /// Validate `raw` and wrap. The match flattens the nested
-    /// `AndError<CollectionError, AndError<CollectionError,
-    /// CollectionError>>` tree into the flat domain enum.
+    /// Validate `raw` and wrap. Every rule in the composition
+    /// produces `CollectionError`, so the match is a flat 1:1
+    /// mapping into the domain enum — no positional indirection.
     pub fn try_new(raw: Vec<ItemId>) -> Result<Self, OrderItemListError> {
-        Refined::try_new(raw).map(Self).map_err(|err| match err {
-            // Outer `Left` is the `LenItems<1, 100>` arm.
-            AndError::Left(CollectionError::LenOutOfRange { actual }) => {
+        Refined::try_new(raw).map(Self).map_err(|err: CollectionError<_>| match err {
+            CollectionError::LenOutOfRange { actual } => {
                 OrderItemListError::Length { actual }
             }
-            // Outer `Right` is the inner `And<Distinct, Sorted>`.
-            // Its `Left` is `Distinct`; its `Right` is `Sorted`.
-            AndError::Right(AndError::Left(CollectionError::DuplicateKey { index })) => {
+            CollectionError::DuplicateKey { index } => {
                 OrderItemListError::Duplicate { index }
             }
-            AndError::Right(AndError::Right(CollectionError::NotSorted { index })) => {
+            CollectionError::NotSorted { index } => {
                 OrderItemListError::OutOfOrder { index }
             }
             // `CollectionError` is `#[non_exhaustive]`, so the
-            // catch-all is required by the compiler even though
-            // the composition above can only emit the three
-            // variants we just named.
-            AndError::Left(other)
-            | AndError::Right(AndError::Left(other) | AndError::Right(other)) => {
-                unreachable!("unexpected inner CollectionError variant: {other:?}")
-            }
+            // catch-all is required even though the composition
+            // above can only emit the three variants we just named.
+            other => unreachable!("unexpected inner CollectionError variant: {other:?}"),
         })
     }
 
@@ -189,8 +182,8 @@ fn order_item_list_newtype_flattens_composed_collection_error() {
     // The pattern below is the load-bearing one: a *collection*
     // invariant (bounded length, distinct, sorted) gets the same
     // nominal-newtype-plus-flat-error treatment as a scalar
-    // invariant. The composed rule's nested `AndError` tree is an
-    // implementation detail; `OrderItemListError` is the public
+    // invariant. The composed rule's shared `CollectionError` is
+    // an implementation detail; `OrderItemListError` is the public
     // surface.
 
     let ok = OrderItemList::try_new(vec![ItemId(1), ItemId(2), ItemId(5)]).unwrap();

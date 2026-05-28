@@ -2,9 +2,11 @@
 //!
 //! A `FlightCode` is "3 to 8 ASCII alphanumeric characters". The
 //! invariant is naturally a composition (`And<LenChars<3, 8>,
-//! EachChar<AsciiAlphanumeric>>`), but exposing
-//! `AndError<StringError, StringError>` to callers leaks the
-//! composition machinery into every match site.
+//! EachChar<AsciiAlphanumeric>>`). Whittle's composition operators
+//! require both rules to share an `Error` type, so the composition
+//! surfaces `StringError` directly — but exposing the raw
+//! `Refined<String, And<...>>` (or its `StringError`) to callers
+//! still leaks implementation choices the newtype should encapsulate.
 //!
 //! The fix — and the pattern to copy whenever a domain type wraps
 //! a composed rule — is:
@@ -12,13 +14,12 @@
 //! 1. Define a nominal newtype with a private field.
 //! 2. Define a flat domain error enum with one variant per
 //!    distinguishable failure mode.
-//! 3. Hand-write `try_new` that pattern-matches the inner
-//!    `AndError` into the flat domain variants.
+//! 3. Hand-write `try_new` that pattern-matches the rules' shared
+//!    flat enum into the domain variants.
 //!
 //! Callers then see `FlightCodeError::Length` or
-//! `FlightCodeError::BadChar`, never `AndError::Left | Right` and
-//! never the underlying `StringError` variants the implementation
-//! happens to use.
+//! `FlightCodeError::BadChar`, never the underlying `StringError`
+//! variants the implementation happens to use.
 //!
 //! This example uses **`thiserror`** to derive `Display` + `Error`
 //! on the flat domain error — it is the most ergonomic option when
@@ -38,7 +39,7 @@
 use core::error::Error;
 
 use whittle::primitive::{AsciiAlphanumeric, EachChar, LenChars, StringError};
-use whittle::{And, AndError, Refined};
+use whittle::{And, Refined};
 
 /// IATA-ish flight code shape: 3..=8 ASCII alphanumeric chars.
 type FlightCodeRule = And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>;
@@ -49,7 +50,7 @@ type FlightCodeRule = And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>;
 pub struct FlightCode(Refined<String, FlightCodeRule>);
 
 /// Flat domain error. One variant per externally distinguishable
-/// failure mode. Callers match these; the `AndError` shape and the
+/// failure mode. Callers match these; the rule composition and the
 /// underlying `StringError` enum are implementation details.
 ///
 /// `thiserror` is one option for the `Display` + `Error` impls;
@@ -67,24 +68,20 @@ pub enum FlightCodeError {
 }
 
 impl FlightCode {
-    /// Validate `raw` and wrap. The match flattens the
-    /// composition error into the domain enum.
+    /// Validate `raw` and wrap. Both inner rules share
+    /// `StringError`, so the match is a flat 1:1 mapping into the
+    /// domain enum — no positional wrapping.
     pub fn try_new(raw: String) -> Result<Self, FlightCodeError> {
-        Refined::try_new(raw).map(Self).map_err(|err| match err {
-            AndError::Left(StringError::CharCountOutOfRange { actual }) => {
+        Refined::try_new(raw).map(Self).map_err(|err: StringError| match err {
+            StringError::CharCountOutOfRange { actual } => {
                 FlightCodeError::Length { actual }
             }
-            AndError::Right(StringError::BadChar { offset }) => {
-                FlightCodeError::BadChar { offset }
-            }
-            // `StringError` is `#[non_exhaustive]`, so the match
-            // must include a catch-all. The `LenChars` + `EachChar`
-            // composition can only emit the two variants above, so
-            // the catch-all is dead in practice — but the compiler
-            // requires it.
-            AndError::Left(other) | AndError::Right(other) => {
-                unreachable!("unexpected inner StringError: {other:?}")
-            }
+            StringError::BadChar { offset } => FlightCodeError::BadChar { offset },
+            // `StringError` is `#[non_exhaustive]`, so the catch-all
+            // is required. The `LenChars` + `EachChar` composition
+            // can only emit the two variants above, so this arm is
+            // dead in practice — but the compiler requires it.
+            other => unreachable!("unexpected inner StringError: {other:?}"),
         })
     }
 

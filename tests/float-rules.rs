@@ -5,10 +5,11 @@
 //! integer-widening regime, so they have their own primitive set.
 //!
 //! Headline pattern: `Finite` is a nominal newtype with a flat
-//! `FloatError`, exactly like `Within` for integers. Internally
-//! it composes `And<NotNan, NotInfinite>`, but the composition
-//! does not leak — callers see `FloatError::IsNan` or
-//! `FloatError::IsInfinite`, never `AndError`.
+//! `FloatError`, exactly like `Within` for integers. Internally it
+//! composes `And<NotNan, NotInfinite>`; both inner rules share
+//! `FloatError`, so the composition's error is `FloatError`
+//! directly — callers see `FloatError::IsNan` or
+//! `FloatError::IsInfinite`.
 //!
 //! `InClosedRange` takes endpoints as `(numerator, denominator)`
 //! because Rust 2024 does not yet permit `f64` const generics.
@@ -53,8 +54,9 @@ fn not_infinite_admits_nan_and_rejects_infinities() {
 #[test]
 fn finite_admits_finite_values_and_rejects_nan_and_infinities_with_flat_error() {
     // `Finite` is the nominal newtype. Its flat `FloatError`
-    // surfaces directly — no `AndError<FloatError, FloatError>`,
-    // even though the implementation composes `NotNan` + `NotInfinite`.
+    // surfaces directly because both inner rules share the same
+    // error type — no positional `Left`/`Right` wrapping even
+    // though the implementation composes `NotNan` + `NotInfinite`.
     let val: Refined<f64, Finite> = Refined::try_new(1.5).unwrap();
     assert_eq!(*val.as_inner(), 1.5);
     let finite_nan = Refined::<f64, Finite>::try_new(f64::NAN).unwrap_err();

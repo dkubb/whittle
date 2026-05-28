@@ -25,26 +25,29 @@
 /// attribute. See [`Refined`]'s `Deserialize` impl for the full
 /// rationale.
 ///
-/// # Design limit: composed rules and flat errors
+/// # Design limit: composed rules and domain error shape
 ///
 /// The macro's generated `try_new` returns the rule's `Error`
-/// **unchanged**. When the underlying rule is a single primitive
-/// (`NonEmpty`, `Within<MIN, MAX>` — already flattened internally,
-/// `RelativePath`, and so on) the error is a flat domain enum
-/// (`StringError`, `NumericError`, `PathError`) and the macro is
-/// the right tool.
+/// **unchanged**. Whittle's binary composition operators require
+/// both rules to share an `Error` type, so:
 ///
-/// When the underlying rule is `And<...>` or `Or<...>`, the
-/// macro's `try_new` returns the bare `AndError<...>` or
-/// `OrError<...>` tree. That is fine for internal/test types
-/// (where the composition is a private implementation detail), but
-/// it is the documented anti-pattern for **public domain types** —
-/// exposing `AndError` leaks the rule's composition shape into
-/// every caller and freezes the internal structure. For composed
-/// rules at the public surface, hand-write the newtype plus a flat
-/// domain error enum, and have `try_new` match-flatten the
-/// `AndError` / `OrError` tree into named variants. See
-/// `examples/flat-domain-error.rs` for the canonical pattern.
+/// - `And<A, B>` where `A::Error = B::Error = E` produces `E`.
+/// - `Or<A, B>` where `A::Error = B::Error = E` produces `[E; 2]`.
+///
+/// When the inner rule is a single primitive (`NonEmpty`,
+/// `Within<MIN, MAX>`, `RelativePath`, and so on) the error is the
+/// primitive's flat domain enum (`StringError`, `NumericError`,
+/// `PathError`) and the macro is the right tool.
+///
+/// When the inner rule is an `And<...>` chain whose rules share an
+/// error type, the macro is still fine: callers see the shared flat
+/// enum directly.
+///
+/// When the inner rule is `Or<...>`, the macro's `try_new` returns
+/// `[E; 2]`. That is informationally complete but rarely the shape a
+/// public domain API wants; hand-write the newtype and collapse the
+/// pair into a named variant inside `try_new`. See
+/// `tests/composition-or.rs` for the pattern.
 ///
 /// # Syntax
 ///
@@ -220,10 +223,12 @@ mod tests {
 
     #[test]
     fn refinement_macro_copy_rejects_out_of_range() {
+        // Both rules share `NumericError`, so the composition's
+        // error surfaces directly — no positional wrapping.
         let bad = TestBounded::try_new(200_i32);
         assert_eq!(
             bad.unwrap_err(),
-            crate::AndError::Right(crate::primitive::NumericError::OutOfRange { value: 200_i128 },),
+            crate::primitive::NumericError::OutOfRange { value: 200_i128 },
         );
     }
 

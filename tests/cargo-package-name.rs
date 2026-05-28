@@ -37,7 +37,7 @@ use core::error::Error;
 use whittle::primitive::{
     AsciiAlphanumeric, EachChar, FirstChar, IdentDashChar, LenChars, StringError,
 };
-use whittle::{And, AndError, Refined};
+use whittle::{And, Refined};
 
 /// Inner composition rule. `LenChars` runs first so empty input is
 /// rejected before the head/body predicates would vacuously accept
@@ -53,8 +53,8 @@ type CargoPackageRule = And<
 pub struct CargoPackageName(Refined<String, CargoPackageRule>);
 
 /// Flat domain error. One variant per externally distinguishable
-/// failure mode; the underlying `AndError` tree and `StringError`
-/// enum are implementation details.
+/// failure mode; the underlying composition and `StringError` enum
+/// are implementation details.
 ///
 /// `thiserror` is one option for the `Display` + `Error` impls;
 /// whittle does not require any specific derive macro — hand-rolled
@@ -79,27 +79,20 @@ pub enum CargoPackageNameError {
 }
 
 impl CargoPackageName {
-    /// Validate `raw` and wrap. The match flattens the nested
-    /// `AndError` tree into the flat domain enum.
+    /// Validate `raw` and wrap. Every rule in the composition
+    /// produces `StringError`, so the match is a flat 1:1 mapping
+    /// into the domain enum — no positional indirection.
     pub fn try_new(raw: String) -> Result<Self, CargoPackageNameError> {
-        use AndError::{Left, Right};
         use CargoPackageNameError as E;
-        use StringError::{BadChar, BadFirstChar, CharCountOutOfRange};
-        Refined::try_new(raw).map(Self).map_err(|err| match err {
-            // Outer `Left` is the `LenChars<1, 64>` arm. Outer `Right`
-            // is the inner `And<FirstChar, EachChar>`: its `Left` is
-            // the head predicate, its `Right` is the body predicate.
-            Left(CharCountOutOfRange { actual }) => E::Length { actual },
-            Right(Left(BadFirstChar)) => E::BadFirstChar,
-            Right(Right(BadChar { offset })) => E::BadChar { offset },
-            // `StringError` is `#[non_exhaustive]`, so the match
-            // must include a catch-all. The composition above can
-            // only emit the three variants we just named, so the
-            // catch-all is dead in practice — but the compiler
-            // requires it.
-            Left(other) | Right(Left(other) | Right(other)) => {
-                unreachable!("unexpected inner StringError variant: {other:?}")
-            }
+        Refined::try_new(raw).map(Self).map_err(|err: StringError| match err {
+            StringError::CharCountOutOfRange { actual } => E::Length { actual },
+            StringError::BadFirstChar => E::BadFirstChar,
+            StringError::BadChar { offset } => E::BadChar { offset },
+            // `StringError` is `#[non_exhaustive]`, so the catch-all
+            // is required. The composition above can only emit the
+            // three variants we just named, so this arm is dead in
+            // practice — but the compiler requires it.
+            other => unreachable!("unexpected inner StringError variant: {other:?}"),
         })
     }
 

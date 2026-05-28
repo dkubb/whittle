@@ -208,10 +208,10 @@ impl<F: Float> Rule<F> for NotInfinite {
 /// Reject NaN and the two infinities; admit every other float.
 ///
 /// `Finite` is a nominal domain newtype. Internally it composes
-/// `NotNan` and `NotInfinite` via `And<...>`, but the error type
-/// is flattened back to the domain's `FloatError` so callers never
-/// see the `AndError` composition machinery — `And`/`Or` are
-/// implementation details, not part of the domain surface.
+/// `NotNan` and `NotInfinite` via `And<...>`. Both inner rules share
+/// `FloatError`, so the composition's error is `FloatError` directly
+/// — the `And`/`Or` machinery is an implementation detail, not part
+/// of the domain surface.
 ///
 /// # Examples
 ///
@@ -239,12 +239,7 @@ impl<F: Float> Rule<F> for Finite {
 
     #[inline]
     fn refine(raw: F) -> Result<F, Self::Error> {
-        <crate::composition::And<NotNan, NotInfinite> as Rule<F>>::refine(raw).map_err(|err| {
-            match err {
-                crate::composition::AndError::Left(inner)
-                | crate::composition::AndError::Right(inner) => inner,
-            }
-        })
+        <crate::composition::And<NotNan, NotInfinite> as Rule<F>>::refine(raw)
     }
 }
 
@@ -360,9 +355,9 @@ mod tests {
 
     #[test]
     fn finite_rejects_f32_infinity() {
-        // Reaches Float for f32's float_is_infinite arm.
-        // `Finite` flattens its internal `And<NotNan, NotInfinite>`
-        // composition error back to the domain's `FloatError`.
+        // Reaches Float for f32's float_is_infinite arm. Both inner
+        // rules of `Finite`'s `And<NotNan, NotInfinite>` composition
+        // share `FloatError`, so the domain error surfaces directly.
         let result: Result<Refined<f32, Finite>, _> = Refined::try_new(f32::INFINITY);
         assert_eq!(result.unwrap_err(), FloatError::IsInfinite);
     }
@@ -386,8 +381,8 @@ mod tests {
     #[test]
     fn finite_rejects_positive_infinity() {
         let result: Result<Refined<f64, Finite>, _> = Refined::try_new(f64::INFINITY);
-        // `Finite`'s flat error type surfaces the domain rejection
-        // directly, without exposing the composition machinery.
+        // The shared-error composition surfaces the domain
+        // rejection directly, without any positional wrapping.
         assert_eq!(result.unwrap_err(), FloatError::IsInfinite);
     }
 

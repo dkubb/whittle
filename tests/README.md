@@ -62,10 +62,12 @@ features that several tests depend on.
 
 ### Composition
 
-- **`composition-and.rs`** — `And<R1, R2>` and `AndError`. The
-  anti-pattern of leaking `AndError` and the flat-enum fix.
-- **`composition-or.rs`** — `Or<R1, R2>` and `OrError`. Same lesson
-  applied to the alternation operator.
+- **`composition-and.rs`** — `And<R1, R2>` with the rules' shared
+  error type as `Self::Error`. Shows the flat 1:1 mapping into a
+  domain enum via a hand-written `try_new`.
+- **`composition-or.rs`** — `Or<R1, R2>` returning `[E; 2]` when
+  both rules reject. Shows collapsing the pair into a single named
+  domain variant inside `try_new`.
 - **`flat-domain-error.rs`** — the headline pattern: a nominal
   newtype wraps a composed rule and presents a flat domain enum.
 

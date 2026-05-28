@@ -14,5 +14,5 @@ pub mod primitive;
 mod rule;
 pub mod transform;
 
-pub use composition::{And, AndError, Or, OrError};
+pub use composition::{And, Or};
 pub use rule::{Refined, Rule};
