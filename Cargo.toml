@@ -19,20 +19,27 @@ nursery  = { level = "deny", priority = -1 }
 cargo    = { level = "deny", priority = -1 }
 # Hand-selected restriction lints (the full `restriction` group
 # contains contradictory lints meant for case-by-case enabling).
-panic                     = "deny"
-todo                      = "deny"
-unimplemented             = "deny"
-dbg_macro                 = "deny"
-print_stdout              = "deny"
-print_stderr              = "deny"
-mem_forget                = "deny"
-exit                      = "deny"
+panic                           = "deny"
+todo                            = "deny"
+unimplemented                   = "deny"
+dbg_macro                       = "deny"
+print_stdout                    = "deny"
+print_stderr                    = "deny"
+mem_forget                      = "deny"
+exit                            = "deny"
+# Force `#[expect(...)]` over `#[allow(...)]`. `expect` is stricter:
+# it warns when the suppressed lint does not actually fire, catching
+# stale suppressions.
+allow_attributes                = "deny"
+# Every `#[allow]` / `#[expect]` must justify itself with `reason =
+# "..."`. The codebase already follows this convention.
+allow_attributes_without_reason = "deny"
 # Tests use these freely; production code is reviewed at PR time.
-unwrap_used               = "warn"
-expect_used               = "warn"
+unwrap_used                     = "warn"
+expect_used                     = "warn"
 # Cargo lints that don't apply to v0 placeholder packages.
-cargo_common_metadata     = "allow"
-multiple_crate_versions   = "allow"
+cargo_common_metadata           = "allow"
+multiple_crate_versions         = "allow"
 
 [workspace.dependencies]
 proptest    = { version = "1", default-features = false, features = ["std"] }

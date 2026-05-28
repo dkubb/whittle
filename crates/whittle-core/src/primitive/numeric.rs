@@ -395,9 +395,8 @@ where
 const _: PhantomData<()> = PhantomData;
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::disallowed_methods,
     reason = "explicit in test code"
 )]

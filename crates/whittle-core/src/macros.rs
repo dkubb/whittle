@@ -132,9 +132,8 @@ macro_rules! refinement {
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::disallowed_methods,
     reason = "explicit in test code"
 )]

@@ -2,13 +2,13 @@
 // confirm what was demonstrated and `unwrap()` to keep the focus on
 // the API, not error plumbing. The workspace lints would otherwise
 // deny both.
-#![allow(
+#![expect(
     clippy::print_stdout,
     clippy::unwrap_used,
     clippy::disallowed_methods,
     clippy::missing_errors_doc,
-    clippy::items_after_statements,
-    clippy::must_use_candidate
+    clippy::must_use_candidate,
+    reason = "interactive demonstration: println!, unwrap, and items_after_statements keep the focus on the API"
 )]
 
 //! Airline booking domain: three refined types and an itinerary.

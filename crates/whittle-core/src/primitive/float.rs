@@ -84,7 +84,7 @@ impl Float for f32 {
         self.is_infinite()
     }
     #[inline]
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         reason = "endpoints intended to be small integers"
     )]
@@ -103,7 +103,7 @@ impl Float for f64 {
         self.is_infinite()
     }
     #[inline]
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         reason = "endpoints intended to be small integers"
     )]
@@ -316,9 +316,8 @@ impl<F: Float, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::disallowed_methods,
     clippy::float_cmp,
     reason = "explicit in test code"
