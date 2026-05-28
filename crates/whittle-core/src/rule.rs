@@ -304,10 +304,14 @@ where
 // ─── Proptest `ArbitraryRule` + `Arbitrary`. Each rule supplies a
 //      strategy that emits admissible-by-construction values; the
 //      blanket `Arbitrary for Refined<T, R>` impl maps that strategy
-//      through `Refined::try_new` to produce the carrier. There is
-//      no rejection sampling: a rule that admits a sparse region of
-//      `T` (`Within<0, 100>` over `i32`) is just as cheap to
-//      generate as one whose admissible region is dense (`NonZero`).
+//      through `Refined::try_new` to produce the carrier. The
+//      blanket impl itself does no rejection sampling — it maps the
+//      rule's strategy through `try_new` and panics on contract
+//      violation. Composition strategies (e.g., `And<A, B>`) may
+//      filter their operands' strategies; see the relevant impl
+//      docs. For the primitive rules a sparse admissible region
+//      (`Within<0, 100>` over `i32`) is as cheap to generate as a
+//      dense one (`NonZero`).
 //
 //      `ArbitraryRule` carries the soundness obligation: a rule's
 //      strategy must yield only values that `R::refine` accepts. The
@@ -318,11 +322,12 @@ where
 /// `T` values for `proptest`.
 ///
 /// `Refined<T, R>`'s `Arbitrary` impl drives `arbitrary_strategy`
-/// directly. There is no rejection sampling — implementers must
-/// ensure every value the strategy emits is accepted by
-/// `R::refine`. The blanket impl `.expect("…")`s on the refine
-/// step so that a strategy bug surfaces as a panic in property
-/// tests, not as silently dropped samples.
+/// directly. Implementers must ensure every value the strategy
+/// emits is accepted by `R::refine`; the blanket `Arbitrary` impl
+/// panics on contract violation, so a strategy bug surfaces as a
+/// panic in property tests rather than as silently dropped samples.
+/// (Composition rules like `And<A, B>` may filter their operands'
+/// strategies; primitive rules must be constructive.)
 ///
 /// Available behind the `proptest` feature.
 #[cfg(feature = "proptest")]
