@@ -47,7 +47,10 @@ impl Predicate<i32> for IsZero {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ItemId(pub u32);
 
-/// Composed collection rule:
+/// Nominal domain newtype. The inner `Refined<...>` is private,
+/// so the only construction path is `try_new`. The composed
+/// collection rule is anonymous and lives inside the `Refined<T, ...>`
+/// field:
 /// - `LenItems<1, 100>` — non-empty, at most 100 items.
 /// - `Distinct<ItemId>` — no duplicate IDs.
 /// - `Sorted<ItemId, IdentityKey<ItemId>>` — strictly ascending
@@ -55,13 +58,17 @@ pub struct ItemId(pub u32);
 ///
 /// The order is deliberate: length first, distinctness next,
 /// ordering last. Each step assumes the previous step's invariant.
-type OrderItemListRule =
-    And<LenItems<1, 100>, And<Distinct<ItemId>, Sorted<ItemId, IdentityKey<ItemId>>>>;
-
-/// Nominal domain newtype. The inner `Refined<...>` is private,
-/// so the only construction path is `try_new`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrderItemList(Refined<Vec<ItemId>, OrderItemListRule>);
+#[expect(
+    clippy::type_complexity,
+    reason = "the composition is intentionally inlined and anonymous; naming it would invite the leaky `pub type` anti-pattern"
+)]
+pub struct OrderItemList(
+    Refined<
+        Vec<ItemId>,
+        And<LenItems<1, 100>, And<Distinct<ItemId>, Sorted<ItemId, IdentityKey<ItemId>>>>,
+    >,
+);
 
 /// Flat domain error. Each variant names one externally observable
 /// failure mode. The rule composition's shared `CollectionError` is
@@ -88,21 +95,17 @@ impl OrderItemList {
     /// produces `CollectionError`, so the match is a flat 1:1
     /// mapping into the domain enum — no positional indirection.
     pub fn try_new(raw: Vec<ItemId>) -> Result<Self, OrderItemListError> {
-        Refined::try_new(raw).map(Self).map_err(|err: CollectionError<_>| match err {
-            CollectionError::LenOutOfRange { actual } => {
-                OrderItemListError::Length { actual }
-            }
-            CollectionError::DuplicateKey { index } => {
-                OrderItemListError::Duplicate { index }
-            }
-            CollectionError::NotSorted { index } => {
-                OrderItemListError::OutOfOrder { index }
-            }
-            // `CollectionError` is `#[non_exhaustive]`, so the
-            // catch-all is required even though the composition
-            // above can only emit the three variants we just named.
-            other => unreachable!("unexpected inner CollectionError variant: {other:?}"),
-        })
+        Refined::try_new(raw)
+            .map(Self)
+            .map_err(|err: CollectionError<_>| match err {
+                CollectionError::LenOutOfRange { actual } => OrderItemListError::Length { actual },
+                CollectionError::DuplicateKey { index } => OrderItemListError::Duplicate { index },
+                CollectionError::NotSorted { index } => OrderItemListError::OutOfOrder { index },
+                // `CollectionError` is `#[non_exhaustive]`, so the
+                // catch-all is required even though the composition
+                // above can only emit the three variants we just named.
+                other => unreachable!("unexpected inner CollectionError variant: {other:?}"),
+            })
     }
 
     /// Borrow the inner vector.
@@ -124,8 +127,7 @@ fn all_items_lifts_item_rule_and_carries_index_with_source_error() {
     // `AllItems<R>` lifts an item-level rule to the collection.
     // `Within<0, 100>` is nominal, so its flat `NumericError` is
     // what the collection's `BadItem` carries as `source`.
-    let bad =
-        Refined::<Vec<i32>, AllItems<Within<0, 100>>>::try_new(vec![0, 50, 101]).unwrap_err();
+    let bad = Refined::<Vec<i32>, AllItems<Within<0, 100>>>::try_new(vec![0, 50, 101]).unwrap_err();
     assert_eq!(
         bad,
         CollectionError::BadItem {
@@ -192,11 +194,9 @@ fn order_item_list_newtype_flattens_composed_collection_error() {
     let too_short = OrderItemList::try_new(vec![]).unwrap_err();
     assert_eq!(too_short, OrderItemListError::Length { actual: 0 });
 
-    let duplicate =
-        OrderItemList::try_new(vec![ItemId(1), ItemId(2), ItemId(2)]).unwrap_err();
+    let duplicate = OrderItemList::try_new(vec![ItemId(1), ItemId(2), ItemId(2)]).unwrap_err();
     assert_eq!(duplicate, OrderItemListError::Duplicate { index: 2 });
 
-    let out_of_order =
-        OrderItemList::try_new(vec![ItemId(1), ItemId(5), ItemId(2)]).unwrap_err();
+    let out_of_order = OrderItemList::try_new(vec![ItemId(1), ItemId(5), ItemId(2)]).unwrap_err();
     assert_eq!(out_of_order, OrderItemListError::OutOfOrder { index: 2 });
 }

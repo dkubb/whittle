@@ -22,8 +22,7 @@ use whittle::primitive::{PathError, RelativePath};
 #[test]
 fn relative_path_admits_slash_separated_relative_paths() {
     // Admit: a simple slash-separated relative path.
-    let path: Refined<String, RelativePath> =
-        Refined::try_new("src/main.rs".to_string()).unwrap();
+    let path: Refined<String, RelativePath> = Refined::try_new("src/main.rs".to_string()).unwrap();
     assert_eq!(path.as_inner(), "src/main.rs");
 
     // Admit: dotfile segments and single-segment paths.
@@ -40,13 +39,11 @@ fn relative_path_rejects_empty_input() {
 #[test]
 fn relative_path_rejects_absolute_unix_and_windows_paths() {
     // Reject: absolute Unix path.
-    let abs_unix =
-        Refined::<String, RelativePath>::try_new("/etc/passwd".to_string()).unwrap_err();
+    let abs_unix = Refined::<String, RelativePath>::try_new("/etc/passwd".to_string()).unwrap_err();
     assert_eq!(abs_unix, PathError::Absolute);
 
     // Reject: Windows drive-letter prefix is also `Absolute`.
-    let abs_win =
-        Refined::<String, RelativePath>::try_new("C:/Users/x".to_string()).unwrap_err();
+    let abs_win = Refined::<String, RelativePath>::try_new("C:/Users/x".to_string()).unwrap_err();
     assert_eq!(abs_win, PathError::Absolute);
 }
 
@@ -54,8 +51,7 @@ fn relative_path_rejects_absolute_unix_and_windows_paths() {
 fn relative_path_rejects_parent_traversal_with_segment_index() {
     // Reject: parent-traversal segment. The index pinpoints the
     // offending segment after splitting on `/`.
-    let traverse =
-        Refined::<String, RelativePath>::try_new("src/../etc".to_string()).unwrap_err();
+    let traverse = Refined::<String, RelativePath>::try_new("src/../etc".to_string()).unwrap_err();
     assert_eq!(traverse, PathError::ParentTraversal { index: 1 });
 }
 

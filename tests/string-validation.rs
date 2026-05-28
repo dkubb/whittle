@@ -62,7 +62,8 @@ fn first_char_checks_only_the_head_and_is_vacuous_on_empty_input() {
     // `FirstChar<P>` only inspects the head; the empty string is
     // vacuously admissible. Compose with `LenChars<1, MAX>` when
     // you want to reject empty.
-    let head: Refined<String, FirstChar<IdentStart>> = Refined::try_new("name".to_string()).unwrap();
+    let head: Refined<String, FirstChar<IdentStart>> =
+        Refined::try_new("name".to_string()).unwrap();
     assert_eq!(head.as_inner(), "name");
     let bad_head =
         Refined::<String, FirstChar<IdentStart>>::try_new("1abc".to_string()).unwrap_err();

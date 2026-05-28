@@ -190,8 +190,7 @@ mod tests {
     fn relative_path_admits_segment_that_starts_with_dot() {
         // `.git`, `.hidden`, etc. are valid relative segments — only
         // the bare `..` segment is forbidden.
-        let r: Refined<String, RelativePath> =
-            Refined::try_new(".git/HEAD".to_string()).unwrap();
+        let r: Refined<String, RelativePath> = Refined::try_new(".git/HEAD".to_string()).unwrap();
         assert_eq!(r.as_inner(), ".git/HEAD");
     }
 
@@ -227,7 +226,8 @@ mod tests {
     #[test]
     fn relative_path_rejects_bare_windows_drive() {
         // No following separator: still drive-anchored on Windows.
-        let result: Result<Refined<String, RelativePath>, _> = Refined::try_new("c:foo".to_string());
+        let result: Result<Refined<String, RelativePath>, _> =
+            Refined::try_new("c:foo".to_string());
         assert_eq!(result.unwrap_err(), PathError::Absolute);
     }
 
@@ -242,20 +242,14 @@ mod tests {
     fn relative_path_rejects_parent_traversal_at_head() {
         let result: Result<Refined<String, RelativePath>, _> =
             Refined::try_new("../escape".to_string());
-        assert_eq!(
-            result.unwrap_err(),
-            PathError::ParentTraversal { index: 0 }
-        );
+        assert_eq!(result.unwrap_err(), PathError::ParentTraversal { index: 0 });
     }
 
     #[test]
     fn relative_path_rejects_parent_traversal_deep() {
         let result: Result<Refined<String, RelativePath>, _> =
             Refined::try_new("src/../etc".to_string());
-        assert_eq!(
-            result.unwrap_err(),
-            PathError::ParentTraversal { index: 1 }
-        );
+        assert_eq!(result.unwrap_err(), PathError::ParentTraversal { index: 1 });
     }
 
     #[test]
@@ -268,8 +262,7 @@ mod tests {
     #[test]
     fn relative_path_rejects_trailing_slash() {
         // Trailing slash yields an empty final segment.
-        let result: Result<Refined<String, RelativePath>, _> =
-            Refined::try_new("src/".to_string());
+        let result: Result<Refined<String, RelativePath>, _> = Refined::try_new("src/".to_string());
         assert_eq!(result.unwrap_err(), PathError::EmptySegment { index: 1 });
     }
 
@@ -297,8 +290,7 @@ mod tests {
         // A colon mid-segment is not a Windows drive prefix.
         // (The library is portable and doesn't try to model Windows
         // device-name semantics here.)
-        let r: Refined<String, RelativePath> =
-            Refined::try_new("foo:bar/baz".to_string()).unwrap();
+        let r: Refined<String, RelativePath> = Refined::try_new("foo:bar/baz".to_string()).unwrap();
         assert_eq!(r.as_inner(), "foo:bar/baz");
     }
 
@@ -308,8 +300,7 @@ mod tests {
         // this is *not* a Windows drive prefix. Exercises the false
         // arm of the `letter.is_ascii_alphabetic()` guard in
         // `is_windows_drive_prefix`.
-        let r: Refined<String, RelativePath> =
-            Refined::try_new("1:foo".to_string()).unwrap();
+        let r: Refined<String, RelativePath> = Refined::try_new("1:foo".to_string()).unwrap();
         assert_eq!(r.as_inner(), "1:foo");
     }
 

@@ -82,14 +82,16 @@ fn newtype_wraps_and_composition_with_a_flat_domain_enum() {
 
     impl Label {
         fn try_new(raw: String) -> Result<Self, LabelError> {
-            Refined::try_new(raw).map(Self).map_err(|err: StringError| match err {
-                StringError::CharCountOutOfRange { actual } => LabelError::Length { actual },
-                StringError::BadChar { offset } => LabelError::BadChar { offset },
-                // `StringError` is `#[non_exhaustive]`; the
-                // catch-all is required even though `LenChars` and
-                // `EachChar` only emit the two variants above.
-                other => unreachable!("unexpected inner StringError variant: {other:?}"),
-            })
+            Refined::try_new(raw)
+                .map(Self)
+                .map_err(|err: StringError| match err {
+                    StringError::CharCountOutOfRange { actual } => LabelError::Length { actual },
+                    StringError::BadChar { offset } => LabelError::BadChar { offset },
+                    // `StringError` is `#[non_exhaustive]`; the
+                    // catch-all is required even though `LenChars` and
+                    // `EachChar` only emit the two variants above.
+                    other => unreachable!("unexpected inner StringError variant: {other:?}"),
+                })
         }
     }
 

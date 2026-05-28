@@ -13,11 +13,11 @@ pub use collection::{
 pub use float::{Finite, Float, FloatError, InClosedRange, NotInfinite, NotNan};
 pub use numeric::{AtLeast, AtMost, Negative, NonZero, Numeric, NumericError, Positive, Within};
 pub use path::{PathError, RelativePath};
-#[cfg(feature = "hex")]
-pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
 pub use string::{
     AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart,
     LenBytes, LenChars, NonControl, NonEmpty, StringError,
 };
+#[cfg(feature = "hex")]
+pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
 #[cfg(feature = "unicode")]
 pub use string::{PrintableLine, PrintableMultiline};

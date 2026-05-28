@@ -42,8 +42,7 @@ fn hex_fixed_lower_rejects_uppercase_and_admits_lowercase_verbatim() {
 
     // The strict rule admits an all-lowercase input verbatim.
     let lower_in = MIXED.to_ascii_lowercase();
-    let strict_ok: Refined<String, HexFixedLower<40>> =
-        Refined::try_new(lower_in.clone()).unwrap();
+    let strict_ok: Refined<String, HexFixedLower<40>> = Refined::try_new(lower_in.clone()).unwrap();
     assert_eq!(strict_ok.as_inner(), &lower_in);
 }
 
@@ -66,7 +65,6 @@ fn hex_fixed_normalized_admits_mixed_case_and_canonicalises_to_lowercase() {
 
     // Idempotent: feeding the canonical form back through produces
     // the same value.
-    let again: Refined<String, HexFixedNormalized<40>> =
-        Refined::try_new(lower_in).unwrap();
+    let again: Refined<String, HexFixedNormalized<40>> = Refined::try_new(lower_in).unwrap();
     assert_eq!(again.as_inner(), normalized.as_inner());
 }

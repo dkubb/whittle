@@ -215,8 +215,11 @@ pub type FlightNumberError = StringError;
 Pattern:
 
 ```rust
-// Public surface: nominal type + flat error enum.
-pub struct FlightNumber(Refined<String, FlightNumberRule>);
+// Public surface: nominal type + flat error enum. The inner
+// composition is anonymous — only `FlightNumber` is named.
+pub struct FlightNumber(
+    Refined<String, And<LenChars<3, 7>, EachChar<AsciiAlphanumeric>>>,
+);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FlightNumberError {

@@ -169,10 +169,7 @@ mod tests {
         // directly because both rules share the same error type.
         let result: Result<Refined<i32, And<AtLeast<0>, AtMost<100>>>, _> =
             Refined::try_new(-1_i32);
-        assert_eq!(
-            result.unwrap_err(),
-            NumericError::OutOfRange { value: -1 },
-        );
+        assert_eq!(result.unwrap_err(), NumericError::OutOfRange { value: -1 },);
     }
 
     #[test]
@@ -181,10 +178,7 @@ mod tests {
         // `NumericError` surfaces directly.
         let result: Result<Refined<i32, And<AtLeast<0>, AtMost<100>>>, _> =
             Refined::try_new(101_i32);
-        assert_eq!(
-            result.unwrap_err(),
-            NumericError::OutOfRange { value: 101 },
-        );
+        assert_eq!(result.unwrap_err(), NumericError::OutOfRange { value: 101 },);
     }
 
     #[test]
@@ -204,10 +198,7 @@ mod tests {
         );
 
         let bad_char: Result<Refined<String, Ident>, _> = Refined::try_new("user-42".to_string());
-        assert_eq!(
-            bad_char.unwrap_err(),
-            StringError::BadChar { offset: 4 },
-        );
+        assert_eq!(bad_char.unwrap_err(), StringError::BadChar { offset: 4 },);
     }
 
     #[test]
@@ -271,10 +262,7 @@ mod tests {
         let ok: Refined<i32, Triple> = Refined::try_new(5_i32).unwrap();
         assert_eq!(*ok.as_inner(), 5_i32);
         let bad: Result<Refined<i32, Triple>, _> = Refined::try_new(0_i32);
-        assert_eq!(
-            bad.unwrap_err(),
-            NumericError::OutOfRange { value: 0 },
-        );
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 0 },);
     }
 
     proptest::proptest! {

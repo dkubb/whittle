@@ -228,8 +228,7 @@ mod tests {
 
     #[test]
     fn trim_removes_whitespace() {
-        let r: Refined<String, Trim<NonEmpty>> =
-            Refined::try_new("  hello  ".to_string()).unwrap();
+        let r: Refined<String, Trim<NonEmpty>> = Refined::try_new("  hello  ".to_string()).unwrap();
         assert_eq!(r.as_inner(), "hello");
     }
 
@@ -237,8 +236,7 @@ mod tests {
     fn trim_then_validate_rejects_empty_after_trim() {
         // Only whitespace: empty after trimming, so `NonEmpty`
         // rejects the canonical form.
-        let bad: Result<Refined<String, Trim<NonEmpty>>, _> =
-            Refined::try_new("   ".to_string());
+        let bad: Result<Refined<String, Trim<NonEmpty>>, _> = Refined::try_new("   ".to_string());
         bad.unwrap_err();
     }
 

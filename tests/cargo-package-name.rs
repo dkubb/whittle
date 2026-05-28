@@ -39,18 +39,23 @@ use whittle::primitive::{
 };
 use whittle::{And, Refined};
 
-/// Inner composition rule. `LenChars` runs first so empty input is
-/// rejected before the head/body predicates would vacuously accept
-/// it.
-type CargoPackageRule = And<
-    LenChars<1, 64>,
-    And<FirstChar<AsciiAlphanumeric>, EachChar<IdentDashChar>>,
->;
-
-/// Nominal Cargo-package-name newtype. The inner `Refined<...>` is
-/// private so callers cannot bypass `try_new`.
+/// Nominal Cargo-package-name newtype.
+///
+/// The inner `Refined<...>` is private so callers cannot bypass
+/// `try_new`. The inner rule composition is anonymous: `LenChars`
+/// runs first so empty input is rejected before the head/body
+/// predicates would vacuously accept it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CargoPackageName(Refined<String, CargoPackageRule>);
+#[expect(
+    clippy::type_complexity,
+    reason = "the composition is intentionally inlined and anonymous; naming it would invite the leaky `pub type` anti-pattern"
+)]
+pub struct CargoPackageName(
+    Refined<
+        String,
+        And<LenChars<1, 64>, And<FirstChar<AsciiAlphanumeric>, EachChar<IdentDashChar>>>,
+    >,
+);
 
 /// Flat domain error. One variant per externally distinguishable
 /// failure mode; the underlying composition and `StringError` enum
@@ -84,16 +89,18 @@ impl CargoPackageName {
     /// into the domain enum — no positional indirection.
     pub fn try_new(raw: String) -> Result<Self, CargoPackageNameError> {
         use CargoPackageNameError as E;
-        Refined::try_new(raw).map(Self).map_err(|err: StringError| match err {
-            StringError::CharCountOutOfRange { actual } => E::Length { actual },
-            StringError::BadFirstChar => E::BadFirstChar,
-            StringError::BadChar { offset } => E::BadChar { offset },
-            // `StringError` is `#[non_exhaustive]`, so the catch-all
-            // is required. The composition above can only emit the
-            // three variants we just named, so this arm is dead in
-            // practice — but the compiler requires it.
-            other => unreachable!("unexpected inner StringError variant: {other:?}"),
-        })
+        Refined::try_new(raw)
+            .map(Self)
+            .map_err(|err: StringError| match err {
+                StringError::CharCountOutOfRange { actual } => E::Length { actual },
+                StringError::BadFirstChar => E::BadFirstChar,
+                StringError::BadChar { offset } => E::BadChar { offset },
+                // `StringError` is `#[non_exhaustive]`, so the catch-all
+                // is required. The composition above can only emit the
+                // three variants we just named, so this arm is dead in
+                // practice — but the compiler requires it.
+                other => unreachable!("unexpected inner StringError variant: {other:?}"),
+            })
     }
 
     /// Borrow the inner string.

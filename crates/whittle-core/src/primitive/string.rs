@@ -604,8 +604,7 @@ pub struct HexFixedAny<const LEN: usize>;
 /// # }
 /// ```
 #[cfg(feature = "hex")]
-pub type HexFixedNormalized<const LEN: usize> =
-    crate::transform::AsciiLowercase<HexFixedAny<LEN>>;
+pub type HexFixedNormalized<const LEN: usize> = crate::transform::AsciiLowercase<HexFixedAny<LEN>>;
 
 // ─── Rule impls. ──────────────────────────────────────────────────
 
@@ -1087,8 +1086,7 @@ mod tests {
     #[test]
     fn hex_fixed_lower_rejects_wrong_length() {
         use super::HexFixedLower;
-        let bad: Result<Refined<String, HexFixedLower<40>>, _> =
-            Refined::try_new("a".repeat(39));
+        let bad: Result<Refined<String, HexFixedLower<40>>, _> = Refined::try_new("a".repeat(39));
         assert_eq!(bad.unwrap_err(), StringError::BadHexLength { actual: 39 });
     }
 
@@ -1098,7 +1096,8 @@ mod tests {
         // Lowercase-only variant: an uppercase character is rejected
         // even when the length is correct.
         use super::HexFixedLower;
-        let bad: Result<Refined<String, HexFixedLower<4>>, _> = Refined::try_new("0aFB".to_string());
+        let bad: Result<Refined<String, HexFixedLower<4>>, _> =
+            Refined::try_new("0aFB".to_string());
         assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 2 });
     }
 
@@ -1106,7 +1105,8 @@ mod tests {
     #[test]
     fn hex_fixed_lower_rejects_non_hex() {
         use super::HexFixedLower;
-        let bad: Result<Refined<String, HexFixedLower<4>>, _> = Refined::try_new("0a1g".to_string());
+        let bad: Result<Refined<String, HexFixedLower<4>>, _> =
+            Refined::try_new("0a1g".to_string());
         assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 3 });
     }
 

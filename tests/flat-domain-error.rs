@@ -41,13 +41,14 @@ use core::error::Error;
 use whittle::primitive::{AsciiAlphanumeric, EachChar, LenChars, StringError};
 use whittle::{And, Refined};
 
-/// IATA-ish flight code shape: 3..=8 ASCII alphanumeric chars.
-type FlightCodeRule = And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>;
-
-/// The nominal newtype. The inner `Refined<...>` is private so
-/// callers cannot bypass `try_new`.
+/// The nominal newtype.
+///
+/// The inner `Refined<...>` is private so callers cannot bypass
+/// `try_new`. The composition (IATA-ish flight code shape: 3..=8
+/// ASCII alphanumeric chars) is anonymous and lives inside the
+/// `Refined<T, ...>` field.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FlightCode(Refined<String, FlightCodeRule>);
+pub struct FlightCode(Refined<String, And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>>);
 
 /// Flat domain error. One variant per externally distinguishable
 /// failure mode. Callers match these; the rule composition and the
@@ -72,17 +73,17 @@ impl FlightCode {
     /// `StringError`, so the match is a flat 1:1 mapping into the
     /// domain enum — no positional wrapping.
     pub fn try_new(raw: String) -> Result<Self, FlightCodeError> {
-        Refined::try_new(raw).map(Self).map_err(|err: StringError| match err {
-            StringError::CharCountOutOfRange { actual } => {
-                FlightCodeError::Length { actual }
-            }
-            StringError::BadChar { offset } => FlightCodeError::BadChar { offset },
-            // `StringError` is `#[non_exhaustive]`, so the catch-all
-            // is required. The `LenChars` + `EachChar` composition
-            // can only emit the two variants above, so this arm is
-            // dead in practice — but the compiler requires it.
-            other => unreachable!("unexpected inner StringError: {other:?}"),
-        })
+        Refined::try_new(raw)
+            .map(Self)
+            .map_err(|err: StringError| match err {
+                StringError::CharCountOutOfRange { actual } => FlightCodeError::Length { actual },
+                StringError::BadChar { offset } => FlightCodeError::BadChar { offset },
+                // `StringError` is `#[non_exhaustive]`, so the catch-all
+                // is required. The `LenChars` + `EachChar` composition
+                // can only emit the two variants above, so this arm is
+                // dead in practice — but the compiler requires it.
+                other => unreachable!("unexpected inner StringError: {other:?}"),
+            })
     }
 
     /// Borrow the inner string.
