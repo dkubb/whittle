@@ -451,11 +451,16 @@ covering each pattern. Each file is a self-contained Cargo integration
 test binary with a `//!` doc comment explaining what it shows and one or
 more `#[test]` functions whose bodies are the demonstration. Run them
 with `cargo nextest run --workspace --all-features` or
-`cargo test --tests --all-features`. (If absent, the kernel's own
-doctests in `crates/whittle-core/src/primitive/` are the next-best
-reading list: every primitive includes admit-and-reject doctests, and
-the `Within` / `Finite` newtype-hiding-composition pattern is
-illustrated by their own implementations.)
+`cargo test --tests --all-features`. Bare `cargo test` and
+`cargo nextest run` also pass: feature-gated integration tests
+(`serde-roundtrip`, `proptest-arbitrary`, `hex-and-normalization`) are
+declared with `required-features` in the root `Cargo.toml`, so Cargo
+skips them when the relevant feature is off. Nextest's profile defaults
+live in `.config/nextest.toml`. (If absent, the kernel's own doctests in
+`crates/whittle-core/src/primitive/` are the next-best reading list:
+every primitive includes admit-and-reject doctests, and the
+`Within` / `Finite` newtype-hiding-composition pattern is illustrated by
+their own implementations.)
 
 ## Validation Checklist
 

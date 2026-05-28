@@ -1,0 +1,5 @@
+[profile.default]
+# Only surface failing tests; passing tests stay quiet.
+status-level        = "fail"
+final-status-level  = "fail"
+success-output      = "never"
