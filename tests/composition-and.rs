@@ -26,6 +26,10 @@ use whittle::primitive::{
 };
 use whittle::{And, Refined, Rule};
 
+// Shared between the two `and_composes_…` / `newtype_wraps_…`
+// tests below: a 1..=10 char ident-body composition.
+type Ident = And<LenChars<1, 10>, EachChar<IdentChar>>;
+
 #[test]
 fn and_admits_when_both_sides_accept_and_returns_the_rules_shared_error() {
     // `0..=100` expressed via `And`. `Within<0, 100>` would be a
@@ -50,7 +54,6 @@ fn and_admits_when_both_sides_accept_and_returns_the_rules_shared_error() {
 #[test]
 fn and_composes_string_length_and_character_predicate() {
     // The same shape for strings: 1..=10 char identifier-body.
-    type Ident = And<LenChars<1, 10>, EachChar<IdentChar>>;
     let id: Refined<String, Ident> = Refined::try_new("user_42".to_string()).unwrap();
     assert_eq!(id.as_inner(), "user_42");
 
@@ -69,8 +72,6 @@ fn newtype_wraps_and_composition_with_a_flat_domain_enum() {
     // domain enum. The catch-all is required because `StringError`
     // is `#[non_exhaustive]`, but the named arms already cover
     // every variant the composition can emit.
-    type Ident = And<LenChars<1, 10>, EachChar<IdentChar>>;
-
     #[derive(Debug, PartialEq, Eq)]
     enum LabelError {
         Length { actual: usize },
