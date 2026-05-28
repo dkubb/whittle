@@ -124,7 +124,7 @@ pub struct EachChar<P>(PhantomData<P>);
 /// let err = Refined::<String, FirstChar<IdentStart>>::try_new(
 ///     "1abc".to_string(),
 /// ).unwrap_err();
-/// assert_eq!(err, StringError::BadChar { offset: 0 });
+/// assert_eq!(err, StringError::BadFirstChar);
 /// ```
 pub struct FirstChar<P>(PhantomData<P>);
 
@@ -161,6 +161,12 @@ pub enum StringError {
         offset: usize,
     },
 
+    /// `FirstChar<P>` rejected the leading character. Distinct from
+    /// `BadChar` so callers can flatten head-versus-body failures
+    /// without pattern-matching on `offset: 0` as a sentinel; the
+    /// offset is always 0 and carries no information.
+    BadFirstChar,
+
     /// `HexFixedLower<LEN>` / `HexFixedAny<LEN>` saw a string
     /// whose length is not the configured `LEN`. Distinct from
     /// `CharCountOutOfRange` to preserve the fixed-length /
@@ -184,6 +190,7 @@ impl core::fmt::Display for StringError {
             Self::BadChar { offset } => {
                 write!(f, "character at byte offset {offset} not admissible")
             }
+            Self::BadFirstChar => f.write_str("first character not admissible"),
             Self::BadHexLength { actual } => write!(
                 f,
                 "hex string length {actual} does not match expected length",
@@ -664,7 +671,7 @@ impl<P: CharPredicate> Rule<String> for FirstChar<P> {
         if let Some(ch) = raw.chars().next()
             && !P::test(ch)
         {
-            return Err(StringError::BadChar { offset: 0 });
+            return Err(StringError::BadFirstChar);
         }
         Ok(raw)
     }
@@ -897,7 +904,7 @@ mod tests {
     fn first_char_rejects_inadmissible_head() {
         let result: Result<Refined<String, FirstChar<IdentStart>>, _> =
             Refined::try_new("1abc".to_string());
-        assert_eq!(result.unwrap_err(), StringError::BadChar { offset: 0 },);
+        assert_eq!(result.unwrap_err(), StringError::BadFirstChar);
     }
 
     #[test]
@@ -1236,6 +1243,10 @@ mod tests {
         assert_eq!(
             StringError::BadChar { offset: 4 }.to_string(),
             "character at byte offset 4 not admissible",
+        );
+        assert_eq!(
+            StringError::BadFirstChar.to_string(),
+            "first character not admissible",
         );
         assert_eq!(
             StringError::BadHexLength { actual: 3 }.to_string(),

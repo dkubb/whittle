@@ -115,26 +115,21 @@ impl BookingReference {
 
 impl FlightCode {
     pub fn try_new(raw: String) -> Result<Self, FlightCodeError> {
+        use AndError::{Left, Right};
+        use FlightCodeError as E;
+        use StringError::{BadChar, BadFirstChar, CharCountOutOfRange};
         Refined::try_new(raw).map(Self).map_err(|err| match err {
-            // Outer `Left` is the `LenChars<3, 7>` arm.
-            AndError::Left(StringError::CharCountOutOfRange { actual }) => {
-                FlightCodeError::Length { actual }
-            }
-            // Outer `Right` is the inner `And<FirstChar, EachChar>`.
-            // Its `Left` is the head predicate; its `Right` is the
-            // body predicate.
-            AndError::Right(AndError::Left(StringError::BadChar { offset: 0 })) => {
-                FlightCodeError::BadFirstChar
-            }
-            AndError::Right(AndError::Right(StringError::BadChar { offset })) => {
-                FlightCodeError::BadChar { offset }
-            }
+            // Outer `Left` is the `LenChars<3, 7>` arm. Outer `Right`
+            // is the inner `And<FirstChar, EachChar>`: its `Left` is
+            // the head predicate, its `Right` is the body predicate.
+            Left(CharCountOutOfRange { actual }) => E::Length { actual },
+            Right(Left(BadFirstChar)) => E::BadFirstChar,
+            Right(Right(BadChar { offset })) => E::BadChar { offset },
             // `StringError` is `#[non_exhaustive]`, so the match must
             // include a catch-all. The composition above can only
             // emit the three variants we just named, so the catch-all
             // is dead in practice — but the compiler requires it.
-            AndError::Left(other)
-            | AndError::Right(AndError::Left(other) | AndError::Right(other)) => {
+            Left(other) | Right(Left(other) | Right(other)) => {
                 unreachable!("unexpected inner StringError variant: {other:?}")
             }
         })

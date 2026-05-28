@@ -66,5 +66,5 @@ fn first_char_checks_only_the_head_and_is_vacuous_on_empty_input() {
     assert_eq!(head.as_inner(), "name");
     let bad_head =
         Refined::<String, FirstChar<IdentStart>>::try_new("1abc".to_string()).unwrap_err();
-    assert_eq!(bad_head, StringError::BadChar { offset: 0 });
+    assert_eq!(bad_head, StringError::BadFirstChar);
 }
