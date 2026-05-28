@@ -319,7 +319,10 @@ pub struct AnyOf<P>(PhantomData<P>);
 #[non_exhaustive]
 pub enum CollectionError<EI = core::convert::Infallible> {
     /// Length not in the admissible range.
-    LenOutOfRange { actual: usize },
+    LenOutOfRange {
+        /// Observed length of the offending collection.
+        actual: usize,
+    },
 
     /// `AllItems<R>` rejected the item at the given index.
     BadItem {

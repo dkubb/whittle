@@ -31,6 +31,7 @@
     clippy::unwrap_used,
     clippy::disallowed_methods,
     clippy::missing_errors_doc,
+    missing_docs,
     reason = "integration test: unwrap keeps the focus on the API; pedagogical try_new omits doc"
 )]
 

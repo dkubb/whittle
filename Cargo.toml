@@ -10,36 +10,88 @@ authors      = ["Dan Kubb <dan.kubb@gmail.com>"]
 repository   = "https://github.com/dkubb/whittle"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Core rust lints
+unsafe_code             = "deny"                                # Unsafe is rejected by default; per-site `#[expect(unsafe_code, reason = "...")]` opt-ins are reviewed in diffs
+warnings                = "deny"                                # Base warnings group
+future_incompatible     = { level = "deny", priority = -1 }     # Future compatibility lints
+missing_docs            = "deny"                                # Enforce documentation on public items
+let_underscore_drop     = "deny"                                # Catch unintentional drops
+unused                  = { level = "deny", priority = -1 }     # Unused code
+rust_2018_idioms        = { level = "deny", priority = -1 }     # Require idiomatic 2018 edition code
+rust_2024_compatibility = { level = "deny", priority = -1 }     # Enforce compatibility with Rust 2024 edition
+
+# Lints intentionally allowed
+missing_debug_implementations = "allow"                                                 # Zero-sized rule tags (e.g. `pub struct NotNan;`, `pub struct And<A,B>(PhantomData<(A,B)>)`) are never inspected as values
+missing_copy_implementations  = "allow"                                                 # Zero-sized rule tags are uninstantiated; Copy is unnecessary
+unreachable_pub               = "allow"                                                 # The `refinement!` macro emits `pub` items used inside private test modules
+unexpected_cfgs               = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] } # Set by cargo-llvm-cov
+unused_crate_dependencies     = "allow"                                                 # Workspace deps sometimes appear unused per-crate
 
 [workspace.lints.clippy]
-all      = { level = "deny", priority = -1 }
-pedantic = { level = "deny", priority = -1 }
-nursery  = { level = "deny", priority = -1 }
-cargo    = { level = "deny", priority = -1 }
-# Hand-selected restriction lints (the full `restriction` group
-# contains contradictory lints meant for case-by-case enabling).
-panic                           = "deny"
-todo                            = "deny"
-unimplemented                   = "deny"
-dbg_macro                       = "deny"
-print_stdout                    = "deny"
-print_stderr                    = "deny"
-mem_forget                      = "deny"
-exit                            = "deny"
-# Force `#[expect(...)]` over `#[allow(...)]`. `expect` is stricter:
-# it warns when the suppressed lint does not actually fire, catching
-# stale suppressions.
-allow_attributes                = "deny"
-# Every `#[allow]` / `#[expect]` must justify itself with `reason =
-# "..."`. The codebase already follows this convention.
-allow_attributes_without_reason = "deny"
-# Tests use these freely; production code is reviewed at PR time.
+# Base clippy groups
+all         = { level = "deny", priority = -1 } # All Clippy lints
+pedantic    = { level = "deny", priority = -1 } # Stricter style lints
+nursery     = { level = "deny", priority = -1 } # Experimental lints
+cargo       = { level = "deny", priority = -1 } # Cargo.toml lints
+complexity  = { level = "deny", priority = -1 } # Code complexity lints
+correctness = { level = "deny", priority = -1 } # Correctness lints
+perf        = { level = "deny", priority = -1 } # Performance lints
+style       = { level = "deny", priority = -1 } # Style lints
+suspicious  = { level = "deny", priority = -1 } # Suspicious code constructs
+
+# Restricted clippy group
+blanket_clippy_restriction_lints = "allow"                       # Allow restricted lint groups to be blanket denied
+restriction = { level = "deny", priority = -1 }                  # Ultra-strict lints (deliberately opted in)
+
+# Allow specific lints back from restriction (with reasons)
+expect_used                     = "allow" # Allow expect() for better error messages and reasoning
+implicit_return                 = "allow" # Allow implicit return
+min_ident_chars                 = "allow" # Allow short identifiers (e.g. `T`, `R`, `A`, `B`)
+multiple_crate_versions         = "allow" # Allow multiple versions of the same crate
+pub_with_shorthand              = "allow" # Allow pub with shorthand syntax
+question_mark_used              = "allow" # Allow ? operator
+separated_literal_suffix        = "allow" # Allow underscore-separated suffixes (0_i32) — conflicts with unseparated_literal_suffix
+single_call_fn                  = "allow" # Allow single-call helpers without per-site expect
+pub_use                         = "allow" # Allow pub use re-exports — intentionally used for flat API surfaces
+cargo_common_metadata           = "allow" # v0.0.0 placeholder crates lack metadata
+std_instead_of_alloc            = "allow" # whittle kernel is no_std; tests and examples use std
+# whittle-specific allow-backs from the restriction group
+absolute_paths                  = "allow" # Macro-expanded paths (`::core::result::Result`, `::core::option::Option`) and no_std `core::*` qualifications are intentional
+arbitrary_source_item_ordering  = "allow" # whittle orders items by logical relevance (rule + impl + test) rather than alphabetically
+arithmetic_side_effects         = "allow" # Integer arithmetic in tests/property generators is bounded by construction
+as_conversions                  = "allow" # `as` is needed for f32/f64 -> integer bound conversions in primitive rule impls
+assertions_on_result_states     = "allow" # `assert!(result.is_err())` reads more clearly than `assert_matches!` in property tests
+default_numeric_fallback        = "allow" # Test code uses bare integer literals (0..=100) — adding `_i32` suffixes is noise
+exhaustive_enums                = "allow" # Whittle's error enums are part of the public API contract; new variants would be a SemVer break by design
+exhaustive_structs              = "allow" # Same as above for error structs
+float_arithmetic                = "allow" # The float primitive module performs arithmetic in its `refine` impls
+indexing_slicing                = "allow" # Bounded indexing in primitive impls where length is rule-checked
+map_err_ignore                  = "allow" # Some `map_err(|_| ConstantError)` patterns intentionally drop a richer inner error
+missing_docs_in_private_items   = "allow" # `missing_docs` already covers the public surface; private helpers stay terse
+missing_inline_in_public_items  = "allow" # Inlining decisions are left to the compiler outside hot paths
+missing_trait_methods           = "allow" # Default trait methods are intentional and idiomatic
+mod_module_files                = "allow" # `crates/whittle-core/src/primitive/mod.rs` is the conventional layout
+module_name_repetitions         = "allow" # Repetition (`primitive::FloatError`) is intentional for module clarity
+non_ascii_literal               = "allow" # The string primitive module tests Unicode behaviour with literal non-ASCII characters
+pattern_type_mismatch           = "allow" # Pattern ergonomics around `&Option<_>` are common in `refine` impls
+redundant_type_annotations      = "allow" # Explicit annotations on `Refined<T, R>` document intent in doc tests
+renamed_function_params         = "allow" # Trait impls sometimes rename `self` parameters for clarity
+shadow_reuse                    = "allow" # Local rebind via `let x = x.refine()?;` is idiomatic in builder-style code
+shadow_unrelated                = "allow" # Same as above
+str_to_string                   = "allow" # Tests use `"...".to_string()` for clarity; `String::from` would not improve readability
+tests_outside_test_module       = "allow" # Integration tests in `tests/` are conventionally top-level `#[test]` fns, not nested in `#[cfg(test)] mod tests`
+unreachable                     = "allow" # `unreachable!("unexpected: ...")` documents impossible match arms in `#[non_exhaustive]` errors
+unused_trait_names              = "allow" # `use Trait as _;` would obscure that the trait is the API surface
+wildcard_enum_match_arm         = "allow" # `other => unreachable!(...)` is preferred over listing every future variant of `#[non_exhaustive]` errors
+# Tests use unwrap() freely; production code is enforced via disallowed_methods in .cargo/clippy.toml.
 unwrap_used                     = "warn"
-expect_used                     = "warn"
-# Cargo lints that don't apply to v0 placeholder packages.
-cargo_common_metadata           = "allow"
-multiple_crate_versions         = "allow"
+
+[workspace.lints.rustdoc]
+# Rustdoc lints
+all                      = { level = "deny", priority = -1 } # All rustdoc lints
+missing_crate_level_docs = "deny"                            # Enforce crate-level docs
+private_doc_tests        = "deny"                            # No private doc tests
+unescaped_backticks      = "deny"                            # No unescaped backticks
 
 [workspace.dependencies]
 proptest    = { version = "1", default-features = false, features = ["std"] }

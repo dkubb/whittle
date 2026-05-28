@@ -16,6 +16,7 @@
     clippy::disallowed_methods,
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
+    missing_docs,
     reason = "integration test: unwrap keeps the focus on the API; helper impls are pedagogical"
 )]
 

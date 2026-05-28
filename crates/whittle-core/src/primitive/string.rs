@@ -140,23 +140,35 @@ pub struct FirstChar<P>(PhantomData<P>);
 #[non_exhaustive]
 pub enum StringError {
     /// Character count not in the admissible range.
-    CharCountOutOfRange { actual: usize },
+    CharCountOutOfRange {
+        /// Observed character count of the offending string.
+        actual: usize,
+    },
 
     /// Byte length not in the admissible range.
-    ByteLenOutOfRange { actual: usize },
+    ByteLenOutOfRange {
+        /// Observed byte length of the offending string.
+        actual: usize,
+    },
 
     /// `NonEmpty` received an empty string.
     Empty,
 
     /// `EachChar<P>` rejected a character at the given UTF-8 byte
     /// offset.
-    BadChar { offset: usize },
+    BadChar {
+        /// UTF-8 byte offset of the rejected character.
+        offset: usize,
+    },
 
     /// `HexFixedLower<LEN>` / `HexFixedAny<LEN>` saw a string
     /// whose length is not the configured `LEN`. Distinct from
     /// `CharCountOutOfRange` to preserve the fixed-length /
     /// range-bound distinction.
-    BadHexLength { actual: usize },
+    BadHexLength {
+        /// Observed length of the offending hex string.
+        actual: usize,
+    },
 }
 
 impl core::fmt::Display for StringError {

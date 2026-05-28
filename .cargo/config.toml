@@ -39,14 +39,6 @@ test-all = [
 ]
 test-doc = ["test", "--doc", "--all-features", "--workspace"]
 
-[build]
-rustflags = [
-  "--deny",
-  "unsafe_code",
-  "--deny",
-  "warnings",
-]
-
 [deny]
 config = ".cargo/deny.toml"
 

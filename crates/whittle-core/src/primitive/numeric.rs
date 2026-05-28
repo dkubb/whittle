@@ -136,7 +136,10 @@ pub struct Negative;
 #[non_exhaustive]
 pub enum NumericError {
     /// Value lies outside the rule's admissible range.
-    OutOfRange { value: i128 },
+    OutOfRange {
+        /// Offending value widened losslessly into `i128`.
+        value: i128,
+    },
 }
 
 impl core::fmt::Display for NumericError {
