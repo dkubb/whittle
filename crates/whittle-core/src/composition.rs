@@ -364,9 +364,12 @@ mod tests {
 
     proptest::proptest! {
         // ─── Self-hosted Arbitrary on composed rules. The kernel's
-        //     `Refined<T, R>` Arbitrary impl applies rejection
-        //     sampling, so any value emitted by these strategies
-        //     must satisfy the composition.
+        //     `Refined<T, R>` Arbitrary impl maps the rule's
+        //     strategy through `try_new` and panics on contract
+        //     violation; it does not retry. `And<A, B>`'s strategy
+        //     applies a bounded `prop_filter_map` over `A`'s output
+        //     (see the impl below). Every value emitted here is
+        //     admissible by construction.
 
         #[test]
         fn arbitrary_and_admits_only_in_intersection(
