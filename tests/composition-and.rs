@@ -56,8 +56,8 @@ fn and_composes_string_length_and_character_predicate() {
 
     // Touch `Rule` so the import isn't unused; the rule's `refine`
     // is the moral equivalent of `Refined::try_new`'s inner call.
-    let raw = <Ident as Rule<String>>::refine("u".to_string()).unwrap();
-    assert_eq!(raw, "u");
+    let admitted = <Ident as Rule<String>>::refine("u".to_string()).unwrap();
+    assert_eq!(admitted, "u");
 }
 
 #[test]

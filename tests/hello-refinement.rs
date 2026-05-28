@@ -49,9 +49,9 @@ fn hand_written_rule_admits_positive_and_rejects_non_positive() {
     // `as_inner` borrows; the carrier itself stays put.
     assert_eq!(*refined.as_inner(), 7);
 
-    // `into_inner` consumes and returns the raw value.
-    let raw: i32 = refined.into_inner();
-    assert_eq!(raw, 7);
+    // `into_inner` consumes and returns the inner carrier value.
+    let inner: i32 = refined.into_inner();
+    assert_eq!(inner, 7);
 
     // Reject: -1 fails the rule; the typed error carries the
     // offending value so callers can report it.

@@ -57,8 +57,8 @@ fn finite_admits_finite_values_and_rejects_nan_and_infinities_with_flat_error() 
     // surfaces directly because both inner rules share the same
     // error type — no positional `Left`/`Right` wrapping even
     // though the implementation composes `NotNan` + `NotInfinite`.
-    let val: Refined<f64, Finite> = Refined::try_new(1.5).unwrap();
-    assert_eq!(*val.as_inner(), 1.5);
+    let finite: Refined<f64, Finite> = Refined::try_new(1.5).unwrap();
+    assert_eq!(*finite.as_inner(), 1.5);
     let finite_nan = Refined::<f64, Finite>::try_new(f64::NAN).unwrap_err();
     assert_eq!(finite_nan, FloatError::IsNan);
     let finite_inf = Refined::<f64, Finite>::try_new(f64::NEG_INFINITY).unwrap_err();
