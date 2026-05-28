@@ -82,8 +82,6 @@ tests_outside_test_module       = "allow" # Integration tests in `tests/` are co
 unreachable                     = "allow" # `unreachable!("unexpected: ...")` documents impossible match arms in `#[non_exhaustive]` errors
 unused_trait_names              = "allow" # `use Trait as _;` would obscure that the trait is the API surface
 wildcard_enum_match_arm         = "allow" # `other => unreachable!(...)` is preferred over listing every future variant of `#[non_exhaustive]` errors
-# Tests use unwrap() freely; production code is enforced via disallowed_methods in .cargo/clippy.toml.
-unwrap_used                     = "warn"
 
 [workspace.lints.rustdoc]
 # Rustdoc lints
