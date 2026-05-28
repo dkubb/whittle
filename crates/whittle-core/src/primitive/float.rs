@@ -370,6 +370,24 @@ pub struct InClosedRange<
     const MAX_DEN: i64,
 >;
 
+impl<const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DEN: i64>
+    InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>
+{
+    /// Single source of the bound invariants: positive denominators
+    /// and `MIN_NUM/MIN_DEN <= MAX_NUM/MAX_DEN`. Referenced from
+    /// `Rule::refine` and `ArbitraryRule::arbitrary_strategy` via
+    /// `const { Self::VALID }` so the three asserts cannot drift
+    /// between the two sites.
+    const VALID: () = {
+        assert!(MIN_DEN > 0, "InClosedRange requires MIN_DEN > 0");
+        assert!(MAX_DEN > 0, "InClosedRange requires MAX_DEN > 0");
+        assert!(
+            (MIN_NUM as i128) * (MAX_DEN as i128) <= (MAX_NUM as i128) * (MIN_DEN as i128),
+            "InClosedRange requires MIN_NUM/MIN_DEN <= MAX_NUM/MAX_DEN",
+        );
+    };
+}
+
 impl<F: Float, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DEN: i64>
     Rule<F> for InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>
 {
@@ -382,14 +400,7 @@ impl<F: Float, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const
         // Both checks are const-evaluable for the const generic
         // parameters, so invalid configurations become compile
         // errors rather than runtime states.
-        const {
-            assert!(MIN_DEN > 0, "InClosedRange requires MIN_DEN > 0");
-            assert!(MAX_DEN > 0, "InClosedRange requires MAX_DEN > 0");
-            assert!(
-                (MIN_NUM as i128) * (MAX_DEN as i128) <= (MAX_NUM as i128) * (MIN_DEN as i128),
-                "InClosedRange requires MIN_NUM/MIN_DEN <= MAX_NUM/MAX_DEN",
-            );
-        };
+        const { Self::VALID };
         let lo = F::from_ratio(MIN_NUM, MIN_DEN);
         let hi = F::from_ratio(MAX_NUM, MAX_DEN);
         if raw.float_is_nan() {
@@ -478,14 +489,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const {
-            assert!(MIN_DEN > 0, "InClosedRange requires MIN_DEN > 0");
-            assert!(MAX_DEN > 0, "InClosedRange requires MAX_DEN > 0");
-            assert!(
-                (MIN_NUM as i128) * (MAX_DEN as i128) <= (MAX_NUM as i128) * (MIN_DEN as i128),
-                "InClosedRange requires MIN_NUM/MIN_DEN <= MAX_NUM/MAX_DEN",
-            );
-        };
+        const { Self::VALID };
         let lo = F::from_ratio(MIN_NUM, MIN_DEN);
         let hi = F::from_ratio(MAX_NUM, MAX_DEN);
         F::arbitrary_in_closed_range(lo, hi).boxed()

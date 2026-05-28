@@ -423,6 +423,13 @@ where
     }
 }
 
+impl<const MIN: usize, const MAX: usize> LenItems<MIN, MAX> {
+    /// Single source of the bound invariant: `MIN <= MAX`. Referenced
+    /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
+    /// via `const { Self::VALID }`.
+    const VALID: () = assert!(MIN <= MAX, "LenItems requires MIN <= MAX");
+}
+
 impl<T, const MIN: usize, const MAX: usize> Rule<Vec<T>> for LenItems<MIN, MAX>
 where
     T: 'static,
@@ -431,7 +438,7 @@ where
 
     #[inline]
     fn refine(raw: Vec<T>) -> Result<Vec<T>, Self::Error> {
-        const { assert!(MIN <= MAX, "LenItems requires MIN <= MAX") };
+        const { Self::VALID };
         let actual = raw.len();
         if !(MIN..=MAX).contains(&actual) {
             return Err(CollectionError::LenOutOfRange { actual });
@@ -564,7 +571,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const { assert!(MIN <= MAX, "LenItems requires MIN <= MAX") };
+        const { Self::VALID };
         proptest::collection::vec(proptest::arbitrary::any::<T>(), MIN..=MAX).boxed()
     }
 }

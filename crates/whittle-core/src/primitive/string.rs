@@ -794,12 +794,20 @@ pub type HexFixedNormalized<const LEN: usize> = crate::transform::AsciiLowercase
 
 // ─── Rule impls. ──────────────────────────────────────────────────
 
+impl<const MIN: usize, const MAX: usize> LenChars<MIN, MAX> {
+    /// Single source of the bound invariant: `MIN <= MAX`. Referenced
+    /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
+    /// via `const { Self::VALID }` so the same `assert!` body cannot
+    /// drift between the two sites.
+    const VALID: () = assert!(MIN <= MAX, "LenChars requires MIN <= MAX");
+}
+
 impl<const MIN: usize, const MAX: usize> Rule<String> for LenChars<MIN, MAX> {
     type Error = StringError;
 
     #[inline]
     fn refine(raw: String) -> Result<String, Self::Error> {
-        const { assert!(MIN <= MAX, "LenChars requires MIN <= MAX") };
+        const { Self::VALID };
         let actual = raw.chars().count();
         if !(MIN..=MAX).contains(&actual) {
             return Err(StringError::CharCountOutOfRange { actual });
@@ -808,12 +816,19 @@ impl<const MIN: usize, const MAX: usize> Rule<String> for LenChars<MIN, MAX> {
     }
 }
 
+impl<const MIN: usize, const MAX: usize> LenBytes<MIN, MAX> {
+    /// Single source of the bound invariant: `MIN <= MAX`. Referenced
+    /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
+    /// via `const { Self::VALID }`.
+    const VALID: () = assert!(MIN <= MAX, "LenBytes requires MIN <= MAX");
+}
+
 impl<const MIN: usize, const MAX: usize> Rule<String> for LenBytes<MIN, MAX> {
     type Error = StringError;
 
     #[inline]
     fn refine(raw: String) -> Result<String, Self::Error> {
-        const { assert!(MIN <= MAX, "LenBytes requires MIN <= MAX") };
+        const { Self::VALID };
         let actual = raw.len();
         if !(MIN..=MAX).contains(&actual) {
             return Err(StringError::ByteLenOutOfRange { actual });
@@ -863,17 +878,23 @@ impl<P: CharPredicate> Rule<String> for FirstChar<P> {
 }
 
 #[cfg(feature = "hex")]
+impl<const LEN: usize> HexFixedLower<LEN> {
+    /// Single source of the bound invariant: `LEN` is even. Referenced
+    /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
+    /// via `const { Self::VALID }`.
+    const VALID: () = assert!(
+        LEN.is_multiple_of(2),
+        "HexFixedLower requires LEN to be even (one byte = two hex chars)",
+    );
+}
+
+#[cfg(feature = "hex")]
 impl<const LEN: usize> Rule<String> for HexFixedLower<LEN> {
     type Error = StringError;
 
     #[inline]
     fn refine(raw: String) -> Result<String, Self::Error> {
-        const {
-            assert!(
-                LEN.is_multiple_of(2),
-                "HexFixedLower requires LEN to be even (one byte = two hex chars)",
-            );
-        }
+        const { Self::VALID };
         // ASCII-only alphabet: byte length equals char count.
         let actual = raw.len();
         if actual != LEN {
@@ -890,17 +911,23 @@ impl<const LEN: usize> Rule<String> for HexFixedLower<LEN> {
 }
 
 #[cfg(feature = "hex")]
+impl<const LEN: usize> HexFixedAny<LEN> {
+    /// Single source of the bound invariant: `LEN` is even. Referenced
+    /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
+    /// via `const { Self::VALID }`.
+    const VALID: () = assert!(
+        LEN.is_multiple_of(2),
+        "HexFixedAny requires LEN to be even (one byte = two hex chars)",
+    );
+}
+
+#[cfg(feature = "hex")]
 impl<const LEN: usize> Rule<String> for HexFixedAny<LEN> {
     type Error = StringError;
 
     #[inline]
     fn refine(raw: String) -> Result<String, Self::Error> {
-        const {
-            assert!(
-                LEN.is_multiple_of(2),
-                "HexFixedAny requires LEN to be even (one byte = two hex chars)",
-            );
-        }
+        const { Self::VALID };
         // ASCII-only alphabet: byte length equals char count.
         let actual = raw.len();
         if actual != LEN {
@@ -1081,7 +1108,7 @@ impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenChars<MIN,
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const { assert!(MIN <= MAX, "LenChars requires MIN <= MAX") };
+        const { Self::VALID };
         // `proptest::char::any()` emits any Unicode scalar value
         // (no surrogate code points). `char.count() == vec.len()`
         // for the generated `Vec<char>`, so the resulting `String`
@@ -1099,7 +1126,7 @@ impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenBytes<MIN,
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const { assert!(MIN <= MAX, "LenBytes requires MIN <= MAX") };
+        const { Self::VALID };
         // ASCII-only chars: every char is exactly one UTF-8 byte,
         // so the resulting `String`'s byte length equals the
         // `Vec<char>` length.
@@ -1177,12 +1204,7 @@ impl<const LEN: usize> ArbitraryRule<String> for HexFixedLower<LEN> {
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const {
-            assert!(
-                LEN.is_multiple_of(2),
-                "HexFixedLower requires LEN to be even (one byte = two hex chars)",
-            );
-        }
+        const { Self::VALID };
         proptest::collection::vec(
             char_strategy_from_ranges(alloc::vec!['0'..='9', 'a'..='f']),
             LEN..=LEN,
@@ -1199,12 +1221,7 @@ impl<const LEN: usize> ArbitraryRule<String> for HexFixedAny<LEN> {
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const {
-            assert!(
-                LEN.is_multiple_of(2),
-                "HexFixedAny requires LEN to be even (one byte = two hex chars)",
-            );
-        }
+        const { Self::VALID };
         proptest::collection::vec(
             char_strategy_from_ranges(alloc::vec!['0'..='9', 'a'..='f', 'A'..='F']),
             LEN..=LEN,

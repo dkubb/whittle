@@ -420,6 +420,13 @@ impl ArbitraryNumeric for isize {
 // rules share `NumericError`, so the composition's error is
 // `NumericError` directly — no flattening shim is needed.
 
+impl<const MIN: i128, const MAX: i128> Within<MIN, MAX> {
+    /// Single source of the bound invariant: `MIN <= MAX`. Referenced
+    /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
+    /// via `const { Self::VALID }`.
+    const VALID: () = assert!(MIN <= MAX, "Within: MIN must be <= MAX");
+}
+
 impl<T, const MIN: i128, const MAX: i128> Rule<T> for Within<MIN, MAX>
 where
     T: Numeric,
@@ -428,7 +435,7 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
-        const { assert!(MIN <= MAX, "Within: MIN must be <= MAX") };
+        const { Self::VALID };
         <crate::composition::And<AtLeast<MIN>, AtMost<MAX>> as Rule<T>>::refine(raw)
     }
 }
@@ -531,7 +538,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const { assert!(MIN <= MAX, "Within: MIN must be <= MAX") };
+        const { Self::VALID };
         T::arbitrary_in_range(MIN, MAX).boxed()
     }
 }
