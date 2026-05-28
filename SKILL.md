@@ -318,12 +318,19 @@ derives flow through the same path.
 ### Property-based testing
 
 With the `proptest` feature, `Refined<T, R>` implements `Arbitrary` for
-every `R: ArbitraryRule<T>`. Each rule supplies its own strategy that
-emits admissible-by-construction values; the carrier's `Arbitrary` impl
-maps the strategy through `Refined::try_new` and `expect`s success.
-There is no rejection sampling — sparse rules (`Within<0, 100>` over
-`i32` admits 101 values out of 2^32) are as cheap to sample as dense
-ones (`NonZero` admits every i32 except 0).
+every `R: ArbitraryRule<T>`. The blanket `Refined<T, R>: Arbitrary` impl
+does no rejection sampling — it maps the rule's strategy through
+`try_new` and panics on bugs. Each primitive rule supplies a constructive
+strategy (range, regex, vec-of-element). Composition retains a bounded
+amount of filtering: `And<A, B>`'s strategy filters `A`'s output through
+`B::refine`. Place the narrowing rule on the *left* so the filter rate
+stays tractable. For sparse intersections, a future n-ary `All<(...)>`
+may admit direct intersection generators.
+
+For the primitive rules themselves the strategy is admissible by
+construction: `Within<0, 100>` over `i32` (101 values out of 2^32) is as
+cheap to sample as `NonZero` (every i32 except 0) because each rule's
+strategy targets the admissible region directly.
 
 Downstream tests can write `let r in any::<Refined<T, R>>()` for any
 library-supplied rule and trust every generated value satisfies the
