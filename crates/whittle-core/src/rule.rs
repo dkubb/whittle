@@ -353,13 +353,28 @@ where
     type Parameters = ();
     type Strategy = proptest::strategy::BoxedStrategy<Self>;
 
+    #[expect(
+        clippy::panic,
+        reason = "soundness-contract violation: panicking with the violating type name \
+                  is the documented diagnostic surface for a buggy ArbitraryRule strategy"
+    )]
     fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         R::arbitrary_strategy()
             .prop_map(|raw| {
-                Self::try_new(raw)
-                    .ok()
-                    .expect("ArbitraryRule::arbitrary_strategy must yield admissible values")
+                // Naming the violating `ArbitraryRule` impl in the
+                // panic message turns a blanket-contract failure
+                // into a localized diagnostic: when a strategy bug
+                // yields a value that `R::refine` rejects, the
+                // panic identifies which `R` is at fault rather
+                // than only restating the contract.
+                Self::try_new(raw).unwrap_or_else(|_| {
+                    panic!(
+                        "ArbitraryRule for {} must yield admissible values \
+                         (got a value rejected by `Rule::refine`)",
+                        core::any::type_name::<R>(),
+                    )
+                })
             })
             .boxed()
     }
@@ -400,6 +415,32 @@ mod tests {
         fn arbitrary_strategy() -> Self::Strategy {
             use proptest::strategy::Strategy as _;
             (0_i32..=i32::MAX).boxed()
+        }
+    }
+
+    /// Test rule whose `Rule::refine` always rejects and whose
+    /// `ArbitraryRule` strategy still emits a value. Used by
+    /// `arbitrary_panics_on_strategy_bug` to exercise the blanket
+    /// `Arbitrary` impl's soundness-violation panic — the only
+    /// branch of `arbitrary_with` that documents the `Rule::refine`
+    /// rejection path. The unconditional rejection keeps the rule's
+    /// branch count minimal so the helper does not itself introduce
+    /// uncovered regions.
+    enum AlwaysRejects {}
+    impl Rule<i32> for AlwaysRejects {
+        type Error = Negative;
+        fn refine(_raw: i32) -> Result<i32, Self::Error> {
+            Err(Negative)
+        }
+    }
+    impl super::ArbitraryRule<i32> for AlwaysRejects {
+        type Strategy = proptest::strategy::BoxedStrategy<i32>;
+        fn arbitrary_strategy() -> Self::Strategy {
+            use proptest::strategy::Strategy as _;
+            // Deliberate contract violation: emit a value that
+            // `AlwaysRejects::refine` will reject. The blanket impl
+            // must panic with the violating type name.
+            proptest::strategy::Just(0_i32).boxed()
         }
     }
 
@@ -558,6 +599,22 @@ mod tests {
     /// Custom Serializer / Deserializer combo using
     /// `serde::de::value::I32Deserializer` from serde itself
     /// (no `serde_test` / `serde_json` workspace dep needed).
+    #[test]
+    #[should_panic(expected = "ArbitraryRule for")]
+    fn arbitrary_panics_on_strategy_bug() {
+        // A buggy `ArbitraryRule` whose strategy emits values
+        // `Rule::refine` rejects must surface as a panic naming
+        // the violating impl, not as silently dropped samples.
+        // Drive one sample through the blanket `Arbitrary` impl.
+        use proptest::strategy::{Strategy as _, ValueTree as _};
+        use proptest::test_runner::TestRunner;
+        let strategy =
+            <Refined<i32, AlwaysRejects> as proptest::arbitrary::Arbitrary>::arbitrary_with(());
+        let mut runner = TestRunner::default();
+        // The `current()` call runs the `prop_map`, which panics.
+        let _value: Refined<i32, AlwaysRejects> = strategy.new_tree(&mut runner).unwrap().current();
+    }
+
     #[test]
     fn serde_serialize_forwards_to_inner() {
         // `serde_test::Token::I32(42)` is the wire shape an
