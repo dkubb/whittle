@@ -191,9 +191,13 @@ impl<
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used,
-        clippy::float_cmp,
-        reason = "explicit in test code")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::disallowed_methods,
+    clippy::float_cmp,
+    reason = "explicit in test code"
+)]
 mod tests {
     use super::{Finite, FloatError, InClosedRange, NotNan};
     use crate::rule::{Refined, Rule};

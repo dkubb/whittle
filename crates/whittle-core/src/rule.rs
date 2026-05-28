@@ -163,8 +163,12 @@ impl<T: Ord, R> Ord for Refined<T, R> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used,
-        reason = "explicit in test code")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::disallowed_methods,
+    reason = "explicit in test code"
+)]
 mod tests {
     use super::{Refined, Rule};
     use alloc::format;

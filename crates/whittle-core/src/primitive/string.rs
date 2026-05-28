@@ -194,8 +194,12 @@ impl<P: CharPredicate> Rule<String> for FirstChar<P> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used,
-        reason = "explicit in test code")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::disallowed_methods,
+    reason = "explicit in test code"
+)]
 mod tests {
     use alloc::string::{String, ToString};
 
