@@ -265,7 +265,7 @@ where
 /// use whittle_core::Refined;
 /// use whittle_core::primitive::{LenChars, Within};
 ///
-/// #[derive(Deserialize)]
+/// #[derive(Debug, Deserialize)]
 /// #[serde(deny_unknown_fields)]
 /// struct UserInput {
 ///     name: Refined<String, LenChars<1, 64>>,
@@ -279,9 +279,10 @@ where
 ///
 /// // Rejected — unknown field "email".
 /// let err = serde_json::from_str::<UserInput>(
-///     r#"{ "name": "Alice", "age": 30, "email": "x" }"#
-/// );
-/// assert!(matches!(err, Err(_)));
+///     r#"{ "name": "Alice", "age": 30, "email": "x" }"#,
+/// )
+/// .unwrap_err();
+/// assert!(err.to_string().contains("unknown field"));
 /// # }
 /// ```
 #[cfg(feature = "serde")]
