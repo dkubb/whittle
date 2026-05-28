@@ -14,7 +14,11 @@ pub use numeric::{
     AtLeast, AtMost, Negative, NonZero, Numeric, NumericError,
     Positive, Within,
 };
+#[cfg(feature = "hex")]
+pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
 pub use string::{
-    AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, IdentChar,
-    IdentStart, LenBytes, LenChars, NonControl, NonEmpty, StringError,
+    AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart,
+    LenBytes, LenChars, NonControl, NonEmpty, StringError,
 };
+#[cfg(feature = "unicode")]
+pub use string::{PrintableLine, PrintableMultiline};

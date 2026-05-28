@@ -12,6 +12,7 @@ pub mod composition;
 mod macros;
 pub mod primitive;
 mod rule;
+pub mod transform;
 
 pub use composition::{And, AndError, Or, OrError};
 pub use rule::{Refined, Rule};

@@ -58,8 +58,10 @@ whittle-core = { version = "0.0.0", path = "crates/whittle-core" }
 
 [features]
 default  = []
+hex      = ["whittle-core/hex"]
 proptest = ["whittle-core/proptest"]
 serde    = ["whittle-core/serde"]
+unicode  = ["whittle-core/unicode"]
 
 [lints]
 workspace = true

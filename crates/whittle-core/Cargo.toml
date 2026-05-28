@@ -10,8 +10,10 @@ description = "Whittle kernel: Rule trait, Refined carrier, library primitives."
 
 [features]
 default  = []
+hex      = []
 proptest = ["dep:proptest"]
 serde    = ["dep:serde"]
+unicode  = []
 
 [dependencies]
 proptest  = { workspace = true, optional = true }
