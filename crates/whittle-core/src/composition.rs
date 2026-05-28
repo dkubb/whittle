@@ -14,6 +14,7 @@ use core::marker::PhantomData;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 
 /// Both rules must accept. `A::refine` runs first; on success its
 /// (possibly canonicalised) output is passed to `B::refine`.
@@ -124,6 +125,53 @@ where
             },
         }
     }
+}
+
+// ─── Transformer stability. If both operands are stable under a
+//      transformation, the composition's admissible region is the
+//      intersection / union of regions that are each stable, so the
+//      composition is stable too. ──────────────────────────────────
+
+impl<A, B> StableUnderTrim for And<A, B>
+where
+    A: StableUnderTrim,
+    B: StableUnderTrim,
+{
+}
+
+impl<A, B> StableUnderTrim for Or<A, B>
+where
+    A: StableUnderTrim,
+    B: StableUnderTrim,
+{
+}
+
+impl<A, B> StableUnderAsciiLowercase for And<A, B>
+where
+    A: StableUnderAsciiLowercase,
+    B: StableUnderAsciiLowercase,
+{
+}
+
+impl<A, B> StableUnderAsciiLowercase for Or<A, B>
+where
+    A: StableUnderAsciiLowercase,
+    B: StableUnderAsciiLowercase,
+{
+}
+
+impl<A, B> StableUnderAsciiUppercase for And<A, B>
+where
+    A: StableUnderAsciiUppercase,
+    B: StableUnderAsciiUppercase,
+{
+}
+
+impl<A, B> StableUnderAsciiUppercase for Or<A, B>
+where
+    A: StableUnderAsciiUppercase,
+    B: StableUnderAsciiUppercase,
+{
 }
 
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────

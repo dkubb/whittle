@@ -15,6 +15,7 @@ use core::marker::PhantomData;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 
 /// Inclusive bound on the number of Unicode scalar values: `MIN <=
 /// chars.count() <= MAX`.
@@ -886,6 +887,140 @@ impl<const LEN: usize> Rule<String> for HexFixedAny<LEN> {
         Ok(raw)
     }
 }
+
+// ─── Transformer stability impls. ─────────────────────────────────
+//
+// Each impl below records that the rule's admissible region is
+// invariant under the corresponding transformation — i.e. wrapping
+// the rule in `Trim<...>` / `AsciiLowercase<...>` / `AsciiUppercase
+// <...>` will not violate the inner rule when the transformer's
+// `ArbitraryRule` strategy applies the transformation post hoc.
+//
+// `LenChars<MIN, MAX>`: lowercase / uppercase preserve scalar count,
+// so both case-stability markers apply. *Not* `StableUnderTrim`:
+// trimming can reduce the count below MIN (the whitespace-only
+// counter-example for any rule whose strategy can emit whitespace).
+//
+// `LenBytes<MIN, MAX>`: the strategy generates ASCII-only chars (one
+// byte each); ASCII case-lowering / case-raising never crosses the
+// ASCII boundary, so byte length is preserved. Same `Trim` caveat
+// as `LenChars`.
+//
+// `NonEmpty`: lowercase / uppercase preserve length; *not* trim-
+// stable (`"   "` is non-empty but trims to `""`).
+//
+// `EachChar<P>`: trimming removes chars from start / end; the
+// remaining chars all still satisfy `P`. Case-stability requires
+// `P`'s alphabet to be closed under ASCII case-change; that is per
+// `P`, not blanket.
+//
+// `FirstChar<P>`: parallel to `EachChar<P>`. Trimming may remove the
+// head but the empty string is admissible. Case-stability requires
+// `P`'s alphabet to be case-closed.
+//
+// `HexFixedLower<LEN>`: already lowercase; idempotent under
+// lowercase. Uppercase would no longer be lowercase hex. Length is
+// fixed, so trim breaks it.
+//
+// `HexFixedAny<LEN>`: alphabet (`0-9a-fA-F`) is closed under ASCII
+// case-change. Length is fixed, so trim breaks it.
+
+impl<const MIN: usize, const MAX: usize> StableUnderAsciiLowercase for LenChars<MIN, MAX> {}
+impl<const MIN: usize, const MAX: usize> StableUnderAsciiUppercase for LenChars<MIN, MAX> {}
+
+impl<const MIN: usize, const MAX: usize> StableUnderAsciiLowercase for LenBytes<MIN, MAX> {}
+impl<const MIN: usize, const MAX: usize> StableUnderAsciiUppercase for LenBytes<MIN, MAX> {}
+
+impl StableUnderAsciiLowercase for NonEmpty {}
+impl StableUnderAsciiUppercase for NonEmpty {}
+
+// `EachChar<P>` is trim-stable for every `P`: trimming only removes
+// characters, so the surviving characters still satisfy `P`. The
+// case-stability markers are added per-`P` below, only for those
+// predicates whose alphabet is closed under ASCII case-change.
+impl<P> StableUnderTrim for EachChar<P> {}
+
+// `FirstChar<P>` admits the empty string and otherwise only checks
+// the first character. Trim never adds characters, so the trimmed
+// head is either absent (empty admissible) or a strict subset of the
+// original char sequence; if the original first character was
+// admissible, the trimmed first character is one that was already
+// present in the admissible string and so was admissible too.
+impl<P> StableUnderTrim for FirstChar<P> {}
+
+// Case-symmetric predicates. The alphabet of each predicate listed
+// here is closed under both `char::to_ascii_lowercase` and
+// `char::to_ascii_uppercase`:
+//
+// - `AsciiAlphanumeric`: `A-Za-z0-9`. Letters case-flip within the
+//   alphabet; digits are unchanged.
+// - `IdentChar` / `IdentDashChar` / `IdentStart`: the above plus
+//   `_` (and `-` for `IdentDashChar`), which are case-invariant.
+// - `HexChar`: `0-9a-fA-F`; same closure as `AsciiAlphanumeric` on
+//   the relevant subset.
+// - `NonControl`: ASCII case-change of a non-control character is
+//   still a non-control character (lowercase / uppercase of a letter
+//   is still a letter, etc.).
+// - `PrintableLine` / `PrintableMultiline`: ASCII case-change keeps
+//   the character in the ASCII visible range and never produces a
+//   forbidden zero-width / BOM character.
+impl StableUnderAsciiLowercase for EachChar<AsciiAlphanumeric> {}
+impl StableUnderAsciiUppercase for EachChar<AsciiAlphanumeric> {}
+impl StableUnderAsciiLowercase for EachChar<IdentChar> {}
+impl StableUnderAsciiUppercase for EachChar<IdentChar> {}
+impl StableUnderAsciiLowercase for EachChar<IdentStart> {}
+impl StableUnderAsciiUppercase for EachChar<IdentStart> {}
+impl StableUnderAsciiLowercase for EachChar<IdentDashChar> {}
+impl StableUnderAsciiUppercase for EachChar<IdentDashChar> {}
+impl StableUnderAsciiLowercase for EachChar<NonControl> {}
+impl StableUnderAsciiUppercase for EachChar<NonControl> {}
+
+impl StableUnderAsciiLowercase for FirstChar<AsciiAlphanumeric> {}
+impl StableUnderAsciiUppercase for FirstChar<AsciiAlphanumeric> {}
+impl StableUnderAsciiLowercase for FirstChar<IdentChar> {}
+impl StableUnderAsciiUppercase for FirstChar<IdentChar> {}
+impl StableUnderAsciiLowercase for FirstChar<IdentStart> {}
+impl StableUnderAsciiUppercase for FirstChar<IdentStart> {}
+impl StableUnderAsciiLowercase for FirstChar<IdentDashChar> {}
+impl StableUnderAsciiUppercase for FirstChar<IdentDashChar> {}
+impl StableUnderAsciiLowercase for FirstChar<NonControl> {}
+impl StableUnderAsciiUppercase for FirstChar<NonControl> {}
+
+#[cfg(feature = "hex")]
+impl StableUnderAsciiLowercase for EachChar<HexChar> {}
+#[cfg(feature = "hex")]
+impl StableUnderAsciiUppercase for EachChar<HexChar> {}
+#[cfg(feature = "hex")]
+impl StableUnderAsciiLowercase for FirstChar<HexChar> {}
+#[cfg(feature = "hex")]
+impl StableUnderAsciiUppercase for FirstChar<HexChar> {}
+
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiLowercase for EachChar<PrintableLine> {}
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiUppercase for EachChar<PrintableLine> {}
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiLowercase for EachChar<PrintableMultiline> {}
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiUppercase for EachChar<PrintableMultiline> {}
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiLowercase for FirstChar<PrintableLine> {}
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiUppercase for FirstChar<PrintableLine> {}
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiLowercase for FirstChar<PrintableMultiline> {}
+#[cfg(feature = "unicode")]
+impl StableUnderAsciiUppercase for FirstChar<PrintableMultiline> {}
+
+#[cfg(feature = "hex")]
+impl<const LEN: usize> StableUnderAsciiLowercase for HexFixedLower<LEN> {}
+// `HexFixedLower` is NOT `StableUnderAsciiUppercase`: uppercasing
+// `"abcd"` yields `"ABCD"`, which the lowercase-only rule rejects.
+
+#[cfg(feature = "hex")]
+impl<const LEN: usize> StableUnderAsciiLowercase for HexFixedAny<LEN> {}
+#[cfg(feature = "hex")]
+impl<const LEN: usize> StableUnderAsciiUppercase for HexFixedAny<LEN> {}
 
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //

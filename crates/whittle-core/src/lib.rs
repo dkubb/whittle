@@ -18,3 +18,4 @@ pub use composition::{And, Or};
 #[cfg(feature = "proptest")]
 pub use rule::ArbitraryRule;
 pub use rule::{Refined, Rule};
+pub use transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};

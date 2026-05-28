@@ -19,6 +19,34 @@ use core::marker::PhantomData;
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
+/// Marker: rules that admit a value `v` also admit `v.trim()`.
+///
+/// Required for `Trim<R>: ArbitraryRule<String>` — the strategy
+/// generates an `R`-admissible value and applies `.trim()`; if `R` is
+/// not stable under trimming, the trimmed value may not satisfy `R`
+/// and the blanket `Arbitrary` impl's `expect` would panic. Custom
+/// rule authors implement this only when the rule's admissible region
+/// is invariant under `str::trim`.
+pub trait StableUnderTrim {}
+
+/// Marker: rules that admit a value `v` also admit
+/// `v.to_ascii_lowercase()`.
+///
+/// Required for `AsciiLowercase<R>: ArbitraryRule<String>`. Custom
+/// rule authors implement this only when the rule's admissible
+/// region is invariant under ASCII case-lowering — i.e. the rule's
+/// alphabet is closed under `char::to_ascii_lowercase`.
+pub trait StableUnderAsciiLowercase {}
+
+/// Marker: rules that admit a value `v` also admit
+/// `v.to_ascii_uppercase()`.
+///
+/// Required for `AsciiUppercase<R>: ArbitraryRule<String>`. Custom
+/// rule authors implement this only when the rule's admissible
+/// region is invariant under ASCII case-raising — i.e. the rule's
+/// alphabet is closed under `char::to_ascii_uppercase`.
+pub trait StableUnderAsciiUppercase {}
+
 /// Lowercase ASCII letters in `raw` and delegate to `R`.
 ///
 /// The stored carrier is the lowercased form. Two inputs that differ
@@ -195,7 +223,7 @@ fn trim_to_owned(raw: String) -> String {
 #[cfg(feature = "proptest")]
 impl<R> ArbitraryRule<String> for AsciiLowercase<R>
 where
-    R: ArbitraryRule<String>,
+    R: ArbitraryRule<String> + StableUnderAsciiLowercase,
 {
     type Strategy =
         proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
@@ -210,7 +238,7 @@ where
 #[cfg(feature = "proptest")]
 impl<R> ArbitraryRule<String> for AsciiUppercase<R>
 where
-    R: ArbitraryRule<String>,
+    R: ArbitraryRule<String> + StableUnderAsciiUppercase,
 {
     type Strategy =
         proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
@@ -225,13 +253,13 @@ where
 #[cfg(feature = "proptest")]
 impl<R> ArbitraryRule<String> for Trim<R>
 where
-    R: ArbitraryRule<String>,
+    R: ArbitraryRule<String> + StableUnderTrim,
 {
     // Contract: `R`'s strategy must yield strings whose trimmed
     // form is still admissible under `R::refine` (the inner rule
-    // sees the trimmed string). For rules whose admissible region
-    // is invariant under trimming — `NonEmpty` over non-whitespace
-    // characters, alnum-only regimes, hex — this holds trivially.
+    // sees the trimmed string). The `StableUnderTrim` bound encodes
+    // this requirement — rules implement it only when their
+    // admissible region is invariant under `str::trim`.
     type Strategy =
         proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
 
