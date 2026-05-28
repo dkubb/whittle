@@ -1732,6 +1732,88 @@ mod tests {
                 StringError::BadChar { offset },
             );
         }
+
+        // ─── `ArbitraryRule` impls. Each string rule's strategy
+        //     emits admissible-by-construction values; the carrier
+        //     is generated through `Refined`'s blanket Arbitrary
+        //     impl so each rule's strategy is exercised.
+
+        #[test]
+        fn arbitrary_len_chars_in_range(
+            r in proptest::arbitrary::any::<Refined<String, LenChars<2, 8>>>()
+        ) {
+            let count = r.as_inner().chars().count();
+            proptest::prop_assert!((2..=8).contains(&count));
+        }
+
+        #[test]
+        fn arbitrary_len_bytes_in_range(
+            r in proptest::arbitrary::any::<Refined<String, LenBytes<2, 8>>>()
+        ) {
+            let bytes = r.as_inner().len();
+            proptest::prop_assert!((2..=8).contains(&bytes));
+        }
+
+        #[test]
+        fn arbitrary_non_empty_is_non_empty(
+            r in proptest::arbitrary::any::<Refined<String, NonEmpty>>()
+        ) {
+            proptest::prop_assert!(!r.as_inner().is_empty());
+        }
+
+        #[test]
+        fn arbitrary_each_char_alnum_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiAlphanumeric>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_alphanumeric()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_ident_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<IdentChar>>>()
+        ) {
+            proptest::prop_assert!(
+                r.as_inner().chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            );
+        }
+
+        #[test]
+        fn arbitrary_each_char_ident_start_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<IdentStart>>>()
+        ) {
+            proptest::prop_assert!(
+                r.as_inner().chars().all(|c| c.is_ascii_alphabetic() || c == '_'),
+            );
+        }
+
+        #[test]
+        fn arbitrary_each_char_ident_dash_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<IdentDashChar>>>()
+        ) {
+            proptest::prop_assert!(
+                r.as_inner().chars().all(
+                    |c| c.is_ascii_alphanumeric() || c == '_' || c == '-',
+                ),
+            );
+        }
+
+        #[test]
+        fn arbitrary_each_char_non_control_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<NonControl>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| !c.is_control()));
+        }
+
+        #[test]
+        fn arbitrary_first_char_ident_start_admissible(
+            r in proptest::arbitrary::any::<Refined<String, FirstChar<IdentStart>>>()
+        ) {
+            // The empty string is admissible; a non-empty string
+            // must start with alpha or `_`.
+            if let Some(ch) = r.as_inner().chars().next() {
+                proptest::prop_assert!(ch.is_ascii_alphabetic() || ch == '_');
+            }
+        }
     }
 
     #[cfg(feature = "hex")]
@@ -1785,6 +1867,53 @@ mod tests {
             proptest::prop_assert_eq!(
                 result.unwrap_err(),
                 StringError::BadHexLength { actual },
+            );
+        }
+
+        // ─── `ArbitraryRule` for hex-fixed rules. Each
+        //     monomorphisation gets its own strategy invocation.
+
+        #[test]
+        fn arbitrary_hex_fixed_lower_admissible(
+            r in proptest::arbitrary::any::<Refined<String, super::HexFixedLower<4>>>()
+        ) {
+            proptest::prop_assert_eq!(r.as_inner().len(), 4);
+            proptest::prop_assert!(
+                r.as_inner().bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            );
+        }
+
+        #[test]
+        fn arbitrary_hex_fixed_any_admissible(
+            r in proptest::arbitrary::any::<Refined<String, super::HexFixedAny<4>>>()
+        ) {
+            proptest::prop_assert_eq!(r.as_inner().len(), 4);
+            proptest::prop_assert!(r.as_inner().bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+
+        #[test]
+        fn arbitrary_hex_char_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<super::HexChar>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+    }
+
+    #[cfg(all(feature = "unicode", feature = "proptest"))]
+    proptest::proptest! {
+        #[test]
+        fn arbitrary_printable_line_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<super::PrintableLine>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(<super::PrintableLine as CharPredicate>::test));
+        }
+
+        #[test]
+        fn arbitrary_printable_multiline_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<super::PrintableMultiline>>>()
+        ) {
+            proptest::prop_assert!(
+                r.as_inner().chars().all(<super::PrintableMultiline as CharPredicate>::test),
             );
         }
     }

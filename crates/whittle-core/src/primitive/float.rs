@@ -684,5 +684,59 @@ mod tests {
             proptest::prop_assert!(!value.is_nan());
             proptest::prop_assert!((0.0_f64..=1.0_f64).contains(&value));
         }
+
+        // ─── `FloatArbitrary` impls for f32. Each rule's strategy
+        //     is its own monomorphisation; touching one per rule
+        //     pins the f32 impl's branches to the coverage graph.
+
+        #[test]
+        fn arbitrary_not_nan_f32_value_is_not_nan(
+            r in proptest::arbitrary::any::<Refined<f32, NotNan>>()
+        ) {
+            proptest::prop_assert!(!r.as_inner().is_nan());
+        }
+
+        #[test]
+        fn arbitrary_not_infinite_f32_value_is_not_infinite(
+            r in proptest::arbitrary::any::<Refined<f32, super::NotInfinite>>()
+        ) {
+            proptest::prop_assert!(!r.as_inner().is_infinite());
+        }
+
+        #[test]
+        fn arbitrary_finite_f32_value_is_finite(
+            r in proptest::arbitrary::any::<Refined<f32, Finite>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().is_finite());
+        }
+
+        #[test]
+        fn arbitrary_unit_interval_f32_in_closed_range(
+            r in proptest::arbitrary::any::<Refined<f32, InClosedRange<0, 1, 1, 1>>>()
+        ) {
+            let value = *r.as_inner();
+            proptest::prop_assert!(!value.is_nan());
+            proptest::prop_assert!((0.0_f32..=1.0_f32).contains(&value));
+        }
+    }
+
+    // ─── Degenerate `lo == hi` strategy: exercises the
+    //     `from_bits(...).wrapping_add(1)` fixup that lets
+    //     proptest's half-open `Range<F>` strategy still produce a
+    //     value when both endpoints collapse to a singleton.
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn closed_range_singleton_strategy_is_well_formed() {
+        use super::FloatArbitrary;
+        use proptest::strategy::Strategy as _;
+        use proptest::test_runner::TestRunner;
+        let strategy_f32 = <f32 as FloatArbitrary>::arbitrary_in_closed_range(1.0_f32, 1.0_f32);
+        let mut runner = TestRunner::default();
+        let tree = strategy_f32.new_tree(&mut runner).unwrap();
+        assert_eq!(tree.current(), 1.0_f32);
+
+        let strategy_f64 = <f64 as FloatArbitrary>::arbitrary_in_closed_range(1.0_f64, 1.0_f64);
+        let tree = strategy_f64.new_tree(&mut runner).unwrap();
+        assert_eq!(tree.current(), 1.0_f64);
     }
 }

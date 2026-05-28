@@ -439,5 +439,22 @@ mod tests {
                 = Refined::try_new(s);
             proptest::prop_assert_eq!(result.unwrap_err(), PathError::Absolute);
         }
+
+        // ─── `ArbitraryRule` for `RelativePath`. The strategy
+        //     emits values that pass `RelativePath::refine` by
+        //     construction (no `/`-prefix, no empty segments, no
+        //     `..` segments, no Windows drive prefix).
+
+        #[test]
+        fn arbitrary_relative_path_is_admissible(
+            r in proptest::arbitrary::any::<Refined<String, RelativePath>>()
+        ) {
+            let s = r.as_inner();
+            proptest::prop_assert!(!s.is_empty());
+            proptest::prop_assert!(!s.starts_with('/'));
+            proptest::prop_assert!(!s.ends_with('/'));
+            proptest::prop_assert!(!s.contains("//"));
+            proptest::prop_assert!(s.split('/').all(|segment| segment != ".."));
+        }
     }
 }

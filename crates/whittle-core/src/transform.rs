@@ -354,24 +354,58 @@ mod tests {
         /// The post-transform invariant: every value stored in
         /// `Refined<String, AsciiLowercase<HexFixedAny<2>>>` must
         /// already be in its canonical form — equal to its own
-        /// ASCII-lowercase.
-        ///
-        /// `Refined`'s `Arbitrary` impl drives `String::arbitrary`,
-        /// whose distribution over arbitrary Unicode never produces
-        /// hex strings at a tractable rate. Drive with a bounded
-        /// regex strategy that emits any-case hex pairs, then route
-        /// through `try_new` so the transformer + inner rule both
-        /// run on the input.
+        /// ASCII-lowercase. The strategy emits values directly
+        /// through the transformer's `ArbitraryRule` impl, so the
+        /// stored carrier is canonical by construction.
         #[test]
         fn ascii_lowercase_arbitrary_is_canonical(
-            raw in "[0-9a-fA-F]{2}"
+            value in proptest::arbitrary::any::<
+                Refined<String, AsciiLowercase<HexFixedAny<2>>>,
+            >()
         ) {
-            let value: Refined<String, AsciiLowercase<HexFixedAny<2>>>
-                = Refined::try_new(raw).unwrap();
             proptest::prop_assert_eq!(
                 value.as_inner(),
                 &value.as_inner().to_ascii_lowercase(),
             );
+        }
+
+        #[test]
+        fn ascii_uppercase_arbitrary_is_canonical(
+            value in proptest::arbitrary::any::<
+                Refined<String, AsciiUppercase<HexFixedAny<2>>>,
+            >()
+        ) {
+            proptest::prop_assert_eq!(
+                value.as_inner(),
+                &value.as_inner().to_ascii_uppercase(),
+            );
+        }
+    }
+
+    #[cfg(feature = "proptest")]
+    proptest::proptest! {
+        /// `Trim<EachChar<AsciiAlphanumeric>>`'s `ArbitraryRule`
+        /// impl trims the inner strategy's output. The inner
+        /// strategy emits ASCII-alphanumeric content, which has no
+        /// whitespace, so trimming is a no-op and the trimmed
+        /// string is still admissible under the inner rule. Every
+        /// emitted value must be trim-equal to itself.
+        ///
+        /// `Trim<NonEmpty>` is **not** tested directly: `NonEmpty`'s
+        /// strategy can emit whitespace-only strings, which trim
+        /// to empty and then fail the inner rule. The contract on
+        /// `Trim<R>::arbitrary_strategy` requires `R`'s output to
+        /// be trim-invariant — alphanumeric inputs satisfy that.
+        #[test]
+        fn trim_arbitrary_is_canonical(
+            value in proptest::arbitrary::any::<
+                Refined<
+                    String,
+                    Trim<crate::primitive::EachChar<crate::primitive::AsciiAlphanumeric>>,
+                >,
+            >()
+        ) {
+            proptest::prop_assert_eq!(value.as_inner(), value.as_inner().trim());
         }
     }
 }

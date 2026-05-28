@@ -968,5 +968,105 @@ mod tests {
                 NumericError::OutOfRange { value: i128::from(x) },
             );
         }
+
+        // ─── `NumericArbitrary` impls for every supported integer
+        //     type. Each Within strategy is its own
+        //     monomorphisation; touching one per type pins the
+        //     branch inside `arbitrary_in_range` to the coverage
+        //     graph.
+
+        #[test]
+        fn arbitrary_within_round_trips_i8(
+            r in proptest::arbitrary::any::<Refined<i8, Within<-50, 50>>>()
+        ) {
+            proptest::prop_assert!((-50..=50).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_i16(
+            r in proptest::arbitrary::any::<Refined<i16, Within<-100, 100>>>()
+        ) {
+            proptest::prop_assert!((-100..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_i64(
+            r in proptest::arbitrary::any::<Refined<i64, Within<-100, 100>>>()
+        ) {
+            proptest::prop_assert!((-100..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_i128(
+            r in proptest::arbitrary::any::<Refined<i128, Within<-100, 100>>>()
+        ) {
+            proptest::prop_assert!((-100..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_u8(
+            r in proptest::arbitrary::any::<Refined<u8, Within<0, 100>>>()
+        ) {
+            proptest::prop_assert!((0..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_u16(
+            r in proptest::arbitrary::any::<Refined<u16, Within<0, 100>>>()
+        ) {
+            proptest::prop_assert!((0..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_u32(
+            r in proptest::arbitrary::any::<Refined<u32, Within<0, 100>>>()
+        ) {
+            proptest::prop_assert!((0..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_u64(
+            r in proptest::arbitrary::any::<Refined<u64, Within<0, 100>>>()
+        ) {
+            proptest::prop_assert!((0..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_usize(
+            r in proptest::arbitrary::any::<Refined<usize, Within<0, 100>>>()
+        ) {
+            proptest::prop_assert!((0..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_round_trips_isize(
+            r in proptest::arbitrary::any::<Refined<isize, Within<-100, 100>>>()
+        ) {
+            proptest::prop_assert!((-100..=100).contains(r.as_inner()));
+        }
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn numeric_arbitrary_clamps_out_of_range_bounds() {
+        // `arbitrary_in_range` clamps the requested `[min, max]`
+        // bounds to the target type's representable range. Exercise
+        // the clamping branches that the proptest-driven tests
+        // above cannot reach for usize/isize (the `try_from`
+        // fallbacks are intentionally unreachable through the
+        // public rule surface).
+        use super::NumericArbitrary;
+        // usize: lower bound clamped up from a negative i128.
+        let _: core::ops::RangeInclusive<usize> = usize::arbitrary_in_range(-1_i128, 10_i128);
+        // usize: upper bound clamped down from beyond u64::MAX.
+        let _: core::ops::RangeInclusive<usize> =
+            usize::arbitrary_in_range(0_i128, i128::from(u64::MAX) + 1);
+        // isize: lower / upper bounds clamped to i64::MIN / i64::MAX.
+        let _: core::ops::RangeInclusive<isize> =
+            isize::arbitrary_in_range(i128::MIN, i128::from(i64::MAX) + 1);
+        // Macro-impl types: the explicit-cast branch when MIN/MAX
+        // exceed the type's range.
+        let _: core::ops::RangeInclusive<i8> = i8::arbitrary_in_range(i128::MIN, i128::MAX);
+        let _: core::ops::RangeInclusive<u8> = u8::arbitrary_in_range(i128::MIN, i128::MAX);
     }
 }

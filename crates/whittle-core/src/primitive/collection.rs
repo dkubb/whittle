@@ -586,6 +586,27 @@ where
 }
 
 #[cfg(feature = "proptest")]
+fn dedup_by_key<T, K>(raw: Vec<T>) -> Vec<T>
+where
+    T: 'static,
+    K: KeyOf<T>,
+{
+    // Order of first occurrence is preserved (mirrors
+    // `UniqueByKey::refine`'s semantics). `seen.insert(key)`
+    // returns `false` on the second sighting of a key, so the
+    // duplicate is dropped.
+    let mut seen: BTreeSet<<K as KeyOf<T>>::Key> = BTreeSet::new();
+    let mut out: Vec<T> = Vec::with_capacity(raw.len());
+    for item in raw {
+        let key = K::key_of(&item);
+        if seen.insert(key) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+#[cfg(feature = "proptest")]
 impl<T, K> ArbitraryRule<Vec<T>> for UniqueByKey<T, K>
 where
     T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
@@ -596,26 +617,11 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        // Generate a `Vec<T>` then deduplicate by key on the way
-        // out: the order of first occurrence is preserved (mirrors
-        // `UniqueByKey::refine`'s semantics). Using a `Vec`
-        // collected from a `BTreeMap` keyed by the projection
-        // would lose ordering; the manual fold preserves it.
         proptest::collection::vec(
             proptest::arbitrary::any::<T>(),
             0_usize..=COLLECTION_ARBITRARY_MAX_LEN,
         )
-        .prop_map(|raw| {
-            let mut seen: BTreeSet<<K as KeyOf<T>>::Key> = BTreeSet::new();
-            let mut out: Vec<T> = Vec::with_capacity(raw.len());
-            for item in raw {
-                let key = K::key_of(&item);
-                if seen.insert(key) {
-                    out.push(item);
-                }
-            }
-            out
-        })
+        .prop_map(dedup_by_key::<T, K>)
         .boxed()
     }
 }
@@ -736,6 +742,14 @@ mod tests {
     impl Predicate<i32> for IsZero {
         fn test(value: &i32) -> bool {
             *value == 0
+        }
+    }
+
+    #[cfg(feature = "proptest")]
+    impl super::PredicateStrategy<i32> for IsZero {
+        type Strategy = proptest::strategy::Just<i32>;
+        fn arbitrary_matching() -> Self::Strategy {
+            proptest::strategy::Just(0_i32)
         }
     }
 
@@ -1253,5 +1267,82 @@ mod tests {
                 CollectionError::NotSorted { index: 1 },
             );
         }
+
+        // ─── `ArbitraryRule` for every collection primitive. Each
+        //     rule's strategy emits admissible-by-construction
+        //     vectors; the carrier is generated through `Refined`'s
+        //     blanket `Arbitrary` impl.
+
+        #[test]
+        fn arbitrary_len_items_in_range(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, LenItems<1, 5>>>()
+        ) {
+            proptest::prop_assert!((1..=5).contains(&r.as_inner().len()));
+        }
+
+        #[test]
+        fn arbitrary_all_items_admissible(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, AllItems<Within<0, 100>>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().iter().all(|x| (0..=100).contains(x)));
+        }
+
+        #[test]
+        fn arbitrary_distinct_admissible(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, Distinct<i32>>>()
+        ) {
+            let v = r.as_inner();
+            let mut sorted = v.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            proptest::prop_assert_eq!(sorted.len(), v.len());
+        }
+
+        #[test]
+        fn arbitrary_unique_by_key_admissible(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, UniqueByKey<i32, IdentityKey<i32>>>>()
+        ) {
+            let v = r.as_inner();
+            let mut sorted = v.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            proptest::prop_assert_eq!(sorted.len(), v.len());
+        }
+
+        #[test]
+        fn arbitrary_sorted_admissible(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, Sorted<i32, IdentityKey<i32>>>>()
+        ) {
+            let v = r.as_inner();
+            let in_order = v.iter().zip(v.iter().skip(1)).all(|(a, b)| a <= b);
+            proptest::prop_assert!(in_order);
+        }
+
+        #[test]
+        fn arbitrary_none_of_admissible(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, NoneOf<IsZero>>>()
+        ) {
+            proptest::prop_assert!(!r.as_inner().contains(&0));
+        }
+
+        #[test]
+        fn arbitrary_any_of_admissible(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, AnyOf<IsZero>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().contains(&0));
+        }
+    }
+
+    // The `UniqueByKey<T, K>` strategy's dedup closure has a False
+    // arm (`seen.insert` returns `false` on duplicate keys) that
+    // the proptest-driven property tests on `i32` rarely reach —
+    // duplicates are vanishingly rare in `any::<i32>()` samples.
+    // Call the extracted helper directly with a vec that contains
+    // duplicates so both branches are exercised.
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn dedup_by_key_drops_duplicates_preserving_first_occurrence() {
+        let deduped = super::dedup_by_key::<i32, IdentityKey<i32>>(vec![1_i32, 2, 1, 3, 2]);
+        assert_eq!(deduped, vec![1, 2, 3]);
     }
 }
