@@ -3,6 +3,7 @@
 pub mod collection;
 pub mod float;
 pub mod numeric;
+pub mod path;
 pub mod string;
 
 pub use collection::{
@@ -10,10 +11,8 @@ pub use collection::{
     Sorted, UniqueByKey,
 };
 pub use float::{Finite, Float, FloatError, InClosedRange, NotInfinite, NotNan};
-pub use numeric::{
-    AtLeast, AtMost, Negative, NonZero, Numeric, NumericError,
-    Positive, Within,
-};
+pub use numeric::{AtLeast, AtMost, Negative, NonZero, Numeric, NumericError, Positive, Within};
+pub use path::{PathError, RelativePath};
 #[cfg(feature = "hex")]
 pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
 pub use string::{
