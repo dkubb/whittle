@@ -351,15 +351,17 @@ where
     R: ArbitraryRule<T> + 'static,
 {
     type Parameters = ();
-    type Strategy = proptest::strategy::Map<R::Strategy, fn(T) -> Self>;
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
 
     fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        R::arbitrary_strategy().prop_map(|raw| {
-            Self::try_new(raw)
-                .ok()
-                .expect("ArbitraryRule::arbitrary_strategy must yield admissible values")
-        })
+        R::arbitrary_strategy()
+            .prop_map(|raw| {
+                Self::try_new(raw)
+                    .ok()
+                    .expect("ArbitraryRule::arbitrary_strategy must yield admissible values")
+            })
+            .boxed()
     }
 }
 
@@ -394,9 +396,10 @@ mod tests {
     }
 
     impl super::ArbitraryRule<i32> for NonNeg {
-        type Strategy = core::ops::RangeInclusive<i32>;
+        type Strategy = proptest::strategy::BoxedStrategy<i32>;
         fn arbitrary_strategy() -> Self::Strategy {
-            0_i32..=i32::MAX
+            use proptest::strategy::Strategy as _;
+            (0_i32..=i32::MAX).boxed()
         }
     }
 

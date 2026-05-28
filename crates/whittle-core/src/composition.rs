@@ -194,13 +194,14 @@ where
     A: ArbitraryRule<T> + Rule<T, Error = E>,
     B: Rule<T, Error = E>,
 {
-    type Strategy = proptest::strategy::FilterMap<A::Strategy, fn(T) -> Option<T>>;
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         A::arbitrary_strategy()
             .prop_filter_map("And: right rule rejected", |raw| B::refine(raw).ok())
+            .boxed()
     }
 }
 

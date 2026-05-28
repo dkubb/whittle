@@ -299,11 +299,12 @@ fn char_strategy_from_ranges(
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for AsciiAlphanumeric {
-    type Strategy = proptest::char::CharStrategy<'static>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
-        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '0'..='9'])
+        use proptest::strategy::Strategy as _;
+        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '0'..='9']).boxed()
     }
 }
 
@@ -335,11 +336,12 @@ impl CharPredicate for IdentChar {
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentChar {
-    type Strategy = proptest::char::CharStrategy<'static>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
-        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '0'..='9', '_'..='_'])
+        use proptest::strategy::Strategy as _;
+        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '0'..='9', '_'..='_']).boxed()
     }
 }
 
@@ -373,11 +375,12 @@ impl CharPredicate for IdentStart {
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentStart {
-    type Strategy = proptest::char::CharStrategy<'static>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
-        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '_'..='_'])
+        use proptest::strategy::Strategy as _;
+        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '_'..='_']).boxed()
     }
 }
 
@@ -421,13 +424,14 @@ impl ArbitraryChar for NonControl {
     // `\x00..=\x1F`, DEL `\x7F`, and the C1 range `\x80..=\x9F`),
     // so filtering `proptest::char::any()` admits the vast
     // majority of generated values without performance trouble.
-    type Strategy =
-        proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        proptest::char::any().prop_filter("not control", char_is_not_control)
+        proptest::char::any()
+            .prop_filter("not control", char_is_not_control)
+            .boxed()
     }
 }
 
@@ -469,11 +473,12 @@ impl CharPredicate for HexChar {
 
 #[cfg(all(feature = "hex", feature = "proptest"))]
 impl ArbitraryChar for HexChar {
-    type Strategy = proptest::char::CharStrategy<'static>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
-        char_strategy_from_ranges(alloc::vec!['0'..='9', 'a'..='f', 'A'..='F'])
+        use proptest::strategy::Strategy as _;
+        char_strategy_from_ranges(alloc::vec!['0'..='9', 'a'..='f', 'A'..='F']).boxed()
     }
 }
 
@@ -544,13 +549,14 @@ fn char_is_printable_line(ch: &char) -> bool {
 #[cfg(all(feature = "unicode", feature = "proptest"))]
 impl ArbitraryChar for PrintableLine {
     // The forbidden set is small; filter `proptest::char::any()`.
-    type Strategy =
-        proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        proptest::char::any().prop_filter("printable line", char_is_printable_line)
+        proptest::char::any()
+            .prop_filter("printable line", char_is_printable_line)
+            .boxed()
     }
 }
 
@@ -606,13 +612,14 @@ fn char_is_printable_multiline(ch: &char) -> bool {
 
 #[cfg(all(feature = "unicode", feature = "proptest"))]
 impl ArbitraryChar for PrintableMultiline {
-    type Strategy =
-        proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        proptest::char::any().prop_filter("printable multiline", char_is_printable_multiline)
+        proptest::char::any()
+            .prop_filter("printable multiline", char_is_printable_multiline)
+            .boxed()
     }
 }
 
@@ -647,10 +654,11 @@ impl CharPredicate for IdentDashChar {
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentDashChar {
-    type Strategy = proptest::char::CharStrategy<'static>;
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
 
     #[inline]
     fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
         char_strategy_from_ranges(alloc::vec![
             'A'..='Z',
             'a'..='z',
@@ -658,6 +666,7 @@ impl ArbitraryChar for IdentDashChar {
             '_'..='_',
             '-'..='-',
         ])
+        .boxed()
     }
 }
 
@@ -1045,10 +1054,7 @@ fn collect_chars(chars: alloc::vec::Vec<char>) -> String {
 
 #[cfg(feature = "proptest")]
 impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenChars<MIN, MAX> {
-    type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
-        fn(alloc::vec::Vec<char>) -> String,
-    >;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -1058,16 +1064,15 @@ impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenChars<MIN,
         // (no surrogate code points). `char.count() == vec.len()`
         // for the generated `Vec<char>`, so the resulting `String`
         // has exactly the requested scalar count.
-        proptest::collection::vec(proptest::char::any(), MIN..=MAX).prop_map(collect_chars)
+        proptest::collection::vec(proptest::char::any(), MIN..=MAX)
+            .prop_map(collect_chars)
+            .boxed()
     }
 }
 
 #[cfg(feature = "proptest")]
 impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenBytes<MIN, MAX> {
-    type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
-        fn(alloc::vec::Vec<char>) -> String,
-    >;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -1078,21 +1083,20 @@ impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenBytes<MIN,
         // `Vec<char>` length.
         proptest::collection::vec(proptest::char::range('\u{20}', '\u{7E}'), MIN..=MAX)
             .prop_map(collect_chars)
+            .boxed()
     }
 }
 
 #[cfg(feature = "proptest")]
 impl ArbitraryRule<String> for NonEmpty {
-    type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
-        fn(alloc::vec::Vec<char>) -> String,
-    >;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         proptest::collection::vec(proptest::char::any(), 1_usize..=STRING_ARBITRARY_MAX_LEN)
             .prop_map(collect_chars)
+            .boxed()
     }
 }
 
@@ -1101,16 +1105,14 @@ impl<P> ArbitraryRule<String> for EachChar<P>
 where
     P: ArbitraryChar,
 {
-    type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<<P as ArbitraryChar>::Strategy>,
-        fn(alloc::vec::Vec<char>) -> String,
-    >;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         proptest::collection::vec(P::arbitrary_char(), 0_usize..=STRING_ARBITRARY_MAX_LEN)
             .prop_map(collect_chars)
+            .boxed()
     }
 }
 
@@ -1148,10 +1150,7 @@ where
 
 #[cfg(all(feature = "hex", feature = "proptest"))]
 impl<const LEN: usize> ArbitraryRule<String> for HexFixedLower<LEN> {
-    type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
-        fn(alloc::vec::Vec<char>) -> String,
-    >;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -1167,15 +1166,13 @@ impl<const LEN: usize> ArbitraryRule<String> for HexFixedLower<LEN> {
             LEN..=LEN,
         )
         .prop_map(collect_chars)
+        .boxed()
     }
 }
 
 #[cfg(all(feature = "hex", feature = "proptest"))]
 impl<const LEN: usize> ArbitraryRule<String> for HexFixedAny<LEN> {
-    type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
-        fn(alloc::vec::Vec<char>) -> String,
-    >;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -1191,6 +1188,7 @@ impl<const LEN: usize> ArbitraryRule<String> for HexFixedAny<LEN> {
             LEN..=LEN,
         )
         .prop_map(collect_chars)
+        .boxed()
     }
 }
 

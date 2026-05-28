@@ -135,20 +135,23 @@ pub trait ArbitraryFloat: Float {
 
 #[cfg(feature = "proptest")]
 impl ArbitraryFloat for f32 {
-    type AnyStrategy = proptest::num::f32::Any;
-    type FiniteStrategy = proptest::num::f32::Any;
+    type AnyStrategy = proptest::strategy::BoxedStrategy<Self>;
+    type FiniteStrategy = proptest::strategy::BoxedStrategy<Self>;
     type ClosedRangeStrategy = proptest::strategy::BoxedStrategy<Self>;
 
     #[inline]
     fn arbitrary_any() -> Self::AnyStrategy {
-        proptest::num::f32::ANY
+        use proptest::strategy::Strategy as _;
+        proptest::num::f32::ANY.boxed()
     }
 
     #[inline]
     fn arbitrary_finite() -> Self::FiniteStrategy {
+        use proptest::strategy::Strategy as _;
         // POSITIVE | NEGATIVE | ZERO covers every finite f32 (the
         // sub-normals included).
-        proptest::num::f32::POSITIVE | proptest::num::f32::NEGATIVE | proptest::num::f32::ZERO
+        (proptest::num::f32::POSITIVE | proptest::num::f32::NEGATIVE | proptest::num::f32::ZERO)
+            .boxed()
     }
 
     #[inline]
@@ -172,18 +175,21 @@ impl ArbitraryFloat for f32 {
 
 #[cfg(feature = "proptest")]
 impl ArbitraryFloat for f64 {
-    type AnyStrategy = proptest::num::f64::Any;
-    type FiniteStrategy = proptest::num::f64::Any;
+    type AnyStrategy = proptest::strategy::BoxedStrategy<Self>;
+    type FiniteStrategy = proptest::strategy::BoxedStrategy<Self>;
     type ClosedRangeStrategy = proptest::strategy::BoxedStrategy<Self>;
 
     #[inline]
     fn arbitrary_any() -> Self::AnyStrategy {
-        proptest::num::f64::ANY
+        use proptest::strategy::Strategy as _;
+        proptest::num::f64::ANY.boxed()
     }
 
     #[inline]
     fn arbitrary_finite() -> Self::FiniteStrategy {
-        proptest::num::f64::POSITIVE | proptest::num::f64::NEGATIVE | proptest::num::f64::ZERO
+        use proptest::strategy::Strategy as _;
+        (proptest::num::f64::POSITIVE | proptest::num::f64::NEGATIVE | proptest::num::f64::ZERO)
+            .boxed()
     }
 
     #[inline]
@@ -416,12 +422,14 @@ where
     // `NotNan` admits every value except NaN; the admissible
     // region is dense, so a single `prop_filter` on the
     // unrestricted `any` strategy is cheap.
-    type Strategy = proptest::strategy::Filter<<F as ArbitraryFloat>::AnyStrategy, fn(&F) -> bool>;
+    type Strategy = proptest::strategy::BoxedStrategy<F>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        F::arbitrary_any().prop_filter("not NaN", float_is_not_nan::<F>)
+        F::arbitrary_any()
+            .prop_filter("not NaN", float_is_not_nan::<F>)
+            .boxed()
     }
 }
 
@@ -432,12 +440,14 @@ where
 {
     // Admits every value except `+/-INF`; the admissible region is
     // dense.
-    type Strategy = proptest::strategy::Filter<<F as ArbitraryFloat>::AnyStrategy, fn(&F) -> bool>;
+    type Strategy = proptest::strategy::BoxedStrategy<F>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        F::arbitrary_any().prop_filter("not infinite", float_is_not_infinite::<F>)
+        F::arbitrary_any()
+            .prop_filter("not infinite", float_is_not_infinite::<F>)
+            .boxed()
     }
 }
 
@@ -448,11 +458,12 @@ where
 {
     // Use the finite-only strategy directly: every emitted value
     // is admissible by construction.
-    type Strategy = <F as ArbitraryFloat>::FiniteStrategy;
+    type Strategy = proptest::strategy::BoxedStrategy<F>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        F::arbitrary_finite()
+        use proptest::strategy::Strategy as _;
+        F::arbitrary_finite().boxed()
     }
 }
 
@@ -462,10 +473,11 @@ impl<F, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DE
 where
     F: ArbitraryFloat + core::fmt::Debug,
 {
-    type Strategy = <F as ArbitraryFloat>::ClosedRangeStrategy;
+    type Strategy = proptest::strategy::BoxedStrategy<F>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
         const {
             assert!(MIN_DEN > 0, "InClosedRange requires MIN_DEN > 0");
             assert!(MAX_DEN > 0, "InClosedRange requires MAX_DEN > 0");
@@ -476,7 +488,7 @@ where
         };
         let lo = F::from_ratio(MIN_NUM, MIN_DEN);
         let hi = F::from_ratio(MAX_NUM, MAX_DEN);
-        F::arbitrary_in_closed_range(lo, hi)
+        F::arbitrary_in_closed_range(lo, hi).boxed()
     }
 }
 

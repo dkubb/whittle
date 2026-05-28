@@ -308,6 +308,11 @@ impl Numeric for isize {
 #[cfg(feature = "proptest")]
 pub trait ArbitraryNumeric: Numeric + Copy {
     /// Strategy type emitted by [`Self::arbitrary_in_range`].
+    ///
+    /// Pinned to `BoxedStrategy<Self>` so consumers see a stable
+    /// type — `Within<MIN, MAX>: ArbitraryRule<T>` is then a
+    /// `BoxedStrategy<T>` regardless of the concrete `T`, without
+    /// associated-type-equality bounds at every use site.
     type RangeStrategy: proptest::strategy::Strategy<Value = Self>;
 
     /// Strategy that emits values in the inclusive `[min, max]`
@@ -329,10 +334,11 @@ pub trait ArbitraryNumeric: Numeric + Copy {
 macro_rules! impl_numeric_arbitrary {
     ($($ty:ty),+) => { $(
         impl ArbitraryNumeric for $ty {
-            type RangeStrategy = core::ops::RangeInclusive<$ty>;
+            type RangeStrategy = proptest::strategy::BoxedStrategy<$ty>;
 
             #[inline]
             fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+                use proptest::strategy::Strategy as _;
                 let ty_min = i128::from(<$ty>::MIN);
                 let ty_max = i128::from(<$ty>::MAX);
                 let lo = if min < ty_min { ty_min } else { min };
@@ -344,7 +350,7 @@ macro_rules! impl_numeric_arbitrary {
                 // here.
                 let lo = <$ty>::try_from(lo).unwrap_or(<$ty>::MIN);
                 let hi = <$ty>::try_from(hi).unwrap_or(<$ty>::MAX);
-                lo..=hi
+                (lo..=hi).boxed()
             }
         }
     )+ };
@@ -358,11 +364,12 @@ impl_numeric_arbitrary!(i8, i16, i32, i64, u8, u16, u32, u64);
 // and clamp in `i128`.
 #[cfg(feature = "proptest")]
 impl ArbitraryNumeric for i128 {
-    type RangeStrategy = core::ops::RangeInclusive<Self>;
+    type RangeStrategy = proptest::strategy::BoxedStrategy<Self>;
 
     #[inline]
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
-        min..=max
+        use proptest::strategy::Strategy as _;
+        (min..=max).boxed()
     }
 }
 
@@ -371,10 +378,11 @@ impl ArbitraryNumeric for i128 {
 // bounds fit comfortably; clamp through that.
 #[cfg(feature = "proptest")]
 impl ArbitraryNumeric for usize {
-    type RangeStrategy = core::ops::RangeInclusive<Self>;
+    type RangeStrategy = proptest::strategy::BoxedStrategy<Self>;
 
     #[inline]
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+        use proptest::strategy::Strategy as _;
         let ty_min: i128 = 0;
         let ty_max: i128 = i128::from(u64::MAX);
         let lo = if min < ty_min { ty_min } else { min };
@@ -384,23 +392,24 @@ impl ArbitraryNumeric for usize {
         // elsewhere).
         let lo = Self::try_from(lo).unwrap_or(0);
         let hi = Self::try_from(hi).unwrap_or(Self::MAX);
-        lo..=hi
+        (lo..=hi).boxed()
     }
 }
 
 #[cfg(feature = "proptest")]
 impl ArbitraryNumeric for isize {
-    type RangeStrategy = core::ops::RangeInclusive<Self>;
+    type RangeStrategy = proptest::strategy::BoxedStrategy<Self>;
 
     #[inline]
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+        use proptest::strategy::Strategy as _;
         let ty_min: i128 = i128::from(i64::MIN);
         let ty_max: i128 = i128::from(i64::MAX);
         let lo = if min < ty_min { ty_min } else { min };
         let hi = if max > ty_max { ty_max } else { max };
         let lo = Self::try_from(lo).unwrap_or(Self::MIN);
         let hi = Self::try_from(hi).unwrap_or(Self::MAX);
-        lo..=hi
+        (lo..=hi).boxed()
     }
 }
 
@@ -517,12 +526,13 @@ impl<T, const MIN: i128, const MAX: i128> ArbitraryRule<T> for Within<MIN, MAX>
 where
     T: ArbitraryNumeric + core::fmt::Debug,
 {
-    type Strategy = <T as ArbitraryNumeric>::RangeStrategy;
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
         const { assert!(MIN <= MAX, "Within: MIN must be <= MAX") };
-        T::arbitrary_in_range(MIN, MAX)
+        T::arbitrary_in_range(MIN, MAX).boxed()
     }
 }
 
@@ -531,11 +541,12 @@ impl<T, const MIN: i128> ArbitraryRule<T> for AtLeast<MIN>
 where
     T: ArbitraryNumeric + core::fmt::Debug,
 {
-    type Strategy = <T as ArbitraryNumeric>::RangeStrategy;
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        T::arbitrary_in_range(MIN, i128::MAX)
+        use proptest::strategy::Strategy as _;
+        T::arbitrary_in_range(MIN, i128::MAX).boxed()
     }
 }
 
@@ -544,11 +555,12 @@ impl<T, const MAX: i128> ArbitraryRule<T> for AtMost<MAX>
 where
     T: ArbitraryNumeric + core::fmt::Debug,
 {
-    type Strategy = <T as ArbitraryNumeric>::RangeStrategy;
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        T::arbitrary_in_range(i128::MIN, MAX)
+        use proptest::strategy::Strategy as _;
+        T::arbitrary_in_range(i128::MIN, MAX).boxed()
     }
 }
 
@@ -565,14 +577,14 @@ where
     // `NonZero` admits every value except `0`; the admissible
     // region is dense (one excluded value out of ~2^N). Rejection
     // sampling on the full range is cheap.
-    type Strategy =
-        proptest::strategy::Filter<<T as ArbitraryNumeric>::RangeStrategy, fn(&T) -> bool>;
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         T::arbitrary_in_range(i128::MIN, i128::MAX)
             .prop_filter("non-zero", numeric_is_non_zero::<T>)
+            .boxed()
     }
 }
 
@@ -581,11 +593,12 @@ impl<T> ArbitraryRule<T> for Positive
 where
     T: ArbitraryNumeric + core::fmt::Debug,
 {
-    type Strategy = <T as ArbitraryNumeric>::RangeStrategy;
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        T::arbitrary_in_range(1_i128, i128::MAX)
+        use proptest::strategy::Strategy as _;
+        T::arbitrary_in_range(1_i128, i128::MAX).boxed()
     }
 }
 
@@ -594,11 +607,12 @@ impl<T> ArbitraryRule<T> for Negative
 where
     T: ArbitraryNumeric + core::fmt::Debug,
 {
-    type Strategy = <T as ArbitraryNumeric>::RangeStrategy;
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        T::arbitrary_in_range(i128::MIN, -1_i128)
+        use proptest::strategy::Strategy as _;
+        T::arbitrary_in_range(i128::MIN, -1_i128).boxed()
     }
 }
 
@@ -1056,17 +1070,20 @@ mod tests {
         // fallbacks are intentionally unreachable through the
         // public rule surface).
         use super::ArbitraryNumeric;
+        // Bind each strategy so the boxed values' destructors are
+        // tied to a named binding rather than the temporary scope
+        // (clippy's `let_underscore_drop` rejects `let _: T = ...`
+        // when `T` has a destructor; the boxed strategies do).
+        //
         // usize: lower bound clamped up from a negative i128.
-        let _: core::ops::RangeInclusive<usize> = usize::arbitrary_in_range(-1_i128, 10_i128);
+        let _usize_low = usize::arbitrary_in_range(-1_i128, 10_i128);
         // usize: upper bound clamped down from beyond u64::MAX.
-        let _: core::ops::RangeInclusive<usize> =
-            usize::arbitrary_in_range(0_i128, i128::from(u64::MAX) + 1);
+        let _usize_high = usize::arbitrary_in_range(0_i128, i128::from(u64::MAX) + 1);
         // isize: lower / upper bounds clamped to i64::MIN / i64::MAX.
-        let _: core::ops::RangeInclusive<isize> =
-            isize::arbitrary_in_range(i128::MIN, i128::from(i64::MAX) + 1);
+        let _isize_bounds = isize::arbitrary_in_range(i128::MIN, i128::from(i64::MAX) + 1);
         // Macro-impl types: the explicit-cast branch when MIN/MAX
         // exceed the type's range.
-        let _: core::ops::RangeInclusive<i8> = i8::arbitrary_in_range(i128::MIN, i128::MAX);
-        let _: core::ops::RangeInclusive<u8> = u8::arbitrary_in_range(i128::MIN, i128::MAX);
+        let _i8_full = i8::arbitrary_in_range(i128::MIN, i128::MAX);
+        let _u8_full = u8::arbitrary_in_range(i128::MIN, i128::MAX);
     }
 }

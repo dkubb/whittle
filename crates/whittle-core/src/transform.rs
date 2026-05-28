@@ -225,13 +225,14 @@ impl<R> ArbitraryRule<String> for AsciiLowercase<R>
 where
     R: ArbitraryRule<String> + StableUnderAsciiLowercase,
 {
-    type Strategy =
-        proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        R::arbitrary_strategy().prop_map(ascii_lowercase_string)
+        R::arbitrary_strategy()
+            .prop_map(ascii_lowercase_string)
+            .boxed()
     }
 }
 
@@ -240,13 +241,14 @@ impl<R> ArbitraryRule<String> for AsciiUppercase<R>
 where
     R: ArbitraryRule<String> + StableUnderAsciiUppercase,
 {
-    type Strategy =
-        proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        R::arbitrary_strategy().prop_map(ascii_uppercase_string)
+        R::arbitrary_strategy()
+            .prop_map(ascii_uppercase_string)
+            .boxed()
     }
 }
 
@@ -260,13 +262,12 @@ where
     // sees the trimmed string). The `StableUnderTrim` bound encodes
     // this requirement — rules implement it only when their
     // admissible region is invariant under `str::trim`.
-    type Strategy =
-        proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        R::arbitrary_strategy().prop_map(trim_to_owned)
+        R::arbitrary_strategy().prop_map(trim_to_owned).boxed()
     }
 }
 

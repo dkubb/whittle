@@ -559,12 +559,13 @@ impl<T, const MIN: usize, const MAX: usize> ArbitraryRule<Vec<T>> for LenItems<M
 where
     T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
 {
-    type Strategy = proptest::collection::VecStrategy<T::Strategy>;
+    type Strategy = proptest::strategy::BoxedStrategy<Vec<T>>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
         const { assert!(MIN <= MAX, "LenItems requires MIN <= MAX") };
-        proptest::collection::vec(proptest::arbitrary::any::<T>(), MIN..=MAX)
+        proptest::collection::vec(proptest::arbitrary::any::<T>(), MIN..=MAX).boxed()
     }
 }
 
@@ -574,14 +575,16 @@ where
     T: core::fmt::Debug + 'static,
     R: ArbitraryRule<T>,
 {
-    type Strategy = proptest::collection::VecStrategy<<R as ArbitraryRule<T>>::Strategy>;
+    type Strategy = proptest::strategy::BoxedStrategy<Vec<T>>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
         proptest::collection::vec(
             R::arbitrary_strategy(),
             0_usize..=COLLECTION_ARBITRARY_MAX_LEN,
         )
+        .boxed()
     }
 }
 
@@ -664,8 +667,7 @@ where
     T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
     P: Predicate<T>,
 {
-    type Strategy =
-        proptest::collection::VecStrategy<proptest::strategy::Filter<T::Strategy, fn(&T) -> bool>>;
+    type Strategy = proptest::strategy::BoxedStrategy<Vec<T>>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -673,7 +675,7 @@ where
         let pred: fn(&T) -> bool = predicate_does_not_match::<T, P>;
         let filtered =
             proptest::arbitrary::any::<T>().prop_filter("NoneOf: predicate matched", pred);
-        proptest::collection::vec(filtered, 0_usize..=COLLECTION_ARBITRARY_MAX_LEN)
+        proptest::collection::vec(filtered, 0_usize..=COLLECTION_ARBITRARY_MAX_LEN).boxed()
     }
 }
 
@@ -747,9 +749,10 @@ mod tests {
 
     #[cfg(feature = "proptest")]
     impl super::ArbitraryPredicate<i32> for IsZero {
-        type Strategy = proptest::strategy::Just<i32>;
+        type Strategy = proptest::strategy::BoxedStrategy<i32>;
         fn arbitrary_matching() -> Self::Strategy {
-            proptest::strategy::Just(0_i32)
+            use proptest::strategy::Strategy as _;
+            proptest::strategy::Just(0_i32).boxed()
         }
     }
 

@@ -146,10 +146,7 @@ impl Rule<String> for RelativePath {
 
 #[cfg(feature = "proptest")]
 impl ArbitraryRule<String> for RelativePath {
-    type Strategy = proptest::strategy::Map<
-        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
-        fn(alloc::vec::Vec<char>) -> String,
-    >;
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
@@ -182,6 +179,7 @@ impl ArbitraryRule<String> for RelativePath {
             1_usize..=16_usize,
         )
         .prop_map(collect_relative_path_chars)
+        .boxed()
     }
 }
 
