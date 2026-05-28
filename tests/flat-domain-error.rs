@@ -20,12 +20,12 @@
 //! never the underlying `StringError` variants the implementation
 //! happens to use.
 //!
-//! This example uses **hand-rolled `Display` + `Error`** impls so
-//! the error works with `?`, `anyhow`, and the stdlib error
-//! machinery without depending on `thiserror`. Whittle's `Rule`
-//! trait only needs `Debug + Display + core::error::Error` on
-//! `Rule::Error`; the derive macro is your choice. See the
-//! trailing comment for the `thiserror`-derived equivalent.
+//! This example uses **`thiserror`** to derive `Display` + `Error`
+//! on the flat domain error — it is the most ergonomic option when
+//! it is already in your stack. Whittle does not require any
+//! specific derive macro; the `Rule` trait only needs
+//! `Debug + Display + core::error::Error` on `Rule::Error`, so
+//! hand-rolled `impl Display + impl Error` works just as well.
 
 #![expect(
     clippy::unwrap_used,
@@ -36,7 +36,6 @@
 )]
 
 use core::error::Error;
-use core::fmt;
 
 use whittle::primitive::{AsciiAlphanumeric, EachChar, LenChars, StringError};
 use whittle::{And, AndError, Refined};
@@ -52,37 +51,20 @@ pub struct FlightCode(Refined<String, FlightCodeRule>);
 /// Flat domain error. One variant per externally distinguishable
 /// failure mode. Callers match these; the `AndError` shape and the
 /// underlying `StringError` enum are implementation details.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// `thiserror` is one option for the `Display` + `Error` impls;
+/// whittle does not require any specific derive macro — hand-rolled
+/// `impl Display + impl Error` works too.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FlightCodeError {
     /// String length (in characters) is outside `3..=8`.
+    #[error("flight code length {actual} not in 3..=8")]
     Length { actual: usize },
     /// Character at the given UTF-8 byte offset is not ASCII
     /// alphanumeric.
+    #[error("flight code character at byte offset {offset} is not ASCII alphanumeric")]
     BadChar { offset: usize },
 }
-
-// Hand-rolled `Display` impl. A `match` over the variants produces
-// a readable, machine-readable rendering. Whittle's `Rule` trait
-// requires `Display + Error` on `Rule::Error`; this is the
-// no-dependency way to satisfy it.
-impl fmt::Display for FlightCodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Length { actual } => {
-                write!(f, "flight code length {actual} not in 3..=8")
-            }
-            Self::BadChar { offset } => write!(
-                f,
-                "flight code character at byte offset {offset} is not ASCII alphanumeric",
-            ),
-        }
-    }
-}
-
-// Hand-rolled `Error` impl. With no source / cause chain to
-// forward, the empty impl block is enough — `Error` provides
-// default methods for everything else.
-impl Error for FlightCodeError {}
 
 impl FlightCode {
     /// Validate `raw` and wrap. The match flattens the
@@ -138,8 +120,10 @@ fn flight_code_rejects_bad_character_with_flat_offset_error() {
 #[test]
 fn flight_code_error_implements_display_and_error_traits() {
     // The flat error implements `Display` and `Error`, so it works
-    // with `?`, `anyhow`, and stdlib error machinery — no
-    // `thiserror` dependency required.
+    // with `?`, `anyhow`, and stdlib error machinery. The derive
+    // macro is your choice — `thiserror` here, but hand-rolled
+    // `impl Display + impl Error` would satisfy whittle's `Rule`
+    // trait too.
     let bad_char = FlightCode::try_new("BA 490".to_string()).unwrap_err();
     let _: &dyn Error = &bad_char;
     assert_eq!(
@@ -147,19 +131,3 @@ fn flight_code_error_implements_display_and_error_traits() {
         "flight code length 2 not in 3..=8",
     );
 }
-
-// ─── Alternative: `thiserror`-derived equivalent. ────────────
-//
-// If `thiserror` is already in your stack, the same error type
-// is one derive away. Whittle does not care which you pick — the
-// `Rule` trait only requires `Debug + Display + core::error::Error`.
-//
-// ```ignore
-// #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-// pub enum FlightCodeError {
-//     #[error("flight code length {actual} not in 3..=8")]
-//     Length { actual: usize },
-//     #[error("flight code character at byte offset {offset} is not ASCII alphanumeric")]
-//     BadChar { offset: usize },
-// }
-// ```

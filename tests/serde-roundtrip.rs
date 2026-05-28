@@ -16,10 +16,10 @@
 //!    `UserName` and `Age`, not raw `Refined<String, LenChars<...>>`.
 //!    The `Refined` carrier is an implementation detail.
 //! 2. **Flat domain errors.** Each newtype owns a flat enum
-//!    (`UserNameError`, `AgeError`) with named variants, plus
-//!    hand-rolled `Display` + `Error` impls — no `thiserror`
-//!    dependency in this example. Use whichever derive macro you
-//!    prefer (`thiserror`, `snafu`, `miette`) or none.
+//!    (`UserNameError`, `AgeError`) with named variants, derived
+//!    via `thiserror` for brevity. Whittle is agnostic about
+//!    error-derive macros — hand-rolled `impl Display + impl Error`
+//!    works just as well.
 //! 3. **`deny_unknown_fields` is the outer struct's
 //!    responsibility.** `Refined<T, R>` has no visibility into the
 //!    outer field map, so the attribute lives on `UserInput`.
@@ -33,7 +33,6 @@
 )]
 
 use core::error::Error;
-use core::fmt;
 
 use serde::{Deserialize, Serialize};
 use whittle::Refined;
@@ -48,35 +47,16 @@ use whittle::primitive::{LenChars, NumericError, StringError, Within};
 pub struct UserName(Refined<String, LenChars<3, 32>>);
 
 /// Flat domain error for `UserName`.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// `thiserror` is one option for the `Display` + `Error` impls;
+/// whittle does not require any specific derive macro — hand-rolled
+/// `impl Display + impl Error` works too.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum UserNameError {
     /// Length (in characters) outside `3..=32`.
+    #[error("user name length {actual} not in 3..=32")]
     Length { actual: usize },
 }
-
-impl fmt::Display for UserNameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Length { actual } => {
-                write!(f, "user name length {actual} not in 3..=32")
-            }
-        }
-    }
-}
-
-// Hand-rolled `Error` impl — no `thiserror` dependency.
-//
-// Alternative: derive with `thiserror::Error` if it's already in
-// your stack:
-//
-// ```ignore
-// #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-// pub enum UserNameError {
-//     #[error("user name length {actual} not in 3..=32")]
-//     Length { actual: usize },
-// }
-// ```
-impl Error for UserNameError {}
 
 impl UserName {
     /// Validate `raw` and wrap. Flattens the rule's error into the
@@ -106,23 +86,12 @@ impl UserName {
 pub struct Age(Refined<u8, Within<0, 150>>);
 
 /// Flat domain error for `Age`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AgeError {
     /// Value outside `0..=150`.
+    #[error("age {value} not in 0..=150")]
     OutOfRange { value: i128 },
 }
-
-impl fmt::Display for AgeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::OutOfRange { value } => {
-                write!(f, "age {value} not in 0..=150")
-            }
-        }
-    }
-}
-
-impl Error for AgeError {}
 
 impl Age {
     /// Validate `raw` and wrap.
@@ -201,8 +170,10 @@ fn deny_unknown_fields_rejects_extra_keys_on_outer_struct() {
 #[test]
 fn flat_domain_errors_implement_display_and_error_traits() {
     // The flat domain errors implement `Display` and `Error`, so
-    // they work with `?`, `anyhow`, and stdlib error machinery
-    // without depending on `thiserror`.
+    // they work with `?`, `anyhow`, and stdlib error machinery.
+    // The derive macro is your choice — `thiserror` here, but
+    // hand-rolled `impl Display + impl Error` would satisfy
+    // whittle's `Rule` trait too.
     let _: &dyn Error = &UserNameError::Length { actual: 1 };
     let _: &dyn Error = &AgeError::OutOfRange { value: 200 };
     assert_eq!(

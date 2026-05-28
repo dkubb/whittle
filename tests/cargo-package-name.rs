@@ -15,10 +15,10 @@
 //! closes that gap and also caps the upper bound at 64 characters
 //! (Cargo's actual limit).
 //!
-//! This example uses hand-rolled `impl Display` and `impl Error`
-//! for the domain error so it does not depend on `thiserror`.
-//! Whittle is agnostic about error-derive macros — pick the one
-//! that fits your stack (or none).
+//! This example uses `thiserror` to derive `Display` + `Error` on
+//! the flat domain error — convenient when it is already in your
+//! stack. Whittle is agnostic about error-derive macros: hand-rolled
+//! `impl Display + impl Error` works just as well.
 //!
 //! Use this whenever you need to validate Cargo crate names,
 //! DNS-label-style identifiers, or any "URL-slug" shape where the
@@ -33,7 +33,6 @@
 )]
 
 use core::error::Error;
-use core::fmt;
 
 use whittle::primitive::{
     AsciiAlphanumeric, EachChar, FirstChar, IdentDashChar, LenChars, StringError,
@@ -56,41 +55,28 @@ pub struct CargoPackageName(Refined<String, CargoPackageRule>);
 /// Flat domain error. One variant per externally distinguishable
 /// failure mode; the underlying `AndError` tree and `StringError`
 /// enum are implementation details.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// `thiserror` is one option for the `Display` + `Error` impls;
+/// whittle does not require any specific derive macro — hand-rolled
+/// `impl Display + impl Error` works too.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CargoPackageNameError {
     /// Length (in characters) is outside `1..=64`. Carries the
     /// actual character count so callers can produce precise
     /// diagnostics.
+    #[error("cargo package name length {actual} not in 1..=64")]
     Length { actual: usize },
     /// First character is not `[A-Za-z0-9]` (e.g. leading `-` or
     /// `_`).
+    #[error("cargo package name must start with an ASCII alphanumeric character")]
     BadFirstChar,
     /// A non-head character is not `[A-Za-z0-9_-]`. Carries the
     /// UTF-8 byte offset of the offending character.
+    #[error(
+        "cargo package name contains a character outside [A-Za-z0-9_-] at byte offset {offset}"
+    )]
     BadChar { offset: usize },
 }
-
-impl fmt::Display for CargoPackageNameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Length { actual } => {
-                write!(f, "cargo package name length {actual} not in 1..=64")
-            }
-            Self::BadFirstChar => f.write_str(
-                "cargo package name must start with an ASCII alphanumeric character",
-            ),
-            Self::BadChar { offset } => write!(
-                f,
-                "cargo package name contains a character outside [A-Za-z0-9_-] at byte offset {offset}",
-            ),
-        }
-    }
-}
-
-// Hand-rolled `Error` impl — no `thiserror` dependency. Any
-// derive macro works here (`thiserror`, `snafu`, `miette`); whittle
-// only needs `Debug + Display + core::error::Error`.
-impl Error for CargoPackageNameError {}
 
 impl CargoPackageName {
     /// Validate `raw` and wrap. The match flattens the nested
@@ -176,8 +162,9 @@ fn cargo_package_name_rejects_dot_in_body_with_bad_char_offset() {
 #[test]
 fn cargo_package_name_error_implements_display_and_error() {
     // The flat error implements `Display` and `Error`, so it works
-    // with `?`, `anyhow`, and the stdlib error machinery without
-    // depending on `thiserror`.
+    // with `?`, `anyhow`, and the stdlib error machinery. The
+    // derive macro is your choice — `thiserror` here, hand-rolled
+    // elsewhere; whittle accepts either.
     let _: &dyn Error = &CargoPackageNameError::BadFirstChar;
     let rendered = CargoPackageNameError::Length { actual: 0 }.to_string();
     assert!(rendered.contains("1..=64"));

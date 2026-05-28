@@ -435,14 +435,19 @@ features are additive.
    application-domain (`FlightNumber`, `AccountId`), keep it in the
    downstream crate.
 
-**Error derive macros are your choice.** Whittle itself has no
-error-derive dependency: its own primitive errors (`NumericError`,
-`StringError`, etc.) are hand-rolled `impl Display + impl Error` so
-downstream `cargo tree` shows no `thiserror`. The `Rule` trait does
-NOT require any specific derive — `Rule::Error` only needs
-`Debug + Display + core::error::Error` for downstream ergonomics. Use
-any derive macro you prefer (`thiserror`, `snafu`, `miette`), or
-hand-write `impl Display` + `impl Error` — whittle is agnostic.
+**Error derive macros are your choice.** Whittle's kernel is
+dep-free — `whittle-core`'s primitive errors (`NumericError`,
+`StringError`, `FloatError`, `CollectionError`, `PathError`,
+`AndError`, `OrError`) are hand-rolled `impl Display + impl Error`,
+so downstream `cargo tree` shows no `thiserror` (or any other
+error-derive crate) under whittle. The `Rule` trait does NOT require
+any specific derive — `Rule::Error` only needs
+`Debug + Display + core::error::Error`. Your domain errors can use
+`thiserror`, `snafu`, `miette`, or hand-roll — whittle is agnostic.
+The test corpus under `tests/` uses `thiserror` for brevity (it is a
+workspace `[dev-dependencies]` entry, never a production
+dependency), proving the derive integrates cleanly without forcing
+it on downstream consumers.
 
 ## Examples
 

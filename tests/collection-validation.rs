@@ -20,9 +20,6 @@
     reason = "integration test: unwrap keeps the focus on the API; pedagogical try_new omits doc"
 )]
 
-use core::error::Error;
-use core::fmt;
-
 use whittle::primitive::{
     AllItems, AnyOf, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf, NumericError,
     Predicate, Sorted, UniqueByKey, Within,
@@ -69,36 +66,22 @@ pub struct OrderItemList(Refined<Vec<ItemId>, OrderItemListRule>);
 /// Flat domain error. Each variant names one externally observable
 /// failure mode. The nested `AndError<CollectionError, AndError<...>>`
 /// is flattened away inside `try_new`.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// `thiserror` is one option for the `Display` + `Error` impls;
+/// whittle does not require any specific derive macro — hand-rolled
+/// `impl Display + impl Error` works too.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum OrderItemListError {
     /// Length is outside the admissible range (`1..=100`).
+    #[error("order item list length {actual} not in 1..=100")]
     Length { actual: usize },
     /// The item at `index` duplicates an earlier item.
+    #[error("order item list has a duplicate at index {index}")]
     Duplicate { index: usize },
     /// The item at `index` breaks ascending order.
+    #[error("order item list is out of order at index {index}")]
     OutOfOrder { index: usize },
 }
-
-impl fmt::Display for OrderItemListError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Length { actual } => {
-                write!(f, "order item list length {actual} not in 1..=100")
-            }
-            Self::Duplicate { index } => {
-                write!(f, "order item list has a duplicate at index {index}")
-            }
-            Self::OutOfOrder { index } => {
-                write!(f, "order item list is out of order at index {index}")
-            }
-        }
-    }
-}
-
-// Hand-rolled `Error` — no `thiserror`. Whittle is agnostic about
-// error-derive macros; this example deliberately uses none so the
-// dependency tree stays clean.
-impl Error for OrderItemListError {}
 
 impl OrderItemList {
     /// Validate `raw` and wrap. The match flattens the nested
