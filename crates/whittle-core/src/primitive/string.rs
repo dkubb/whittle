@@ -12,6 +12,8 @@
 use alloc::string::String;
 use core::marker::PhantomData;
 
+#[cfg(feature = "proptest")]
+use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// Inclusive bound on the number of Unicode scalar values: `MIN <=
@@ -238,6 +240,24 @@ pub trait CharPredicate: 'static {
     fn test(ch: char) -> bool;
 }
 
+/// `CharPredicate` that exposes a `proptest` strategy emitting
+/// admissible characters.
+///
+/// Implementations must guarantee that every value the strategy
+/// emits satisfies the predicate. `EachChar<P>` and `FirstChar<P>`
+/// rely on this to generate strings that pass their per-character
+/// invariants by construction.
+///
+/// Available behind the `proptest` feature.
+#[cfg(feature = "proptest")]
+pub trait CharStrategy: CharPredicate {
+    /// Strategy type yielding admissible `char` values.
+    type Strategy: proptest::strategy::Strategy<Value = char>;
+
+    /// Construct the predicate's `char`-emitting strategy.
+    fn arbitrary_char() -> Self::Strategy;
+}
+
 /// Predicate: ASCII alphanumeric (`A`–`Z`, `a`–`z`, `0`–`9`).
 ///
 /// # Examples
@@ -265,6 +285,27 @@ impl CharPredicate for AsciiAlphanumeric {
     }
 }
 
+/// Build a `proptest::char::CharStrategy` from a set of inclusive
+/// `char` ranges. Used by the `CharStrategy` impls below to express
+/// "pick a char from the union of these ranges" without rejection
+/// sampling against the full Unicode space.
+#[cfg(feature = "proptest")]
+fn char_strategy_from_ranges(
+    ranges: alloc::vec::Vec<core::ops::RangeInclusive<char>>,
+) -> proptest::char::CharStrategy<'static> {
+    proptest::char::ranges(alloc::borrow::Cow::Owned(ranges))
+}
+
+#[cfg(feature = "proptest")]
+impl CharStrategy for AsciiAlphanumeric {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '0'..='9'])
+    }
+}
+
 /// Predicate: ASCII alphanumeric or underscore. Matches the usual
 /// identifier-body grammar.
 ///
@@ -288,6 +329,16 @@ impl CharPredicate for IdentChar {
     #[inline]
     fn test(ch: char) -> bool {
         ch.is_ascii_alphanumeric() || ch == '_'
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl CharStrategy for IdentChar {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '0'..='9', '_'..='_'])
     }
 }
 
@@ -319,6 +370,16 @@ impl CharPredicate for IdentStart {
     }
 }
 
+#[cfg(feature = "proptest")]
+impl CharStrategy for IdentStart {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z', '_'..='_'])
+    }
+}
+
 /// Predicate: not a Unicode control character.
 ///
 /// # Examples
@@ -341,6 +402,31 @@ impl CharPredicate for NonControl {
     #[inline]
     fn test(ch: char) -> bool {
         !ch.is_control()
+    }
+}
+
+#[cfg(feature = "proptest")]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches the `Fn(&Self::Value) -> bool` signature `prop_filter` expects"
+)]
+fn char_is_not_control(ch: &char) -> bool {
+    !ch.is_control()
+}
+
+#[cfg(feature = "proptest")]
+impl CharStrategy for NonControl {
+    // Control chars are sparse in the Unicode space (the C0 range
+    // `\x00..=\x1F`, DEL `\x7F`, and the C1 range `\x80..=\x9F`),
+    // so filtering `proptest::char::any()` admits the vast
+    // majority of generated values without performance trouble.
+    type Strategy =
+        proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::char::any().prop_filter("not control", char_is_not_control)
     }
 }
 
@@ -377,6 +463,16 @@ impl CharPredicate for HexChar {
     #[inline]
     fn test(ch: char) -> bool {
         ch.is_ascii_hexdigit()
+    }
+}
+
+#[cfg(all(feature = "hex", feature = "proptest"))]
+impl CharStrategy for HexChar {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['0'..='9', 'a'..='f', 'A'..='F'])
     }
 }
 
@@ -435,6 +531,28 @@ impl CharPredicate for PrintableLine {
     }
 }
 
+#[cfg(all(feature = "unicode", feature = "proptest"))]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches the `Fn(&Self::Value) -> bool` signature `prop_filter` expects"
+)]
+fn char_is_printable_line(ch: &char) -> bool {
+    <PrintableLine as CharPredicate>::test(*ch)
+}
+
+#[cfg(all(feature = "unicode", feature = "proptest"))]
+impl CharStrategy for PrintableLine {
+    // The forbidden set is small; filter `proptest::char::any()`.
+    type Strategy =
+        proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::char::any().prop_filter("printable line", char_is_printable_line)
+    }
+}
+
 /// Predicate: `PrintableLine` but admits `\n` (newline).
 ///
 /// For multi-line free-form text — commit messages, doc
@@ -476,6 +594,27 @@ impl CharPredicate for PrintableMultiline {
     }
 }
 
+#[cfg(all(feature = "unicode", feature = "proptest"))]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches the `Fn(&Self::Value) -> bool` signature `prop_filter` expects"
+)]
+fn char_is_printable_multiline(ch: &char) -> bool {
+    <PrintableMultiline as CharPredicate>::test(*ch)
+}
+
+#[cfg(all(feature = "unicode", feature = "proptest"))]
+impl CharStrategy for PrintableMultiline {
+    type Strategy =
+        proptest::strategy::Filter<proptest::char::CharStrategy<'static>, fn(&char) -> bool>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::char::any().prop_filter("printable multiline", char_is_printable_multiline)
+    }
+}
+
 /// Predicate: ASCII alphanumeric, underscore, or `-`. Matches
 /// `cargo`-package-name and DNS-label body grammars (leading `-`
 /// must be excluded separately via `FirstChar`).
@@ -502,6 +641,22 @@ impl CharPredicate for IdentDashChar {
     #[inline]
     fn test(ch: char) -> bool {
         ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl CharStrategy for IdentDashChar {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec![
+            'A'..='Z',
+            'a'..='z',
+            '0'..='9',
+            '_'..='_',
+            '-'..='-',
+        ])
     }
 }
 
@@ -729,6 +884,178 @@ impl<const LEN: usize> Rule<String> for HexFixedAny<LEN> {
             }
         }
         Ok(raw)
+    }
+}
+
+// ─── `ArbitraryRule` impls. ───────────────────────────────────────
+//
+// Length-bounded strings draw their `char`s from a single ASCII
+// range so the per-char count and the post-`String` byte length
+// line up; per-character rules draw from their predicate's
+// `CharStrategy`. Each rule's strategy emits admissible-by-
+// construction values — no rejection sampling inside the
+// blanket `Refined` Arbitrary impl.
+
+/// Cap on the number of `chars` generated when a rule's admissible
+/// length is unbounded (`NonEmpty`, `EachChar<P>`, `FirstChar<P>`).
+/// Picked to mirror the bounded-strategy default used by proptest's
+/// regex string strategies.
+#[cfg(feature = "proptest")]
+const STRING_ARBITRARY_MAX_LEN: usize = 32;
+
+#[cfg(feature = "proptest")]
+fn collect_chars(chars: alloc::vec::Vec<char>) -> String {
+    chars.into_iter().collect()
+}
+
+#[cfg(feature = "proptest")]
+impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenChars<MIN, MAX> {
+    type Strategy = proptest::strategy::Map<
+        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
+        fn(alloc::vec::Vec<char>) -> String,
+    >;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        const { assert!(MIN <= MAX, "LenChars requires MIN <= MAX") };
+        // `proptest::char::any()` emits any Unicode scalar value
+        // (no surrogate code points). `char.count() == vec.len()`
+        // for the generated `Vec<char>`, so the resulting `String`
+        // has exactly the requested scalar count.
+        proptest::collection::vec(proptest::char::any(), MIN..=MAX).prop_map(collect_chars)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenBytes<MIN, MAX> {
+    type Strategy = proptest::strategy::Map<
+        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
+        fn(alloc::vec::Vec<char>) -> String,
+    >;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        const { assert!(MIN <= MAX, "LenBytes requires MIN <= MAX") };
+        // ASCII-only chars: every char is exactly one UTF-8 byte,
+        // so the resulting `String`'s byte length equals the
+        // `Vec<char>` length.
+        proptest::collection::vec(proptest::char::range('\u{20}', '\u{7E}'), MIN..=MAX)
+            .prop_map(collect_chars)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl ArbitraryRule<String> for NonEmpty {
+    type Strategy = proptest::strategy::Map<
+        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
+        fn(alloc::vec::Vec<char>) -> String,
+    >;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::collection::vec(proptest::char::any(), 1_usize..=STRING_ARBITRARY_MAX_LEN)
+            .prop_map(collect_chars)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<P> ArbitraryRule<String> for EachChar<P>
+where
+    P: CharStrategy,
+{
+    type Strategy = proptest::strategy::Map<
+        proptest::collection::VecStrategy<<P as CharStrategy>::Strategy>,
+        fn(alloc::vec::Vec<char>) -> String,
+    >;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::collection::vec(P::arbitrary_char(), 0_usize..=STRING_ARBITRARY_MAX_LEN)
+            .prop_map(collect_chars)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<P> ArbitraryRule<String> for FirstChar<P>
+where
+    P: CharStrategy,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<String>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        // `FirstChar<P>` admits the empty string. Generate either
+        // an empty string or a `P`-admissible head followed by an
+        // arbitrary-char tail. `BoxedStrategy` hides the strategy
+        // tree from the public type to keep the API surface
+        // tractable.
+        let tail =
+            proptest::collection::vec(proptest::char::any(), 0_usize..STRING_ARBITRARY_MAX_LEN);
+        proptest::prop_oneof![
+            proptest::strategy::Just(String::new()),
+            (P::arbitrary_char(), tail).prop_map(|(head, tail)| {
+                let mut out = String::with_capacity(tail.len() + 1);
+                out.push(head);
+                for ch in tail {
+                    out.push(ch);
+                }
+                out
+            }),
+        ]
+        .boxed()
+    }
+}
+
+#[cfg(all(feature = "hex", feature = "proptest"))]
+impl<const LEN: usize> ArbitraryRule<String> for HexFixedLower<LEN> {
+    type Strategy = proptest::strategy::Map<
+        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
+        fn(alloc::vec::Vec<char>) -> String,
+    >;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        const {
+            assert!(
+                LEN.is_multiple_of(2),
+                "HexFixedLower requires LEN to be even (one byte = two hex chars)",
+            );
+        }
+        proptest::collection::vec(
+            char_strategy_from_ranges(alloc::vec!['0'..='9', 'a'..='f']),
+            LEN..=LEN,
+        )
+        .prop_map(collect_chars)
+    }
+}
+
+#[cfg(all(feature = "hex", feature = "proptest"))]
+impl<const LEN: usize> ArbitraryRule<String> for HexFixedAny<LEN> {
+    type Strategy = proptest::strategy::Map<
+        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
+        fn(alloc::vec::Vec<char>) -> String,
+    >;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        const {
+            assert!(
+                LEN.is_multiple_of(2),
+                "HexFixedAny requires LEN to be even (one byte = two hex chars)",
+            );
+        }
+        proptest::collection::vec(
+            char_strategy_from_ranges(alloc::vec!['0'..='9', 'a'..='f', 'A'..='F']),
+            LEN..=LEN,
+        )
+        .prop_map(collect_chars)
     }
 }
 

@@ -17,6 +17,8 @@
 //!   denominator must be non-zero; the rule rejects everything when
 //!   the range is empty (`MIN > MAX`) or the denominator is zero.
 
+#[cfg(feature = "proptest")]
+use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// `f32` / `f64` extras shared by every float rule below.
@@ -101,6 +103,100 @@ macro_rules! impl_float {
 
 impl_float!(f32);
 impl_float!(f64);
+
+/// `Float` types that expose `proptest` strategies for the float
+/// primitive rules to consume.
+///
+/// Available behind the `proptest` feature.
+#[cfg(feature = "proptest")]
+pub trait FloatArbitrary: Float {
+    /// Strategy that emits any value of this float type — NaN,
+    /// infinities, and finite values all included. Used by `NotNan`
+    /// and `NotInfinite`, whose admissible regions are dense.
+    type AnyStrategy: proptest::strategy::Strategy<Value = Self>;
+
+    /// Strategy that emits only finite values (no NaN, no
+    /// infinities). Used by `Finite`'s `ArbitraryRule` impl so the
+    /// strategy is admissible by construction.
+    type FiniteStrategy: proptest::strategy::Strategy<Value = Self>;
+
+    /// Strategy that emits values within a closed `[lo, hi]` range
+    /// (NaN and infinities excluded; both endpoints reachable).
+    type ClosedRangeStrategy: proptest::strategy::Strategy<Value = Self>;
+
+    /// Strategy that emits any value of this float type.
+    fn arbitrary_any() -> Self::AnyStrategy;
+    /// Strategy that emits only finite values.
+    fn arbitrary_finite() -> Self::FiniteStrategy;
+    /// Strategy that emits values within an inclusive `[lo, hi]`
+    /// closed range (no NaN; both endpoints inclusive).
+    fn arbitrary_in_closed_range(lo: Self, hi: Self) -> Self::ClosedRangeStrategy;
+}
+
+#[cfg(feature = "proptest")]
+impl FloatArbitrary for f32 {
+    type AnyStrategy = proptest::num::f32::Any;
+    type FiniteStrategy = proptest::num::f32::Any;
+    type ClosedRangeStrategy = proptest::strategy::BoxedStrategy<Self>;
+
+    #[inline]
+    fn arbitrary_any() -> Self::AnyStrategy {
+        proptest::num::f32::ANY
+    }
+
+    #[inline]
+    fn arbitrary_finite() -> Self::FiniteStrategy {
+        // POSITIVE | NEGATIVE | ZERO covers every finite f32 (the
+        // sub-normals included).
+        proptest::num::f32::POSITIVE | proptest::num::f32::NEGATIVE | proptest::num::f32::ZERO
+    }
+
+    #[inline]
+    fn arbitrary_in_closed_range(lo: Self, hi: Self) -> Self::ClosedRangeStrategy {
+        // proptest's `Range<f32>` strategy is half-open
+        // `[lo, hi)`. Wrap the inner strategy in a post-`clamp` so
+        // the closed upper bound is reachable without rejection
+        // sampling; the closure capture is hidden behind
+        // `BoxedStrategy`. Guard the degenerate `lo == hi` case
+        // by widening the inner range by one ulp; `clamp` collapses
+        // it back to the singleton.
+        use proptest::strategy::Strategy as _;
+        let span_hi = if lo < hi {
+            hi
+        } else {
+            Self::from_bits(lo.to_bits().wrapping_add(1))
+        };
+        (lo..span_hi).prop_map(move |v| v.clamp(lo, hi)).boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl FloatArbitrary for f64 {
+    type AnyStrategy = proptest::num::f64::Any;
+    type FiniteStrategy = proptest::num::f64::Any;
+    type ClosedRangeStrategy = proptest::strategy::BoxedStrategy<Self>;
+
+    #[inline]
+    fn arbitrary_any() -> Self::AnyStrategy {
+        proptest::num::f64::ANY
+    }
+
+    #[inline]
+    fn arbitrary_finite() -> Self::FiniteStrategy {
+        proptest::num::f64::POSITIVE | proptest::num::f64::NEGATIVE | proptest::num::f64::ZERO
+    }
+
+    #[inline]
+    fn arbitrary_in_closed_range(lo: Self, hi: Self) -> Self::ClosedRangeStrategy {
+        use proptest::strategy::Strategy as _;
+        let span_hi = if lo < hi {
+            hi
+        } else {
+            Self::from_bits(lo.to_bits().wrapping_add(1))
+        };
+        (lo..span_hi).prop_map(move |v| v.clamp(lo, hi)).boxed()
+    }
+}
 
 /// Errors common to every float primitive.
 ///
@@ -297,6 +393,90 @@ impl<F: Float, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const
             return Err(FloatError::OutOfRange);
         }
         Ok(raw)
+    }
+}
+
+// ─── `ArbitraryRule` impls. ───────────────────────────────────────
+
+#[cfg(feature = "proptest")]
+fn float_is_not_nan<F: Float>(value: &F) -> bool {
+    !value.float_is_nan()
+}
+
+#[cfg(feature = "proptest")]
+fn float_is_not_infinite<F: Float>(value: &F) -> bool {
+    !value.float_is_infinite()
+}
+
+#[cfg(feature = "proptest")]
+impl<F> ArbitraryRule<F> for NotNan
+where
+    F: FloatArbitrary + core::fmt::Debug,
+{
+    // `NotNan` admits every value except NaN; the admissible
+    // region is dense, so a single `prop_filter` on the
+    // unrestricted `any` strategy is cheap.
+    type Strategy = proptest::strategy::Filter<<F as FloatArbitrary>::AnyStrategy, fn(&F) -> bool>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        F::arbitrary_any().prop_filter("not NaN", float_is_not_nan::<F>)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<F> ArbitraryRule<F> for NotInfinite
+where
+    F: FloatArbitrary + core::fmt::Debug,
+{
+    // Admits every value except `+/-INF`; the admissible region is
+    // dense.
+    type Strategy = proptest::strategy::Filter<<F as FloatArbitrary>::AnyStrategy, fn(&F) -> bool>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        F::arbitrary_any().prop_filter("not infinite", float_is_not_infinite::<F>)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<F> ArbitraryRule<F> for Finite
+where
+    F: FloatArbitrary + core::fmt::Debug,
+{
+    // Use the finite-only strategy directly: every emitted value
+    // is admissible by construction.
+    type Strategy = <F as FloatArbitrary>::FiniteStrategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        F::arbitrary_finite()
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<F, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DEN: i64>
+    ArbitraryRule<F> for InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>
+where
+    F: FloatArbitrary + core::fmt::Debug,
+{
+    type Strategy = <F as FloatArbitrary>::ClosedRangeStrategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        const {
+            assert!(MIN_DEN > 0, "InClosedRange requires MIN_DEN > 0");
+            assert!(MAX_DEN > 0, "InClosedRange requires MAX_DEN > 0");
+            assert!(
+                (MIN_NUM as i128) * (MAX_DEN as i128) <= (MAX_NUM as i128) * (MIN_DEN as i128),
+                "InClosedRange requires MIN_NUM/MIN_DEN <= MAX_NUM/MAX_DEN",
+            );
+        };
+        let lo = F::from_ratio(MIN_NUM, MIN_DEN);
+        let hi = F::from_ratio(MAX_NUM, MAX_DEN);
+        F::arbitrary_in_closed_range(lo, hi)
     }
 }
 

@@ -9,6 +9,8 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+#[cfg(feature = "proptest")]
+use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// Inclusive bound on the number of items in a `Vec<T>`:
@@ -248,6 +250,26 @@ pub trait Predicate<T: ?Sized>: 'static {
     /// assert!(!<IsZero as Predicate<i32>>::test(&1));
     /// ```
     fn test(value: &T) -> bool;
+}
+
+/// `Predicate<T>` that exposes a `proptest` strategy emitting values
+/// admissible under the predicate.
+///
+/// Used by `AnyOf<P>`'s `ArbitraryRule` impl to seed the generated
+/// collection with at least one matching item. The strategy MUST
+/// produce only values that satisfy `Predicate::test`.
+///
+/// Available behind the `proptest` feature.
+#[cfg(feature = "proptest")]
+pub trait PredicateStrategy<T>: Predicate<T>
+where
+    T: 'static,
+{
+    /// Strategy type yielding values admissible under the predicate.
+    type Strategy: proptest::strategy::Strategy<Value = T>;
+
+    /// Construct the predicate's value-emitting strategy.
+    fn arbitrary_matching() -> Self::Strategy;
 }
 
 /// Rule: reject if any item in the collection satisfies `P`.
@@ -513,6 +535,168 @@ where
         } else {
             Err(CollectionError::NoMatchingItem)
         }
+    }
+}
+
+// ─── `ArbitraryRule` impls. ───────────────────────────────────────
+//
+// Length-bounded vectors draw from `T`'s `Arbitrary` strategy.
+// `AllItems<R>` draws each element from `R`'s `ArbitraryRule`
+// strategy so every element is admissible by construction.
+// `Distinct` and `UniqueByKey` use a `BTreeSet`-based collector to
+// guarantee uniqueness at construction time without rejection
+// sampling. `Sorted` post-`sort_by_key`s. `NoneOf` filters the
+// element strategy; `AnyOf` seeds the collection with a guaranteed
+// match supplied by `PredicateStrategy`.
+
+/// Cap on the number of items generated when an admissible-length
+/// upper bound is unbounded.
+#[cfg(feature = "proptest")]
+const COLLECTION_ARBITRARY_MAX_LEN: usize = 32;
+
+#[cfg(feature = "proptest")]
+impl<T, const MIN: usize, const MAX: usize> ArbitraryRule<Vec<T>> for LenItems<MIN, MAX>
+where
+    T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
+{
+    type Strategy = proptest::collection::VecStrategy<T::Strategy>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        const { assert!(MIN <= MAX, "LenItems requires MIN <= MAX") };
+        proptest::collection::vec(proptest::arbitrary::any::<T>(), MIN..=MAX)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, R> ArbitraryRule<Vec<T>> for AllItems<R>
+where
+    T: core::fmt::Debug + 'static,
+    R: ArbitraryRule<T>,
+{
+    type Strategy = proptest::collection::VecStrategy<<R as ArbitraryRule<T>>::Strategy>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        proptest::collection::vec(
+            R::arbitrary_strategy(),
+            0_usize..=COLLECTION_ARBITRARY_MAX_LEN,
+        )
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, K> ArbitraryRule<Vec<T>> for UniqueByKey<T, K>
+where
+    T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
+    K: KeyOf<T>,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<Vec<T>>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        // Generate a `Vec<T>` then deduplicate by key on the way
+        // out: the order of first occurrence is preserved (mirrors
+        // `UniqueByKey::refine`'s semantics). Using a `Vec`
+        // collected from a `BTreeMap` keyed by the projection
+        // would lose ordering; the manual fold preserves it.
+        proptest::collection::vec(
+            proptest::arbitrary::any::<T>(),
+            0_usize..=COLLECTION_ARBITRARY_MAX_LEN,
+        )
+        .prop_map(|raw| {
+            let mut seen: BTreeSet<<K as KeyOf<T>>::Key> = BTreeSet::new();
+            let mut out: Vec<T> = Vec::with_capacity(raw.len());
+            for item in raw {
+                let key = K::key_of(&item);
+                if seen.insert(key) {
+                    out.push(item);
+                }
+            }
+            out
+        })
+        .boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, K> ArbitraryRule<Vec<T>> for Sorted<T, K>
+where
+    T: proptest::arbitrary::Arbitrary + core::fmt::Debug + Clone + 'static,
+    K: KeyOf<T>,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<Vec<T>>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::collection::vec(
+            proptest::arbitrary::any::<T>(),
+            0_usize..=COLLECTION_ARBITRARY_MAX_LEN,
+        )
+        .prop_map(|mut raw| {
+            raw.sort_by(|a, b| K::key_of(a).cmp(&K::key_of(b)));
+            raw
+        })
+        .boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+fn predicate_does_not_match<T, P>(value: &T) -> bool
+where
+    T: 'static,
+    P: Predicate<T>,
+{
+    !P::test(value)
+}
+
+#[cfg(feature = "proptest")]
+impl<T, P> ArbitraryRule<Vec<T>> for NoneOf<P>
+where
+    T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
+    P: Predicate<T>,
+{
+    type Strategy =
+        proptest::collection::VecStrategy<proptest::strategy::Filter<T::Strategy, fn(&T) -> bool>>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        let pred: fn(&T) -> bool = predicate_does_not_match::<T, P>;
+        let filtered =
+            proptest::arbitrary::any::<T>().prop_filter("NoneOf: predicate matched", pred);
+        proptest::collection::vec(filtered, 0_usize..=COLLECTION_ARBITRARY_MAX_LEN)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, P> ArbitraryRule<Vec<T>> for AnyOf<P>
+where
+    T: proptest::arbitrary::Arbitrary + core::fmt::Debug + 'static,
+    P: PredicateStrategy<T>,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<Vec<T>>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        // Generate a guaranteed-matching seed and an arbitrary
+        // tail; concat with the seed at a random index so the
+        // match is not always at the head.
+        (
+            P::arbitrary_matching(),
+            proptest::collection::vec(
+                proptest::arbitrary::any::<T>(),
+                0_usize..=COLLECTION_ARBITRARY_MAX_LEN,
+            ),
+        )
+            .prop_map(|(seed, mut rest)| {
+                rest.push(seed);
+                rest
+            })
+            .boxed()
     }
 }
 

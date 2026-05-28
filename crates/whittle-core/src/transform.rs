@@ -15,6 +15,8 @@
 use alloc::string::{String, ToString};
 use core::marker::PhantomData;
 
+#[cfg(feature = "proptest")]
+use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// Lowercase ASCII letters in `raw` and delegate to `R`.
@@ -153,6 +155,90 @@ where
         // require either reusing `raw`'s buffer (drains/copies) or
         // a non-`String` carrier — out of scope for the transformer.
         R::refine(raw.trim().to_string())
+    }
+}
+
+// ─── `ArbitraryRule` impls. ───────────────────────────────────────
+//
+// Each transformer is implemented as `R::arbitrary_strategy()`
+// composed with the transformer's normalisation step. The stored
+// carrier is always the post-transform canonical form — the same
+// guarantee `Rule::refine` makes.
+
+#[cfg(feature = "proptest")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "matches `prop_map`'s `Fn(Self::Value) -> Out` signature"
+)]
+fn ascii_lowercase_string(raw: String) -> String {
+    raw.to_ascii_lowercase()
+}
+
+#[cfg(feature = "proptest")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "matches `prop_map`'s `Fn(Self::Value) -> Out` signature"
+)]
+fn ascii_uppercase_string(raw: String) -> String {
+    raw.to_ascii_uppercase()
+}
+
+#[cfg(feature = "proptest")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "matches `prop_map`'s `Fn(Self::Value) -> Out` signature"
+)]
+fn trim_to_owned(raw: String) -> String {
+    raw.trim().to_string()
+}
+
+#[cfg(feature = "proptest")]
+impl<R> ArbitraryRule<String> for AsciiLowercase<R>
+where
+    R: ArbitraryRule<String>,
+{
+    type Strategy =
+        proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        R::arbitrary_strategy().prop_map(ascii_lowercase_string)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<R> ArbitraryRule<String> for AsciiUppercase<R>
+where
+    R: ArbitraryRule<String>,
+{
+    type Strategy =
+        proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        R::arbitrary_strategy().prop_map(ascii_uppercase_string)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<R> ArbitraryRule<String> for Trim<R>
+where
+    R: ArbitraryRule<String>,
+{
+    // Contract: `R`'s strategy must yield strings whose trimmed
+    // form is still admissible under `R::refine` (the inner rule
+    // sees the trimmed string). For rules whose admissible region
+    // is invariant under trimming — `NonEmpty` over non-whitespace
+    // characters, alnum-only regimes, hex — this holds trivially.
+    type Strategy =
+        proptest::strategy::Map<<R as ArbitraryRule<String>>::Strategy, fn(String) -> String>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        R::arbitrary_strategy().prop_map(trim_to_owned)
     }
 }
 

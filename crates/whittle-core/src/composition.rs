@@ -11,6 +11,8 @@
 
 use core::marker::PhantomData;
 
+#[cfg(feature = "proptest")]
+use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// Both rules must accept. `A::refine` runs first; on success its
@@ -121,6 +123,53 @@ where
                 Err(right) => Err([left, right]),
             },
         }
+    }
+}
+
+// ─── `ArbitraryRule` impls. ───────────────────────────────────────
+//
+// `And<A, B>` drives `A`'s strategy as the generator and filters
+// candidates against `B::refine`. The user picks `A` as the
+// generator-shaped rule (`Within`, `LenChars`, etc.); `B` may be a
+// further predicate (e.g. `EachChar<...>`). If `B` rejects most of
+// `A`'s output, swap the operands so the generator-shaped rule is
+// on the left.
+//
+// `Or<A, B>` is the union of admissible regions; `prop_oneof!`
+// picks uniformly between the two sub-strategies.
+
+#[cfg(feature = "proptest")]
+impl<T, E, A, B> ArbitraryRule<T> for And<A, B>
+where
+    T: core::fmt::Debug + 'static,
+    E: 'static,
+    A: ArbitraryRule<T> + Rule<T, Error = E>,
+    B: Rule<T, Error = E>,
+{
+    type Strategy = proptest::strategy::FilterMap<A::Strategy, fn(T) -> Option<T>>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        A::arbitrary_strategy()
+            .prop_filter_map("And: right rule rejected", |raw| B::refine(raw).ok())
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, E, A, B> ArbitraryRule<T> for Or<A, B>
+where
+    T: core::fmt::Debug + Clone + 'static,
+    E: 'static,
+    A: ArbitraryRule<T> + Rule<T, Error = E>,
+    B: ArbitraryRule<T> + Rule<T, Error = E>,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::prop_oneof![A::arbitrary_strategy(), B::arbitrary_strategy()].boxed()
     }
 }
 

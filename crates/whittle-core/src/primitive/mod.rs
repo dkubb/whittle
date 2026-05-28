@@ -10,9 +10,15 @@ pub use collection::{
     AllItems, AnyOf, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf, Predicate,
     Sorted, UniqueByKey,
 };
+#[cfg(feature = "proptest")]
+pub use float::FloatArbitrary;
 pub use float::{Finite, Float, FloatError, InClosedRange, NotInfinite, NotNan};
+#[cfg(feature = "proptest")]
+pub use numeric::NumericArbitrary;
 pub use numeric::{AtLeast, AtMost, Negative, NonZero, Numeric, NumericError, Positive, Within};
 pub use path::{PathError, RelativePath};
+#[cfg(feature = "proptest")]
+pub use string::CharStrategy;
 pub use string::{
     AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart,
     LenBytes, LenChars, NonControl, NonEmpty, StringError,

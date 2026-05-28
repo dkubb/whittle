@@ -10,6 +10,8 @@
 
 use alloc::string::String;
 
+#[cfg(feature = "proptest")]
+use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// String is a normalized, forward-slash-segmented relative path.
@@ -138,6 +140,83 @@ impl Rule<String> for RelativePath {
         }
         Ok(raw)
     }
+}
+
+// ─── `ArbitraryRule` impl. ────────────────────────────────────────
+
+#[cfg(feature = "proptest")]
+impl ArbitraryRule<String> for RelativePath {
+    type Strategy = proptest::strategy::Map<
+        proptest::collection::VecStrategy<proptest::char::CharStrategy<'static>>,
+        fn(alloc::vec::Vec<char>) -> String,
+    >;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        // Generate a non-empty `Vec<char>` drawn from a segment-
+        // safe ASCII alphabet (alnum + `_` + `-` + `/`), then
+        // collect into a `String`. Forbidden shapes:
+        //
+        // - leading `/` is excluded by the post-`collect` fixup
+        //   below: the first char is constrained to alnum/`_`/`-`,
+        //   so absolute Unix paths can't appear.
+        // - `..` segments are excluded by the alphabet: the only
+        //   non-alnum chars are `/`, `_`, `-`, and `.` is never
+        //   sampled, so the `..` segment is unrepresentable.
+        // - Windows drive prefixes (`C:`) are excluded: `:` is not
+        //   in the alphabet.
+        // - empty segments would arise from `//`. The alphabet
+        //   never emits the path as starting with `/`, but interior
+        //   `//` would still emit `EmptySegment`. The fixup below
+        //   coalesces runs of `/` into a single `/`.
+        proptest::collection::vec(
+            proptest::char::ranges(alloc::borrow::Cow::Owned(alloc::vec![
+                'A'..='Z',
+                'a'..='z',
+                '0'..='9',
+                '_'..='_',
+                '-'..='-',
+                '/'..='/',
+            ])),
+            1_usize..=16_usize,
+        )
+        .prop_map(collect_relative_path_chars)
+    }
+}
+
+#[cfg(feature = "proptest")]
+fn collect_relative_path_chars(chars: alloc::vec::Vec<char>) -> String {
+    // Normalize the generated `Vec<char>` into a relative path:
+    //
+    // 1. Coalesce consecutive `/`s to a single `/`.
+    // 2. Drop a leading `/`.
+    // 3. Drop a trailing `/`.
+    // 4. If the result is empty (everything collapsed away), seed
+    //    a single alnum char so the path is non-empty.
+    let mut out = String::with_capacity(chars.len());
+    let mut prev_slash = false;
+    for ch in chars {
+        if ch == '/' {
+            if prev_slash {
+                continue;
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+        }
+        out.push(ch);
+    }
+    if out.starts_with('/') {
+        out.remove(0);
+    }
+    if out.ends_with('/') {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push('a');
+    }
+    out
 }
 
 /// Detect a Windows drive-letter prefix like `C:` / `c:foo`.

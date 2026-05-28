@@ -5,6 +5,8 @@
 //! Each primitive carries a typed error variant that includes the
 //! offending value so callers can construct precise diagnostics.
 
+#[cfg(feature = "proptest")]
+use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// Inclusive numeric range: `MIN <= value <= MAX`.
@@ -284,6 +286,124 @@ impl Numeric for isize {
     }
 }
 
+// ─── Proptest support: `NumericArbitrary`. ───────────────────────
+//
+// Each numeric `Rule` admits a contiguous (or near-contiguous)
+// integer range. `NumericArbitrary` exposes a per-type strategy that
+// emits values within a clamped range, so rules can compose their
+// admissible region from `i128` bounds without rejection sampling.
+
+/// Numeric types that expose a `proptest` range strategy.
+///
+/// Implementations clamp the requested `[min, max]` bounds (widened
+/// to `i128`) to the type's own range and return a strategy whose
+/// values are guaranteed to fit in `Self`. Rules like `Within<MIN,
+/// MAX>` and `Positive` use this trait to construct their
+/// `ArbitraryRule` strategies without rejection sampling.
+///
+/// `Copy` is required so the strategy can yield values through a
+/// `fn(&T) -> bool` filter without `Clone`-ing.
+///
+/// Available behind the `proptest` feature.
+#[cfg(feature = "proptest")]
+pub trait NumericArbitrary: Numeric + Copy {
+    /// Strategy type emitted by [`Self::arbitrary_in_range`].
+    type RangeStrategy: proptest::strategy::Strategy<Value = Self>;
+
+    /// Strategy that emits values in the inclusive `[min, max]`
+    /// range, clamped to `Self`'s own range.
+    ///
+    /// If the clamped range is empty, implementations must still
+    /// return a non-empty strategy (typically a single endpoint).
+    /// Callers should not pass ranges that, after clamping, would
+    /// be empty for the type they are generating; the rules in this
+    /// module never do.
+    fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy;
+}
+
+/// Generate `NumericArbitrary` impls for the supported integer
+/// types. Each impl clamps the requested `[min, max]` bounds to the
+/// type's own representable range before constructing a proptest
+/// range strategy.
+#[cfg(feature = "proptest")]
+macro_rules! impl_numeric_arbitrary {
+    ($($ty:ty),+) => { $(
+        impl NumericArbitrary for $ty {
+            type RangeStrategy = core::ops::RangeInclusive<$ty>;
+
+            #[inline]
+            fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+                let ty_min = i128::from(<$ty>::MIN);
+                let ty_max = i128::from(<$ty>::MAX);
+                let lo = if min < ty_min { ty_min } else { min };
+                let hi = if max > ty_max { ty_max } else { max };
+                // `lo, hi` are clamped to `[ty_min, ty_max]`,
+                // which fits `Self` by construction; the
+                // `try_from` fallbacks pin to the type's endpoints
+                // for safety even though they cannot be reached
+                // here.
+                let lo = <$ty>::try_from(lo).unwrap_or(<$ty>::MIN);
+                let hi = <$ty>::try_from(hi).unwrap_or(<$ty>::MAX);
+                lo..=hi
+            }
+        }
+    )+ };
+}
+
+#[cfg(feature = "proptest")]
+impl_numeric_arbitrary!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+// `i128` cannot widen losslessly *from* itself via `i128::from`,
+// but the bounds are already `i128`. Skip the conversion entirely
+// and clamp in `i128`.
+#[cfg(feature = "proptest")]
+impl NumericArbitrary for i128 {
+    type RangeStrategy = core::ops::RangeInclusive<Self>;
+
+    #[inline]
+    fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+        min..=max
+    }
+}
+
+// `usize` / `isize` widen through their architecture-specific size.
+// On every supported platform `<int>::BITS <= 64`, so the i128
+// bounds fit comfortably; clamp through that.
+#[cfg(feature = "proptest")]
+impl NumericArbitrary for usize {
+    type RangeStrategy = core::ops::RangeInclusive<Self>;
+
+    #[inline]
+    fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+        let ty_min: i128 = 0;
+        let ty_max: i128 = i128::from(u64::MAX);
+        let lo = if min < ty_min { ty_min } else { min };
+        let hi = if max > ty_max { ty_max } else { max };
+        // `lo, hi` are clamped to `[0, u64::MAX]`; both fit usize
+        // on every supported platform (BITS <= 64 enforced
+        // elsewhere).
+        let lo = Self::try_from(lo).unwrap_or(0);
+        let hi = Self::try_from(hi).unwrap_or(Self::MAX);
+        lo..=hi
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl NumericArbitrary for isize {
+    type RangeStrategy = core::ops::RangeInclusive<Self>;
+
+    #[inline]
+    fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+        let ty_min: i128 = i128::from(i64::MIN);
+        let ty_max: i128 = i128::from(i64::MAX);
+        let lo = if min < ty_min { ty_min } else { min };
+        let hi = if max > ty_max { ty_max } else { max };
+        let lo = Self::try_from(lo).unwrap_or(Self::MIN);
+        let hi = Self::try_from(hi).unwrap_or(Self::MAX);
+        lo..=hi
+    }
+}
+
 // ─── Rule impls. ──────────────────────────────────────────────────
 //
 // `Within<MIN, MAX>` is a nominal newtype that delegates to the
@@ -381,6 +501,104 @@ where
             return Err(NumericError::OutOfRange { value: widened });
         }
         T::from_i128(widened)
+    }
+}
+
+// ─── `ArbitraryRule` impls. ───────────────────────────────────────
+//
+// Each rule's strategy emits values that are admissible by
+// construction: a `[min, max]` window clamped to the target type's
+// range, plus a `prop_filter` for `NonZero` (where the admissible
+// region is dense and the rejection-sampling cost is one in
+// ~2^N).
+
+#[cfg(feature = "proptest")]
+impl<T, const MIN: i128, const MAX: i128> ArbitraryRule<T> for Within<MIN, MAX>
+where
+    T: NumericArbitrary + core::fmt::Debug,
+{
+    type Strategy = <T as NumericArbitrary>::RangeStrategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        const { assert!(MIN <= MAX, "Within: MIN must be <= MAX") };
+        T::arbitrary_in_range(MIN, MAX)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, const MIN: i128> ArbitraryRule<T> for AtLeast<MIN>
+where
+    T: NumericArbitrary + core::fmt::Debug,
+{
+    type Strategy = <T as NumericArbitrary>::RangeStrategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        T::arbitrary_in_range(MIN, i128::MAX)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, const MAX: i128> ArbitraryRule<T> for AtMost<MAX>
+where
+    T: NumericArbitrary + core::fmt::Debug,
+{
+    type Strategy = <T as NumericArbitrary>::RangeStrategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        T::arbitrary_in_range(i128::MIN, MAX)
+    }
+}
+
+#[cfg(feature = "proptest")]
+fn numeric_is_non_zero<T: Numeric + Copy>(value: &T) -> bool {
+    (*value).into_i128() != 0_i128
+}
+
+#[cfg(feature = "proptest")]
+impl<T> ArbitraryRule<T> for NonZero
+where
+    T: NumericArbitrary + core::fmt::Debug,
+{
+    // `NonZero` admits every value except `0`; the admissible
+    // region is dense (one excluded value out of ~2^N). Rejection
+    // sampling on the full range is cheap.
+    type Strategy =
+        proptest::strategy::Filter<<T as NumericArbitrary>::RangeStrategy, fn(&T) -> bool>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        T::arbitrary_in_range(i128::MIN, i128::MAX)
+            .prop_filter("non-zero", numeric_is_non_zero::<T>)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T> ArbitraryRule<T> for Positive
+where
+    T: NumericArbitrary + core::fmt::Debug,
+{
+    type Strategy = <T as NumericArbitrary>::RangeStrategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        T::arbitrary_in_range(1_i128, i128::MAX)
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T> ArbitraryRule<T> for Negative
+where
+    T: NumericArbitrary + core::fmt::Debug,
+{
+    type Strategy = <T as NumericArbitrary>::RangeStrategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        T::arbitrary_in_range(i128::MIN, -1_i128)
     }
 }
 

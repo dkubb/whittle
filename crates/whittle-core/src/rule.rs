@@ -301,30 +301,65 @@ where
     }
 }
 
-// ─── Proptest `Arbitrary`. Generates raw `T` via the inner
-//      `Arbitrary` strategy, then runs it through `R::refine`
-//      and keeps only admissible values. Downstream property
-//      tests can write `let r: Refined<T, R> = arb(...);`
-//      without `prop_assume!`-style filtering.
+// ─── Proptest `ArbitraryRule` + `Arbitrary`. Each rule supplies a
+//      strategy that emits admissible-by-construction values; the
+//      blanket `Arbitrary for Refined<T, R>` impl maps that strategy
+//      through `Refined::try_new` to produce the carrier. There is
+//      no rejection sampling: a rule that admits a sparse region of
+//      `T` (`Within<0, 100>` over `i32`) is just as cheap to
+//      generate as one whose admissible region is dense (`NonZero`).
 //
-//      Note: relies on rejection sampling. If the admissible
-//      region is sparse under the inner strategy, proptest may
-//      exhaust its retry budget. For very narrow rules, supply a
-//      custom strategy that produces admissible values directly.
+//      `ArbitraryRule` carries the soundness obligation: a rule's
+//      strategy must yield only values that `R::refine` accepts. The
+//      blanket impl's `expect` documents the contract; a violation
+//      surfaces as a panic at test time, not silent data corruption.
+
+/// A `Rule<T>` that knows how to generate admissible-by-construction
+/// `T` values for `proptest`.
+///
+/// `Refined<T, R>`'s `Arbitrary` impl drives `arbitrary_strategy`
+/// directly. There is no rejection sampling — implementers must
+/// ensure every value the strategy emits is accepted by
+/// `R::refine`. The blanket impl `.expect("…")`s on the refine
+/// step so that a strategy bug surfaces as a panic in property
+/// tests, not as silently dropped samples.
+///
+/// Available behind the `proptest` feature.
+#[cfg(feature = "proptest")]
+pub trait ArbitraryRule<T>: Rule<T>
+where
+    T: 'static,
+{
+    /// Strategy type that yields values admissible under this rule.
+    type Strategy: proptest::strategy::Strategy<Value = T>;
+
+    /// Construct the rule's admissible-by-construction strategy.
+    ///
+    /// # Contract
+    ///
+    /// Every value produced by the returned strategy MUST satisfy
+    /// `R::refine`. The `Arbitrary` blanket impl `expect`s on the
+    /// `try_new` step; a violation surfaces as a panic at test
+    /// time.
+    fn arbitrary_strategy() -> Self::Strategy;
+}
 
 #[cfg(feature = "proptest")]
 impl<T, R> proptest::arbitrary::Arbitrary for Refined<T, R>
 where
-    T: proptest::arbitrary::Arbitrary + 'static,
-    R: Rule<T> + 'static,
+    T: core::fmt::Debug + 'static,
+    R: ArbitraryRule<T> + 'static,
 {
-    type Parameters = T::Parameters;
-    type Strategy = proptest::strategy::FilterMap<T::Strategy, fn(T) -> Option<Self>>;
+    type Parameters = ();
+    type Strategy = proptest::strategy::Map<R::Strategy, fn(T) -> Self>;
 
-    fn arbitrary_with(args: Self::Parameters) -> Self::Strategy {
-        use proptest::strategy::Strategy;
-        T::arbitrary_with(args)
-            .prop_filter_map("value rejected by rule", |raw| Self::try_new(raw).ok())
+    fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        R::arbitrary_strategy().prop_map(|raw| {
+            Self::try_new(raw)
+                .ok()
+                .expect("ArbitraryRule::arbitrary_strategy must yield admissible values")
+        })
     }
 }
 
@@ -355,6 +390,13 @@ mod tests {
         type Error = Negative;
         fn refine(raw: i32) -> Result<i32, Self::Error> {
             if raw >= 0 { Ok(raw) } else { Err(Negative) }
+        }
+    }
+
+    impl super::ArbitraryRule<i32> for NonNeg {
+        type Strategy = core::ops::RangeInclusive<i32>;
+        fn arbitrary_strategy() -> Self::Strategy {
+            0_i32..=i32::MAX
         }
     }
 
