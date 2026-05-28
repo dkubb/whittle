@@ -27,6 +27,34 @@ use crate::rule::Rule;
 /// and the blanket `Arbitrary` impl's `expect` would panic. Custom
 /// rule authors implement this only when the rule's admissible region
 /// is invariant under `str::trim`.
+///
+/// # Adding a `StableUnder*` marker
+///
+/// New transformer kernels (`StableUnderNfcNormalize`,
+/// `StableUnderPercentEncode`, ...) follow the same recipe. Audit
+/// each candidate impl with these four steps:
+///
+/// 1. State the morphism `f: T -> T` that the transformer applies
+///    inside its `Rule::refine` body (e.g., `str::trim`,
+///    `str::to_ascii_lowercase`, `str::nfc`).
+/// 2. For every value `v` admitted by `R::refine`, prove that
+///    `R::refine(f(v))` is also `Ok`. Cite the proof in the impl
+///    site (comment or doctest) so reviewers can replay it.
+/// 3. Implement the marker only when the proof obligation holds for
+///    EVERY admissible `v`, not only for strategy-emitted `v`. The
+///    transformer's `try_new` runs on arbitrary user input, not
+///    only on strategy output — a marker that holds "in practice"
+///    but not "in general" is unsound.
+/// 4. For composed rules (`And<A, B>`, `Or<A, B>`), the marker
+///    propagates: `And<A, B>: StableUnder*` iff both operands are.
+///    The kernel provides the blanket impls, so authors of new
+///    primitive rules only need to discharge step 2 per-rule.
+///
+/// Soundness failure is detected at proptest time: the blanket
+/// `Arbitrary for Refined<T, R>` impl panics with a `type_name`
+/// diagnostic when a strategy emits an inadmissible value, so a
+/// missed audit step surfaces as a localised panic rather than a
+/// silently dropped sample.
 pub trait StableUnderTrim {}
 
 /// Marker: rules that admit a value `v` also admit
@@ -35,7 +63,8 @@ pub trait StableUnderTrim {}
 /// Required for `AsciiLowercase<R>: ArbitraryRule<String>`. Custom
 /// rule authors implement this only when the rule's admissible
 /// region is invariant under ASCII case-lowering — i.e. the rule's
-/// alphabet is closed under `char::to_ascii_lowercase`.
+/// alphabet is closed under `char::to_ascii_lowercase`. See
+/// `StableUnderTrim` for the marker-trait audit recipe.
 pub trait StableUnderAsciiLowercase {}
 
 /// Marker: rules that admit a value `v` also admit
@@ -44,7 +73,8 @@ pub trait StableUnderAsciiLowercase {}
 /// Required for `AsciiUppercase<R>: ArbitraryRule<String>`. Custom
 /// rule authors implement this only when the rule's admissible
 /// region is invariant under ASCII case-raising — i.e. the rule's
-/// alphabet is closed under `char::to_ascii_uppercase`.
+/// alphabet is closed under `char::to_ascii_uppercase`. See
+/// `StableUnderTrim` for the marker-trait audit recipe.
 pub trait StableUnderAsciiUppercase {}
 
 /// Lowercase ASCII letters in `raw` and delegate to `R`.
