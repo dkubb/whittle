@@ -8,6 +8,8 @@
 extern crate alloc;
 
 pub mod composition;
+#[macro_use]
+mod macros;
 pub mod primitive;
 mod rule;
 
