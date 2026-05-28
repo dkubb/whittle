@@ -35,6 +35,14 @@ features that several tests depend on.
   domain types should use the flat-error pattern shown in
   `flat-domain-error.rs`.
 
+## Commit hygiene
+
+Every commit must be drift-free at commit time. A `pre-commit` hook in
+`.git/hooks/pre-commit` runs `cargo fmt --all -- --check` and refuses
+the commit if formatting drift exists; this keeps each commit tightly
+scoped and prevents unrelated rustfmt churn from being bundled in.
+Run `cargo fmt --all` and re-stage if the hook rejects a commit.
+
 ## Index
 
 ### Basics
