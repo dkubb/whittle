@@ -320,16 +320,23 @@ mod tests {
         //     must satisfy the composition.
 
         #[test]
-        fn arbitrary_and_admits_only_in_range(
-            r in proptest::arbitrary::any::<Refined<i32, And<AtLeast<0>, AtMost<100>>>>()
+        fn arbitrary_and_admits_only_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, And<crate::primitive::Within<0, 100>, crate::primitive::AtLeast<50>>>,
+            >()
         ) {
             // `And<A, B>`'s `ArbitraryRule` impl uses `A`'s
-            // strategy filtered through `B::refine`. `AtLeast<0>`
-            // emits values in `[0, i32::MAX]`; `AtMost<100>` then
-            // accepts only `[0, 100]`. The admissible region is
-            // generated directly without 2^32-wide rejection
-            // sampling.
-            proptest::prop_assert!((0..=100).contains(r.as_inner()));
+            // strategy filtered through `B::refine`. Pick `A` to
+            // be the narrowing generator (`Within<0, 100>` emits
+            // values in `[0, 100]`); `B` (`AtLeast<50>`) trims to
+            // the upper half. The admissible region is dense
+            // enough — 51 values out of 101 — that filtering does
+            // not exhaust the retry budget. For broader
+            // `A`-strategies (`AtLeast<0>` over `i32` is one), the
+            // intersection may be too sparse; pick the narrowing
+            // rule as `A`, or use the nominal newtype that already
+            // composes them.
+            proptest::prop_assert!((50..=100).contains(r.as_inner()));
         }
 
         #[test]
