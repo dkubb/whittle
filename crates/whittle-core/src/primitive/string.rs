@@ -204,6 +204,18 @@ impl core::fmt::Display for StringError {
 
 impl core::error::Error for StringError {}
 
+/// Marker: a `CharPredicate` whose admissible set excludes every
+/// character that `str::trim_start_matches(char::is_whitespace)`
+/// would remove from the front of a string.
+///
+/// Required to make `FirstChar<P>: StableUnderTrim` sound: if `P`
+/// admits whitespace, the `Arbitrary` strategy can emit a string
+/// whose head is whitespace, and trimming exposes a different
+/// character — which may not satisfy `P`. Implementations are
+/// audited against each predicate's `test` method so the marker
+/// reflects the predicate's actual admissible set.
+pub trait RejectsAsciiWhitespace: CharPredicate {}
+
 /// A pure predicate over a single `char`.
 ///
 /// Implementations are zero-sized type markers (no instance state)
@@ -285,6 +297,7 @@ impl CharPredicate for AsciiAlphanumeric {
         ch.is_ascii_alphanumeric()
     }
 }
+impl RejectsAsciiWhitespace for AsciiAlphanumeric {}
 
 /// Build a `proptest::char::CharStrategy` from a set of inclusive
 /// `char` ranges. Used by the `ArbitraryChar` impls below to express
@@ -333,6 +346,7 @@ impl CharPredicate for IdentChar {
         ch.is_ascii_alphanumeric() || ch == '_'
     }
 }
+impl RejectsAsciiWhitespace for IdentChar {}
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentChar {
@@ -372,6 +386,7 @@ impl CharPredicate for IdentStart {
         ch.is_ascii_alphabetic() || ch == '_'
     }
 }
+impl RejectsAsciiWhitespace for IdentStart {}
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentStart {
@@ -470,6 +485,8 @@ impl CharPredicate for HexChar {
         ch.is_ascii_hexdigit()
     }
 }
+#[cfg(feature = "hex")]
+impl RejectsAsciiWhitespace for HexChar {}
 
 #[cfg(all(feature = "hex", feature = "proptest"))]
 impl ArbitraryChar for HexChar {
@@ -651,6 +668,7 @@ impl CharPredicate for IdentDashChar {
         ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
     }
 }
+impl RejectsAsciiWhitespace for IdentDashChar {}
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentDashChar {
@@ -949,13 +967,17 @@ impl StableUnderAsciiUppercase for NonEmpty {}
 // predicates whose alphabet is closed under ASCII case-change.
 impl<P> StableUnderTrim for EachChar<P> {}
 
-// `FirstChar<P>` admits the empty string and otherwise only checks
-// the first character. Trim never adds characters, so the trimmed
-// head is either absent (empty admissible) or a strict subset of the
-// original char sequence; if the original first character was
-// admissible, the trimmed first character is one that was already
-// present in the admissible string and so was admissible too.
-impl<P> StableUnderTrim for FirstChar<P> {}
+// `FirstChar<P>` is trim-stable only when `P` rejects every
+// whitespace character. The unrestricted blanket would be unsound:
+// if `P` admits whitespace, the `ArbitraryRule` strategy can emit
+// `" 1"` (whitespace head, arbitrary tail). `Trim<FirstChar<P>>`
+// transforms that to `"1"` and re-checks `FirstChar<P>::refine`,
+// which may then reject the new first character. The
+// `RejectsAsciiWhitespace` marker bound makes the impl
+// predicate-aware: only predicates whose admissible set excludes
+// whitespace get the trim-stability marker, so the
+// transformer's `Arbitrary` `expect` cannot panic.
+impl<P> StableUnderTrim for FirstChar<P> where P: RejectsAsciiWhitespace {}
 
 // Case-symmetric predicates. The alphabet of each predicate listed
 // here is closed under both `char::to_ascii_lowercase` and

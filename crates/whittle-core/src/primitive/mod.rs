@@ -21,7 +21,7 @@ pub use path::{PathError, RelativePath};
 pub use string::ArbitraryChar;
 pub use string::{
     AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart,
-    LenBytes, LenChars, NonControl, NonEmpty, StringError,
+    LenBytes, LenChars, NonControl, NonEmpty, RejectsAsciiWhitespace, StringError,
 };
 #[cfg(feature = "hex")]
 pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
