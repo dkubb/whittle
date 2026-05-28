@@ -175,7 +175,7 @@ fn deserialize_runs_try_new_and_rejects_invalid_name() {
     // `LenChars<3, 32>`). `Refined::deserialize` runs `try_new`,
     // which surfaces the rule's error as a serde custom error.
     let bad_name: Result<UserInput, _> = serde_json::from_str(r#"{"name":"AB","age":30}"#);
-    assert!(bad_name.is_err());
+    bad_name.unwrap_err();
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn deserialize_runs_try_new_and_rejects_out_of_range_age() {
     // mechanism — `Refined<u8, Within<0, 150>>::deserialize` runs
     // `Within::refine` on the parsed `u8` and rejects 200.
     let bad_age: Result<UserInput, _> = serde_json::from_str(r#"{"name":"Alice","age":200}"#);
-    assert!(bad_age.is_err());
+    bad_age.unwrap_err();
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn deny_unknown_fields_rejects_extra_keys_on_outer_struct() {
     // this policy.
     let unknown_field: Result<UserInput, _> =
         serde_json::from_str(r#"{"name":"Alice","age":30,"email":"x"}"#);
-    assert!(unknown_field.is_err());
+    unknown_field.unwrap_err();
 }
 
 #[test]

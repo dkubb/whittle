@@ -471,9 +471,9 @@ mod tests {
         assert_eq!(*n.as_inner(), -1_i32);
 
         let p_zero: Result<Refined<i32, Positive>, _> = Refined::try_new(0_i32);
-        assert!(p_zero.is_err());
+        p_zero.unwrap_err();
         let n_zero: Result<Refined<i32, Negative>, _> = Refined::try_new(0_i32);
-        assert!(n_zero.is_err());
+        n_zero.unwrap_err();
     }
 
     #[test]
@@ -638,7 +638,7 @@ mod tests {
         let owned: i32 = ok.into_inner();
         assert_eq!(owned, 42_i32);
         let bad = Percent::try_new(101_i32);
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     proptest::proptest! {

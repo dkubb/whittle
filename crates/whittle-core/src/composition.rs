@@ -322,7 +322,7 @@ mod tests {
         let owned: i32 = ok.into_inner();
         assert_eq!(owned, 50_i32);
         let bad = Bounded100::try_new(101_i32);
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         let owned: i32 = big.into_inner();
         assert_eq!(owned, 150_i32);
         let bad = OutOfMiddle::try_new(50_i32);
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     #[test]

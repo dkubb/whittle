@@ -60,7 +60,6 @@ absolute_paths                  = "allow" # Macro-expanded paths (`::core::resul
 arbitrary_source_item_ordering  = "allow" # whittle orders items by logical relevance (rule + impl + test) rather than alphabetically
 arithmetic_side_effects         = "allow" # Integer arithmetic in tests/property generators is bounded by construction
 as_conversions                  = "allow" # `as` is needed for f32/f64 -> integer bound conversions in primitive rule impls
-assertions_on_result_states     = "allow" # `assert!(result.is_err())` reads more clearly than `assert_matches!` in property tests
 default_numeric_fallback        = "allow" # Test code uses bare integer literals (0..=100) — adding `_i32` suffixes is noise
 exhaustive_enums                = "allow" # Whittle's error enums are part of the public API contract; new variants would be a SemVer break by design
 exhaustive_structs              = "allow" # Same as above for error structs

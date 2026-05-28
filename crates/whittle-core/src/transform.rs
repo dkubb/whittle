@@ -50,7 +50,7 @@ use crate::rule::Rule;
 /// let err = Refined::<String, AsciiLowercase<HexFixedAny<4>>>::try_new(
 ///     "GHIJ".to_string(),
 /// );
-/// assert!(err.is_err());
+/// err.unwrap_err();
 /// # }
 /// ```
 pub struct AsciiLowercase<R>(PhantomData<fn() -> R>);
@@ -79,7 +79,7 @@ pub struct AsciiLowercase<R>(PhantomData<fn() -> R>);
 /// let err = Refined::<String, AsciiUppercase<HexFixedAny<4>>>::try_new(
 ///     "ghij".to_string(),
 /// );
-/// assert!(err.is_err());
+/// err.unwrap_err();
 /// # }
 /// ```
 pub struct AsciiUppercase<R>(PhantomData<fn() -> R>);
@@ -108,7 +108,7 @@ pub struct AsciiUppercase<R>(PhantomData<fn() -> R>);
 /// let blank = Refined::<String, Trim<NonEmpty>>::try_new(
 ///     "   ".to_string(),
 /// );
-/// assert!(blank.is_err());
+/// blank.unwrap_err();
 /// ```
 pub struct Trim<R>(PhantomData<fn() -> R>);
 
@@ -239,7 +239,7 @@ mod tests {
         // rejects the canonical form.
         let bad: Result<Refined<String, Trim<NonEmpty>>, _> =
             Refined::try_new("   ".to_string());
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     #[test]

@@ -52,5 +52,5 @@ fn user_name_admits_non_empty_and_supports_clone_and_into_inner() {
 #[test]
 fn user_name_rejects_empty() {
     let bad = UserName::try_new(String::new());
-    assert!(bad.is_err());
+    bad.unwrap_err();
 }

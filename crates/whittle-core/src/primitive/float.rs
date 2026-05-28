@@ -340,10 +340,10 @@ mod tests {
 
     #[test]
     fn not_nan_admits_zero_negative_and_inf() {
-        assert!(NotNan::refine(0.0_f64).is_ok());
-        assert!(NotNan::refine(-1.5_f64).is_ok());
-        assert!(NotNan::refine(f64::INFINITY).is_ok());
-        assert!(NotNan::refine(f64::NEG_INFINITY).is_ok());
+        NotNan::refine(0.0_f64).unwrap();
+        NotNan::refine(-1.5_f64).unwrap();
+        NotNan::refine(f64::INFINITY).unwrap();
+        NotNan::refine(f64::NEG_INFINITY).unwrap();
     }
 
     #[test]
@@ -447,7 +447,7 @@ mod tests {
         let owned: f64 = ok.into_inner();
         assert_eq!(owned, 0.25_f64);
         let bad = UnitProbability::try_new(1.5_f64);
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     #[test]

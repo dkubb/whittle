@@ -909,7 +909,7 @@ mod tests {
         assert_eq!(good.as_inner(), "user_42");
 
         let bad: Result<Refined<String, IdentRule>, _> = Refined::try_new("1abc".to_string());
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     #[test]
@@ -1062,7 +1062,7 @@ mod tests {
         assert_eq!(ok.as_inner(), "my-crate_42");
 
         let bad: Result<Refined<String, CargoName>, _> = Refined::try_new("-leading".to_string());
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     // ─── HexFixedLower / HexFixedAny (hex feature). ──────────────
@@ -1216,7 +1216,7 @@ mod tests {
         // 39 chars — too short.
         let short: Result<Refined<String, Sha1Hex>, _> =
             Refined::try_new("356a192b7913b04c54574d18c28d46e639542".to_string());
-        assert!(short.is_err());
+        short.unwrap_err();
     }
 
     #[test]
@@ -1254,7 +1254,7 @@ mod tests {
         let owned: String = ok.into_inner();
         assert_eq!(owned, "user42");
         let bad = TestLabel::try_new("user-42".to_string());
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     proptest::proptest! {

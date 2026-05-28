@@ -86,7 +86,7 @@
 ///
 /// // Reject: empty string fails the rule.
 /// let bad = Identifier::try_new(String::new());
-/// assert!(bad.is_err());
+/// bad.unwrap_err();
 /// ```
 #[macro_export]
 macro_rules! refinement {
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn refinement_macro_string_rejects_bad() {
         let bad = TestIdentifier::try_new("1abc".to_string());
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
     fn refinement_macro_vec_rejects_overlength() {
         let too_many: Vec<i32> = (0_i32..11_i32).collect();
         let bad = TestVec::try_new(too_many);
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     #[test]

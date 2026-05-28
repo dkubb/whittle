@@ -36,8 +36,9 @@ const MIXED: &str = "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709";
 #[test]
 fn hex_fixed_lower_rejects_uppercase_and_admits_lowercase_verbatim() {
     // 1. Strict: lowercase only. Mixed-case is rejected.
+    // Uppercase is rejected by the strict rule.
     let strict_err = Refined::<String, HexFixedLower<40>>::try_new(MIXED.to_string());
-    assert!(strict_err.is_err(), "uppercase rejected by strict rule");
+    strict_err.unwrap_err();
 
     // The strict rule admits an all-lowercase input verbatim.
     let lower_in = MIXED.to_ascii_lowercase();

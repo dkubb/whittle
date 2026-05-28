@@ -281,7 +281,7 @@ where
 /// let err = serde_json::from_str::<UserInput>(
 ///     r#"{ "name": "Alice", "age": 30, "email": "x" }"#
 /// );
-/// assert!(err.is_err());
+/// assert!(matches!(err, Err(_)));
 /// # }
 /// ```
 #[cfg(feature = "serde")]

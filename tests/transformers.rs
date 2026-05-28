@@ -46,7 +46,7 @@ fn trim_strips_whitespace_and_rejects_whitespace_only_input() {
     // Whitespace-only input is empty after trimming, so the inner
     // `NonEmpty` rule rejects.
     let blank = Refined::<String, Trim<NonEmpty>>::try_new("   ".to_string());
-    assert!(blank.is_err());
+    blank.unwrap_err();
 }
 
 #[test]

@@ -836,7 +836,7 @@ mod tests {
         let owned: Vec<i32> = ok.into_inner();
         assert_eq!(owned, vec![1, 2, 3]);
         let bad = TestUniqueShort::try_new(vec![1, 1, 2]);
-        assert!(bad.is_err());
+        bad.unwrap_err();
     }
 
     proptest::proptest! {
