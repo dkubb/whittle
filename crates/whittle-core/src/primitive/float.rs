@@ -74,43 +74,33 @@ mod sealed {
     impl Sealed for f64 {}
 }
 
-impl Float for f32 {
-    #[inline]
-    fn float_is_nan(self) -> bool {
-        self.is_nan()
-    }
-    #[inline]
-    fn float_is_infinite(self) -> bool {
-        self.is_infinite()
-    }
-    #[inline]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "endpoints intended to be small integers"
-    )]
-    fn from_ratio(num: i64, den: i64) -> Self {
-        (num as Self) / (den as Self)
-    }
+// Both `f32` and `f64` implement `Float` with bodies that differ
+// only in `Self`. Expand a single template for each.
+macro_rules! impl_float {
+    ($ty:ty) => {
+        impl Float for $ty {
+            #[inline]
+            fn float_is_nan(self) -> bool {
+                self.is_nan()
+            }
+            #[inline]
+            fn float_is_infinite(self) -> bool {
+                self.is_infinite()
+            }
+            #[inline]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "endpoints intended to be small integers"
+            )]
+            fn from_ratio(num: i64, den: i64) -> Self {
+                (num as Self) / (den as Self)
+            }
+        }
+    };
 }
 
-impl Float for f64 {
-    #[inline]
-    fn float_is_nan(self) -> bool {
-        self.is_nan()
-    }
-    #[inline]
-    fn float_is_infinite(self) -> bool {
-        self.is_infinite()
-    }
-    #[inline]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "endpoints intended to be small integers"
-    )]
-    fn from_ratio(num: i64, den: i64) -> Self {
-        (num as Self) / (den as Self)
-    }
-}
+impl_float!(f32);
+impl_float!(f64);
 
 /// Errors common to every float primitive.
 ///
