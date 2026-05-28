@@ -421,6 +421,11 @@ genuinely satisfies the property. Custom rule authors should add
 their own marker impls for transformers they want to compose with;
 `And<A, B>` and `Or<A, B>` carry the marker when both operands do.
 
+The 4-step audit recipe for adding a new `StableUnder*` marker is
+documented on the `StableUnderTrim` trait's docstring in
+`crates/whittle-core/src/transform.rs`. Follow it whenever introducing
+a new transformer or a new marker impl.
+
 ### Feature gating
 
 Workspace root `Cargo.toml` lists workspace-level features
