@@ -239,6 +239,9 @@ dependencies = [
 name = "whittle"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
  "whittle-core",
 ]
 
