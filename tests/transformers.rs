@@ -53,12 +53,13 @@ fn trim_strips_whitespace_and_rejects_whitespace_only_input() {
 fn transformers_compose_and_produce_equal_refined_values_for_equivalent_inputs() {
     // Transformers compose. Outer runs first: `Trim` strips, then
     // `AsciiLowercase` lowercases, then `NonEmpty` validates.
-    type Canonical = Trim<AsciiLowercase<NonEmpty>>;
-    let canon: Refined<String, Canonical> = Refined::try_new(" Hello ".to_string()).unwrap();
+    let canon: Refined<String, Trim<AsciiLowercase<NonEmpty>>> =
+        Refined::try_new(" Hello ".to_string()).unwrap();
     assert_eq!(canon.as_inner(), "hello");
 
     // Two inputs that differ only in case + surrounding whitespace
     // produce equal `Refined` values under the same composition.
-    let other: Refined<String, Canonical> = Refined::try_new("hello".to_string()).unwrap();
+    let other: Refined<String, Trim<AsciiLowercase<NonEmpty>>> =
+        Refined::try_new("hello".to_string()).unwrap();
     assert_eq!(canon.as_inner(), other.as_inner());
 }
