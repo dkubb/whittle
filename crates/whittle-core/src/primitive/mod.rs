@@ -3,6 +3,8 @@
 pub mod collection;
 #[cfg(feature = "chrono")]
 pub mod date;
+#[cfg(feature = "chrono")]
+pub mod datetime;
 #[cfg(feature = "decimal")]
 pub mod decimal;
 pub mod float;
@@ -18,6 +20,10 @@ pub use collection::{
 pub use date::ArbitraryDate;
 #[cfg(feature = "chrono")]
 pub use date::{DateAtLeast, DateAtMost, DateError, DateInRange};
+#[cfg(all(feature = "chrono", feature = "proptest"))]
+pub use datetime::ArbitraryDateTime;
+#[cfg(feature = "chrono")]
+pub use datetime::{DateTimeAtLeast, DateTimeAtMost, DateTimeError, DateTimeInRange};
 #[cfg(all(feature = "decimal", feature = "proptest"))]
 pub use decimal::ArbitraryDecimal;
 #[cfg(feature = "decimal")]

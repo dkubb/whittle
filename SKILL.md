@@ -209,6 +209,23 @@ Cargo feature):
   `const { ... }` checks confirm both bounds are within
   `NaiveDate`'s representable range and that `MIN <= MAX`.
 
+DateTime (`crates/whittle-core/src/primitive/datetime.rs`,
+`Rule<chrono::DateTime<chrono::Utc>>`, return `DateTimeError`;
+behind the `chrono` Cargo feature):
+
+- `DateTimeAtLeast<MIN_SECS_SINCE_EPOCH>` — admit datetimes with
+  `value.timestamp() >= MIN_SECS_SINCE_EPOCH`.
+- `DateTimeAtMost<MAX_SECS_SINCE_EPOCH>` — admit datetimes with
+  `value.timestamp() <= MAX_SECS_SINCE_EPOCH`.
+- `DateTimeInRange<MIN_SECS_SINCE_EPOCH, MAX_SECS_SINCE_EPOCH>` —
+  nominal newtype hiding
+  `And<DateTimeAtLeast<MIN>, DateTimeAtMost<MAX>>`, flat
+  `DateTimeError`. Bounds encoded as `i64` seconds since the Unix
+  epoch (`DateTime::<Utc>::timestamp` — e.g. `1_704_067_200` for
+  2024-01-01 UTC) because Rust 2024 lacks `DateTime` const generics.
+  Same compile-time checks as `DateInRange`. Only the `Utc` time
+  zone is supported; convert at the boundary for other zones.
+
 Decimal (`crates/whittle-core/src/primitive/decimal.rs`,
 `Rule<rust_decimal::Decimal>`, return `DecimalError`; behind the
 `decimal` Cargo feature):
@@ -476,10 +493,11 @@ Workspace root `Cargo.toml` lists workspace-level features
 - `decimal` — enables `DecimalPositive`, `DecimalScale<S>`,
   `DecimalPrecision<P>`, `DecimalInRange<MIN_REPR, MAX_REPR, SCALE>`.
   Pulls in `rust_decimal`.
-- `chrono` — enables `DateAtLeast<MIN_DAYS_FROM_CE>`,
-  `DateAtMost<MAX_DAYS_FROM_CE>`,
-  `DateInRange<MIN_DAYS_FROM_CE, MAX_DAYS_FROM_CE>`. Pulls in
-  `chrono` (no_std-compatible, no `clock` feature).
+- `chrono` — enables the `Date` and `DateTime` rule families
+  (`DateAtLeast`, `DateAtMost`, `DateInRange` over `NaiveDate`;
+  `DateTimeAtLeast`, `DateTimeAtMost`, `DateTimeInRange` over
+  `DateTime<Utc>`). Pulls in `chrono` (no_std-compatible, no `clock`
+  feature).
 - `serde` — enables `Serialize`/`Deserialize` impls on `Refined<T, R>`.
 - `proptest` — enables `Arbitrary` impl on `Refined<T, R>`.
 
