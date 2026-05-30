@@ -150,7 +150,8 @@ can map 1:1 into its domain variants.
 - **Collection** (`Vec<T>`) — `LenItems`, `AllItems<R>`,
   `UniqueByKey`, `Distinct`, `Sorted`, `NoneOf<P>`, `AnyOf<P>`.
 - **Path** (`String`) — `RelativePath`.
-- **Composition** — `And<A, B>`, `Or<A, B>`.
+- **Composition** — `And<A, B>`, `Or<A, B>`, `Not<R>` (the last is
+  numeric-only for now).
 - **Transformers** (`Rule<String>`) — `Trim<R>`, `AsciiLowercase<R>`,
   `AsciiUppercase<R>`. Normalise input before delegating, so the
   stored carrier is the canonical form.

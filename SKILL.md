@@ -112,6 +112,13 @@ the domain; `Refined<T, R>` is implementation.
   original input. Requires `T: Clone`. Both rules must share
   `Rule::Error = E`. `Self::Error = [E; 2]` when both reject — the
   left rejection first, the right rejection second.
+- `Not<R>` (`crates/whittle-core/src/composition.rs`): inverts the
+  inner rule — admits exactly what `R` rejects. The current impl is
+  restricted to numeric carriers: `T: Numeric + Copy` and
+  `R: Rule<T, Error = NumericError>`. Emits
+  `NumericError::OutOfRange` when `R` accepts.
+  `type NotEqualTo<const N: i128> = Not<EqualTo<N>>` is the
+  canonical use; `NonZero` chains through `NotEqualTo<0>`.
 - N-ary `All<(...)>` / `Any<(...)>` operators that collapse the
   binary nesting are planned follow-up.
 - Transformers (`crates/whittle-core/src/transform.rs`): `AsciiLowercase<R>`,

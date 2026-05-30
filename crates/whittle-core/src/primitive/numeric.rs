@@ -139,7 +139,7 @@ pub struct LessThan<const MAX: i128>;
 pub struct EqualTo<const N: i128>;
 
 /// Exclusion rule: admits every value except `N`. The dual of
-/// [`EqualTo`].
+/// [`EqualTo`], defined as `Not<EqualTo<N>>`.
 ///
 /// # Examples
 ///
@@ -153,7 +153,7 @@ pub struct EqualTo<const N: i128>;
 /// let err = Refined::<i32, NotEqualTo<-1>>::try_new(-1).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: -1 });
 /// ```
-pub struct NotEqualTo<const N: i128>;
+pub type NotEqualTo<const N: i128> = crate::composition::Not<EqualTo<N>>;
 
 /// Rejects zero — type alias for [`NotEqualTo<0>`].
 ///
@@ -634,22 +634,9 @@ where
     }
 }
 
-impl<T, const N: i128> Rule<T> for NotEqualTo<N>
-where
-    T: Numeric,
-{
-    type Error = NumericError;
-
-    #[inline]
-    fn refine(raw: T) -> Result<T, Self::Error> {
-        let widened = raw.into_i128();
-        if widened == N {
-            return Err(NumericError::OutOfRange { value: widened });
-        }
-        T::from_i128(widened)
-    }
-}
-
+// `NotEqualTo<N>` is `Not<EqualTo<N>>`; its `Rule` impl comes from
+// the generic `Not<R>` impl in `composition.rs`.
+//
 // `NonZero`, `Positive`, and `Negative` are type aliases for
 // `NotEqualTo<0>`, `GreaterThan<0>`, and `LessThan<0>` respectively;
 // their `Rule` and `ArbitraryRule` impls come from the underlying
@@ -761,24 +748,8 @@ where
     }
 }
 
-#[cfg(feature = "proptest")]
-impl<T, const N: i128> ArbitraryRule<T> for NotEqualTo<N>
-where
-    T: ArbitraryNumeric + core::fmt::Debug,
-{
-    // `NotEqualTo<N>` admits every value except `N`; the admissible
-    // region is dense (one excluded value out of ~2^N). Rejection
-    // sampling on the full range is cheap.
-    type Strategy = proptest::strategy::BoxedStrategy<T>;
-
-    #[inline]
-    fn arbitrary_strategy() -> Self::Strategy {
-        use proptest::strategy::Strategy as _;
-        T::arbitrary_in_range(i128::MIN, i128::MAX)
-            .prop_filter("not equal to N", |v| (*v).into_i128() != N)
-            .boxed()
-    }
-}
+// `NotEqualTo<N>`'s `ArbitraryRule` impl comes from the generic
+// `Not<R>` impl in `composition.rs`.
 
 #[cfg(test)]
 #[expect(

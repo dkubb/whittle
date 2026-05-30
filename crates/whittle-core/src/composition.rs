@@ -1,9 +1,19 @@
-//! Binary rule composition: `And<A, B>` and `Or<A, B>`.
+//! Rule composition: `And<A, B>`, `Or<A, B>`, and `Not<R>`.
 //!
-//! Both rules must share the same `Rule::Error` type. The
-//! composition's `Self::Error` is that shared type — no positional
-//! `Left` / `Right` wrapping is exposed to callers. Domain newtypes
-//! pattern-match on the rules' flat error enum directly.
+//! `And` and `Or` are binary and share the same `Rule::Error` type
+//! across operands. The composition's `Self::Error` is that shared
+//! type — no positional `Left` / `Right` wrapping is exposed to
+//! callers. Domain newtypes pattern-match on the rules' flat error
+//! enum directly.
+//!
+//! `Not<R>` is a unary inversion combinator. The current impl is
+//! restricted to numeric carriers (`T: Numeric + Copy, R: Rule<T,
+//! Error = NumericError>`) because rejection mapping requires a
+//! variant in the parent error to express "the inner rule
+//! unexpectedly accepted." Numeric primitives reuse the existing
+//! `NumericError::OutOfRange { value }` variant. Other carrier
+//! families can add their own `Not<R>` impls under the same
+//! constraint.
 //!
 //! N-ary composition is expressed via nesting until N-ary lands —
 //! `And<A, And<B, C>>` today; the `All<(...)>` / `Any<(...)>`
@@ -86,6 +96,35 @@ pub struct And<A, B>(PhantomData<(A, B)>);
 /// ```
 pub struct Or<A, B>(PhantomData<(A, B)>);
 
+/// Rejects values that the inner rule `R` admits, and admits values
+/// that `R` rejects.
+///
+/// The current impl is restricted to numeric carriers — `T:
+/// Numeric + Copy` and `R: Rule<T, Error = NumericError>` — because
+/// rejection mapping needs a variant in `NumericError` to express
+/// "the inner rule unexpectedly accepted." Reuses
+/// `NumericError::OutOfRange { value }` for that case.
+///
+/// `type NotEqualTo<const N: i128> = Not<EqualTo<N>>` is the
+/// motivating example; `type NonZero = NotEqualTo<0>` chains
+/// through it.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::{EqualTo, NumericError};
+/// use whittle_core::{Not, Refined};
+///
+/// // Admit any value that is NOT 42.
+/// let ok: Refined<i32, Not<EqualTo<42>>> = Refined::try_new(7).unwrap();
+/// assert_eq!(*ok.as_inner(), 7);
+///
+/// // Reject the one value that `EqualTo<42>` admits.
+/// let err = Refined::<i32, Not<EqualTo<42>>>::try_new(42).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: 42 });
+/// ```
+pub struct Not<R>(PhantomData<fn() -> R>);
+
 impl<T, E, A, B> Rule<T> for And<A, B>
 where
     T: 'static,
@@ -123,6 +162,27 @@ where
                 Ok(value) => Ok(value),
                 Err(right) => Err([left, right]),
             },
+        }
+    }
+}
+
+impl<T, R> Rule<T> for Not<R>
+where
+    T: crate::primitive::Numeric + Copy,
+    R: Rule<T, Error = crate::primitive::NumericError>,
+{
+    type Error = crate::primitive::NumericError;
+
+    #[inline]
+    fn refine(raw: T) -> Result<T, Self::Error> {
+        // `T: Copy` lets us recover `raw` after `R::refine`
+        // consumes it. The widened i128 form of the offending
+        // value is what `NumericError::OutOfRange` carries.
+        let widened = raw.into_i128();
+        if R::refine(raw).is_ok() {
+            Err(crate::primitive::NumericError::OutOfRange { value: widened })
+        } else {
+            T::from_i128(widened)
         }
     }
 }
@@ -219,6 +279,31 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         proptest::prop_oneof![A::arbitrary_strategy(), B::arbitrary_strategy()].boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, R> ArbitraryRule<T> for Not<R>
+where
+    T: crate::primitive::ArbitraryNumeric + core::fmt::Debug,
+    R: Rule<T, Error = crate::primitive::NumericError>,
+{
+    // `Not<R>` admits every value `R` rejects. For `R = EqualTo<N>`
+    // the admissible region is dense (one excluded value out of
+    // ~2^N), so a `prop_filter` over the full numeric range is
+    // cheap. Other inner rules with sparser admissible regions
+    // make this strategy correspondingly noisier; in that case
+    // wrap a narrower-domain rule on the left of an `And`.
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        T::arbitrary_in_range(i128::MIN, i128::MAX)
+            .prop_filter("Not: inner rule unexpectedly accepted", |v| {
+                R::refine(*v).is_err()
+            })
+            .boxed()
     }
 }
 
