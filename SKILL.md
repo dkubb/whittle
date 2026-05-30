@@ -145,8 +145,10 @@ return `StringError`):
 - `CharPredicate` trait — `fn test(ch: char) -> bool`.
 - Built-in predicates: `AsciiAlphanumeric`, `IdentChar` (alnum or `_`),
   `IdentStart` (alpha or `_`), `IdentDashChar` (alnum, `_`, `-`),
-  `NonControl`, `HexChar` (behind `hex`), `PrintableLine` and
-  `PrintableMultiline` (behind `unicode`).
+  `NonControl`, `HexChar` (behind `hex`), `PrintableLine`,
+  `PrintableMultiline`, and `PrintableChar` (behind `unicode`).
+  `PrintableChar` is the strictest: it rejects the Unicode General
+  Categories Cc/Cf/Cs/Co/Cn/Zl/Zp via `unicode-general-category`.
 - `HexFixedLower<LEN>` (feature `hex`) — exactly `LEN` lowercase hex
   chars; `LEN` must be even (compile-time `const { assert!(...) }`).
 - `HexFixedAny<LEN>` (feature `hex`) — exactly `LEN` mixed-case hex chars.
@@ -366,7 +368,8 @@ Four sub-traits expose building blocks rule strategies need:
   and `FirstChar<P>` compose it into a `String` strategy. Every
   library-supplied predicate (`AsciiAlphanumeric`, `IdentChar`,
   `IdentStart`, `IdentDashChar`, `NonControl`, `HexChar`,
-  `PrintableLine`, `PrintableMultiline`) has an `ArbitraryChar` impl.
+  `PrintableLine`, `PrintableMultiline`, `PrintableChar`) has an
+  `ArbitraryChar` impl.
 - `ArbitraryPredicate<T>` — per-`Predicate<T>` value strategy used by
   `AnyOf<P>` to seed the generated collection with a guaranteed match.
 
@@ -433,9 +436,10 @@ Workspace root `Cargo.toml` lists workspace-level features
 
 - `hex` — enables `HexChar`, `HexFixedLower<LEN>`, `HexFixedAny<LEN>`,
   `HexFixedNormalized<LEN>`. No external deps.
-- `unicode` — enables `PrintableLine`, `PrintableMultiline`. No external
-  deps; future commits may add `unicode-properties` for fuller `Cf`/`Cn`
-  classification.
+- `unicode` — enables `PrintableLine`, `PrintableMultiline`, and
+  `PrintableChar`. Pulls in `unicode-general-category` for the
+  `PrintableChar` General-Category lookup; `PrintableLine` and
+  `PrintableMultiline` remain dep-free hardcoded subsets.
 - `serde` — enables `Serialize`/`Deserialize` impls on `Refined<T, R>`.
 - `proptest` — enables `Arbitrary` impl on `Refined<T, R>`.
 

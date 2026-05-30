@@ -13,11 +13,12 @@ default  = []
 hex      = []
 proptest = ["dep:proptest"]
 serde    = ["dep:serde"]
-unicode  = []
+unicode  = ["dep:unicode-general-category"]
 
 [dependencies]
-proptest  = { workspace = true, optional = true }
-serde     = { workspace = true, optional = true }
+proptest                 = { workspace = true, optional = true }
+serde                    = { workspace = true, optional = true }
+unicode-general-category = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest   = { workspace = true }

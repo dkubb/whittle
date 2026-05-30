@@ -26,4 +26,4 @@ pub use string::{
 #[cfg(feature = "hex")]
 pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
 #[cfg(feature = "unicode")]
-pub use string::{PrintableLine, PrintableMultiline};
+pub use string::{PrintableChar, PrintableLine, PrintableMultiline};

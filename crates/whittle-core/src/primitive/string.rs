@@ -645,6 +645,98 @@ impl ArbitraryChar for PrintableMultiline {
     }
 }
 
+/// Predicate: printable Unicode character by general category.
+///
+/// Rejects characters whose Unicode general category is one of:
+///
+/// - **Control** (Cc) — `\0`, `\t`, `\n`, ...
+/// - **Format** (Cf) — invisible formatting marks (soft hyphen,
+///   ZWJ, ZWNJ, BOM, BIDI marks, ...)
+/// - **Surrogate** (Cs) — UTF-16 surrogate halves; impossible to
+///   construct in Rust's `char`, included for completeness
+/// - **Private Use** (Co) — Unicode private-use areas
+/// - **Unassigned** (Cn) — code points not assigned to any character
+///   in the current Unicode version
+/// - **Line Separator** (Zl) — U+2028
+/// - **Paragraph Separator** (Zp) — U+2029
+///
+/// Use this for free-form text that will be displayed to a user —
+/// names, descriptions, identifiers shown verbatim — where invisible
+/// or unassigned characters should be rejected as garbage. Backed by
+/// the `unicode-general-category` Unicode property tables and
+/// available behind the `unicode` feature.
+///
+/// Compare to the dep-free alternatives:
+///
+/// - [`NonControl`] rejects only the Control category (Cc).
+/// - [`PrintableLine`] rejects Cc plus a small hardcoded set of
+///   well-known invisible chars; cheaper and dep-free, but admits any
+///   Cf/Co/Cn character not in that set.
+///
+/// Use `PrintableChar` when the full category-based check is wanted.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "unicode")] {
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{EachChar, PrintableChar, StringError};
+///
+/// // Admit: every char has a printable general category.
+/// let ok: Refined<String, EachChar<PrintableChar>>
+///     = Refined::try_new("Café résumé 漢字".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "Café résumé 漢字");
+///
+/// // Reject: zero-width joiner is in the Format (Cf) category.
+/// let err = Refined::<String, EachChar<PrintableChar>>::try_new(
+///     "a\u{200D}b".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 1 });
+/// # }
+/// ```
+#[cfg(feature = "unicode")]
+pub struct PrintableChar;
+
+#[cfg(feature = "unicode")]
+impl CharPredicate for PrintableChar {
+    #[inline]
+    fn test(ch: char) -> bool {
+        use unicode_general_category::GeneralCategory;
+        !matches!(
+            unicode_general_category::get_general_category(ch),
+            GeneralCategory::Control
+                | GeneralCategory::Format
+                | GeneralCategory::LineSeparator
+                | GeneralCategory::ParagraphSeparator
+                | GeneralCategory::PrivateUse
+                | GeneralCategory::Surrogate
+                | GeneralCategory::Unassigned
+        )
+    }
+}
+
+#[cfg(all(feature = "unicode", feature = "proptest"))]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches the `Fn(&Self::Value) -> bool` signature `prop_filter` expects"
+)]
+fn char_is_printable(ch: &char) -> bool {
+    <PrintableChar as CharPredicate>::test(*ch)
+}
+
+#[cfg(all(feature = "unicode", feature = "proptest"))]
+impl ArbitraryChar for PrintableChar {
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::char::any()
+            .prop_filter("printable", char_is_printable)
+            .boxed()
+    }
+}
+
 /// Predicate: ASCII alphanumeric, underscore, or `-`. Matches
 /// `cargo`-package-name and DNS-label body grammars (leading `-`
 /// must be excluded separately via `FirstChar`).
@@ -1532,6 +1624,91 @@ mod tests {
         let bad: Result<Refined<String, EachChar<PrintableMultiline>>, _> =
             Refined::try_new("a\u{200B}b".to_string());
         assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    // ─── PrintableChar (unicode feature). ────────────────────────
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn printable_char_admits_ordinary_unicode_text() {
+        use super::PrintableChar;
+        let r: Refined<String, EachChar<PrintableChar>> =
+            Refined::try_new("Hello, world! Café résumé 漢字 - punctuation.".to_string()).unwrap();
+        assert_eq!(
+            r.as_inner(),
+            "Hello, world! Café résumé 漢字 - punctuation.",
+        );
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn printable_char_rejects_tab_via_control_category() {
+        use super::PrintableChar;
+        let bad: Result<Refined<String, EachChar<PrintableChar>>, _> =
+            Refined::try_new("a\tb".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn printable_char_rejects_format_char_not_in_printable_line_hardcoded_set() {
+        // U+200E (LEFT-TO-RIGHT MARK) is in Unicode General Category
+        // Cf but is NOT in PrintableLine's hardcoded reject list.
+        // PrintableChar catches it via category lookup; this is the
+        // key value over PrintableLine.
+        use super::PrintableChar;
+        let bad: Result<Refined<String, EachChar<PrintableChar>>, _> =
+            Refined::try_new("a\u{200E}b".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn printable_char_rejects_private_use_area() {
+        // U+E000 is the start of the BMP Private Use Area (Co).
+        use super::PrintableChar;
+        let bad: Result<Refined<String, EachChar<PrintableChar>>, _> =
+            Refined::try_new("a\u{E000}b".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn printable_char_rejects_line_separator() {
+        // U+2028 is LINE SEPARATOR (Zl).
+        use super::PrintableChar;
+        let bad: Result<Refined<String, EachChar<PrintableChar>>, _> =
+            Refined::try_new("a\u{2028}b".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn printable_char_rejects_paragraph_separator() {
+        // U+2029 is PARAGRAPH SEPARATOR (Zp).
+        use super::PrintableChar;
+        let bad: Result<Refined<String, EachChar<PrintableChar>>, _> =
+            Refined::try_new("a\u{2029}b".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn printable_char_predicate_membership() {
+        use super::PrintableChar;
+        // Admissible: letters, digits, punctuation, space, CJK ideographs.
+        assert!(<PrintableChar as CharPredicate>::test('a'));
+        assert!(<PrintableChar as CharPredicate>::test('Z'));
+        assert!(<PrintableChar as CharPredicate>::test('0'));
+        assert!(<PrintableChar as CharPredicate>::test(' '));
+        assert!(<PrintableChar as CharPredicate>::test('é'));
+        assert!(<PrintableChar as CharPredicate>::test('漢'));
+        // Inadmissible: one representative per rejected category.
+        assert!(!<PrintableChar as CharPredicate>::test('\t')); // Cc
+        assert!(!<PrintableChar as CharPredicate>::test('\u{200D}')); // Cf
+        assert!(!<PrintableChar as CharPredicate>::test('\u{E000}')); // Co
+        assert!(!<PrintableChar as CharPredicate>::test('\u{2028}')); // Zl
+        assert!(!<PrintableChar as CharPredicate>::test('\u{2029}')); // Zp
     }
 
     // ─── IdentDashChar. ──────────────────────────────────────────
