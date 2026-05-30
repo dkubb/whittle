@@ -420,8 +420,10 @@ pub struct DecimalPositive;
 pub struct DecimalInRange<const MIN_REPR: i128, const MAX_REPR: i128, const SCALE: u8>;
 ```
 
-Behind the `rust_decimal` feature. Decimal range constants encode the
-range's representative as a fixed-point integer with explicit scale.
+Behind the `decimal` Cargo feature, which pulls in `rust_decimal`.
+Range constants encode the range's representative as a fixed-point
+integer with explicit scale. The same dodge `InClosedRange` uses for
+`f64` — Rust 2024 does not yet allow `Decimal` const generics.
 
 ### 10.4. String Grammar
 

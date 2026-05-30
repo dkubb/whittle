@@ -193,6 +193,23 @@ Path (`crates/whittle-core/src/primitive/path.rs`, `Rule<String>`, returns
   segments. `PathError::{Empty, Absolute, ParentTraversal{index},
   EmptySegment{index}}`.
 
+Decimal (`crates/whittle-core/src/primitive/decimal.rs`,
+`Rule<rust_decimal::Decimal>`, return `DecimalError`; behind the
+`decimal` Cargo feature):
+
+- `DecimalPositive` — admits only `value > 0`. Zero rejected.
+- `DecimalScale<S>` — `value.scale() == S` exactly (strict equality;
+  callers rescale before construction). `S` must be in `0..=28`,
+  enforced by `const { assert!(...) }`.
+- `DecimalPrecision<P>` — significant-digit count `<= P` (mantissa
+  digit count; zero is treated as 0 significant digits, admitted for
+  every `P`).
+- `DecimalInRange<MIN_REPR, MAX_REPR, SCALE>` — closed range encoded
+  as `(MIN_REPR / 10^SCALE) ..= (MAX_REPR / 10^SCALE)`. Same
+  ratio-style const-generic dodge as `InClosedRange` for `f64`.
+  Compile-time checks: `SCALE <= 28`, `MIN_REPR <= MAX_REPR`, both
+  bounds within `rust_decimal` mantissa range (`±(2^96 - 1)`).
+
 ## Patterns
 
 ### Newtype hiding rule composition (the load-bearing pattern)
@@ -440,6 +457,9 @@ Workspace root `Cargo.toml` lists workspace-level features
   `PrintableChar`. Pulls in `unicode-general-category` for the
   `PrintableChar` General-Category lookup; `PrintableLine` and
   `PrintableMultiline` remain dep-free hardcoded subsets.
+- `decimal` — enables `DecimalPositive`, `DecimalScale<S>`,
+  `DecimalPrecision<P>`, `DecimalInRange<MIN_REPR, MAX_REPR, SCALE>`.
+  Pulls in `rust_decimal`.
 - `serde` — enables `Serialize`/`Deserialize` impls on `Refined<T, R>`.
 - `proptest` — enables `Arbitrary` impl on `Refined<T, R>`.
 

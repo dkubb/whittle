@@ -1,6 +1,8 @@
 //! Library-supplied primitive rules.
 
 pub mod collection;
+#[cfg(feature = "decimal")]
+pub mod decimal;
 pub mod float;
 pub mod numeric;
 pub mod path;
@@ -10,6 +12,10 @@ pub use collection::{
     AllItems, AnyOf, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf, Predicate,
     Sorted, UniqueByKey,
 };
+#[cfg(all(feature = "decimal", feature = "proptest"))]
+pub use decimal::ArbitraryDecimal;
+#[cfg(feature = "decimal")]
+pub use decimal::{DecimalError, DecimalInRange, DecimalPositive, DecimalPrecision, DecimalScale};
 #[cfg(feature = "proptest")]
 pub use float::ArbitraryFloat;
 pub use float::{Finite, Float, FloatError, InClosedRange, NotInfinite, NotNan};
