@@ -22,7 +22,7 @@
 /// struct/map type and you want to reject unknown fields, put
 /// `#[serde(deny_unknown_fields)]` on `Inner` itself — the macro
 /// doesn't generate fielded structs, so it can't attach the
-/// attribute. See [`Refined`]'s `Deserialize` impl for the full
+/// attribute. See [`crate::Refined`]'s `Deserialize` impl for the full
 /// rationale.
 ///
 /// # Design limit: composed rules and domain error shape
