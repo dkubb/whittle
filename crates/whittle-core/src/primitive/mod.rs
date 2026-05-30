@@ -1,6 +1,8 @@
 //! Library-supplied primitive rules.
 
 pub mod collection;
+#[cfg(feature = "chrono")]
+pub mod date;
 #[cfg(feature = "decimal")]
 pub mod decimal;
 pub mod float;
@@ -12,6 +14,10 @@ pub use collection::{
     AllItems, AnyOf, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf, Predicate,
     Sorted, UniqueByKey,
 };
+#[cfg(all(feature = "chrono", feature = "proptest"))]
+pub use date::ArbitraryDate;
+#[cfg(feature = "chrono")]
+pub use date::{DateAtLeast, DateAtMost, DateError, DateInRange};
 #[cfg(all(feature = "decimal", feature = "proptest"))]
 pub use decimal::ArbitraryDecimal;
 #[cfg(feature = "decimal")]

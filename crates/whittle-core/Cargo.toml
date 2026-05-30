@@ -10,6 +10,7 @@ description = "Whittle kernel: Rule trait, Refined carrier, library primitives."
 
 [features]
 default  = []
+chrono   = ["dep:chrono"]
 decimal  = ["dep:rust_decimal"]
 hex      = []
 proptest = ["dep:proptest"]
@@ -17,6 +18,7 @@ serde    = ["dep:serde"]
 unicode  = ["dep:unicode-general-category"]
 
 [dependencies]
+chrono                   = { workspace = true, optional = true }
 proptest                 = { workspace = true, optional = true }
 rust_decimal             = { workspace = true, optional = true }
 serde                    = { workspace = true, optional = true }

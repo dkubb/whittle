@@ -91,6 +91,7 @@ private_doc_tests        = "deny"                            # No private doc te
 unescaped_backticks      = "deny"                            # No unescaped backticks
 
 [workspace.dependencies]
+chrono                   = { version = "0.4", default-features = false }
 proptest                 = { version = "1", default-features = false, features = ["std"] }
 rust_decimal             = { version = "1", default-features = false }
 serde                    = { version = "1", default-features = false }
@@ -120,6 +121,7 @@ thiserror  = { workspace = true }
 
 [features]
 default  = []
+chrono   = ["whittle-core/chrono"]
 decimal  = ["whittle-core/decimal"]
 hex      = ["whittle-core/hex"]
 proptest = ["whittle-core/proptest"]

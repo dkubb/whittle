@@ -193,6 +193,22 @@ Path (`crates/whittle-core/src/primitive/path.rs`, `Rule<String>`, returns
   segments. `PathError::{Empty, Absolute, ParentTraversal{index},
   EmptySegment{index}}`.
 
+Date (`crates/whittle-core/src/primitive/date.rs`,
+`Rule<chrono::NaiveDate>`, return `DateError`; behind the `chrono`
+Cargo feature):
+
+- `DateAtLeast<MIN_DAYS_FROM_CE>` — admit dates with
+  `value.num_days_from_ce() >= MIN_DAYS_FROM_CE`.
+- `DateAtMost<MAX_DAYS_FROM_CE>` — admit dates with
+  `value.num_days_from_ce() <= MAX_DAYS_FROM_CE`.
+- `DateInRange<MIN_DAYS_FROM_CE, MAX_DAYS_FROM_CE>` — nominal newtype
+  hiding `And<DateAtLeast<MIN>, DateAtMost<MAX>>`, flat `DateError`.
+  Bounds encoded as `i32` days from CE (`NaiveDate::num_days_from_ce`
+  — e.g. `730_120` for 2000-01-01, `767_009` for 2100-12-31) because
+  Rust 2024 lacks `NaiveDate` const generics. Compile-time
+  `const { ... }` checks confirm both bounds are within
+  `NaiveDate`'s representable range and that `MIN <= MAX`.
+
 Decimal (`crates/whittle-core/src/primitive/decimal.rs`,
 `Rule<rust_decimal::Decimal>`, return `DecimalError`; behind the
 `decimal` Cargo feature):
@@ -460,6 +476,10 @@ Workspace root `Cargo.toml` lists workspace-level features
 - `decimal` — enables `DecimalPositive`, `DecimalScale<S>`,
   `DecimalPrecision<P>`, `DecimalInRange<MIN_REPR, MAX_REPR, SCALE>`.
   Pulls in `rust_decimal`.
+- `chrono` — enables `DateAtLeast<MIN_DAYS_FROM_CE>`,
+  `DateAtMost<MAX_DAYS_FROM_CE>`,
+  `DateInRange<MIN_DAYS_FROM_CE, MAX_DAYS_FROM_CE>`. Pulls in
+  `chrono` (no_std-compatible, no `clock` feature).
 - `serde` — enables `Serialize`/`Deserialize` impls on `Refined<T, R>`.
 - `proptest` — enables `Arbitrary` impl on `Refined<T, R>`.
 
