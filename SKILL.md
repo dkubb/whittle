@@ -134,8 +134,8 @@ all return `NumericError`):
   via `And` for the half-open and open-open ranges (PostgreSQL
   range syntax `(MIN, MAX]`, `[MIN, MAX)`, `(MIN, MAX)`).
 - `NonZero` — rejects `0`.
-- `Positive` — `value > 0`.
-- `Negative` — `value < 0`.
+- `Positive` — type alias for `GreaterThan<0>` (`value > 0`).
+- `Negative` — type alias for `LessThan<0>` (`value < 0`).
 - `Numeric` trait — `into_i128` / `from_i128`; implemented for
   `i8..=i128`, `u8..=u64`, `usize`, `isize`. `u128` is intentionally not
   supported (cannot round-trip through `i128`).

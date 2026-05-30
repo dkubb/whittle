@@ -132,7 +132,10 @@ pub struct LessThan<const MAX: i128>;
 /// ```
 pub struct NonZero;
 
-/// `value > 0`.
+/// `value > 0` — alias for [`GreaterThan<0>`].
+///
+/// `Positive` is the conventional spelling of the strict-positivity
+/// rule. The underlying machinery is [`GreaterThan<0>`].
 ///
 /// # Examples
 ///
@@ -147,9 +150,12 @@ pub struct NonZero;
 /// let err = Refined::<i32, Positive>::try_new(0).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: 0 });
 /// ```
-pub struct Positive;
+pub type Positive = GreaterThan<0>;
 
-/// `value < 0`.
+/// `value < 0` — alias for [`LessThan<0>`].
+///
+/// `Negative` is the conventional spelling of the strict-negativity
+/// rule. The underlying machinery is [`LessThan<0>`].
 ///
 /// # Examples
 ///
@@ -164,7 +170,7 @@ pub struct Positive;
 /// let err = Refined::<i32, Negative>::try_new(0).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: 0 });
 /// ```
-pub struct Negative;
+pub type Negative = LessThan<0>;
 
 /// Error variants common to every numeric primitive.
 ///
@@ -585,37 +591,9 @@ where
     }
 }
 
-impl<T> Rule<T> for Positive
-where
-    T: Numeric,
-{
-    type Error = NumericError;
-
-    #[inline]
-    fn refine(raw: T) -> Result<T, Self::Error> {
-        let widened = raw.into_i128();
-        if widened <= 0_i128 {
-            return Err(NumericError::OutOfRange { value: widened });
-        }
-        T::from_i128(widened)
-    }
-}
-
-impl<T> Rule<T> for Negative
-where
-    T: Numeric,
-{
-    type Error = NumericError;
-
-    #[inline]
-    fn refine(raw: T) -> Result<T, Self::Error> {
-        let widened = raw.into_i128();
-        if widened >= 0_i128 {
-            return Err(NumericError::OutOfRange { value: widened });
-        }
-        T::from_i128(widened)
-    }
-}
+// `Positive` and `Negative` are type aliases for `GreaterThan<0>` /
+// `LessThan<0>`; their `Rule` and `ArbitraryRule` impls come from
+// the underlying generic impls above.
 
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
@@ -725,34 +703,6 @@ where
         T::arbitrary_in_range(i128::MIN, i128::MAX)
             .prop_filter("non-zero", numeric_is_non_zero::<T>)
             .boxed()
-    }
-}
-
-#[cfg(feature = "proptest")]
-impl<T> ArbitraryRule<T> for Positive
-where
-    T: ArbitraryNumeric + core::fmt::Debug,
-{
-    type Strategy = proptest::strategy::BoxedStrategy<T>;
-
-    #[inline]
-    fn arbitrary_strategy() -> Self::Strategy {
-        use proptest::strategy::Strategy as _;
-        T::arbitrary_in_range(1_i128, i128::MAX).boxed()
-    }
-}
-
-#[cfg(feature = "proptest")]
-impl<T> ArbitraryRule<T> for Negative
-where
-    T: ArbitraryNumeric + core::fmt::Debug,
-{
-    type Strategy = proptest::strategy::BoxedStrategy<T>;
-
-    #[inline]
-    fn arbitrary_strategy() -> Self::Strategy {
-        use proptest::strategy::Strategy as _;
-        T::arbitrary_in_range(i128::MIN, -1_i128).boxed()
     }
 }
 
