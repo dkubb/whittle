@@ -277,23 +277,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "whittle-it"
-version = "0.0.0"
-dependencies = [
- "proptest",
- "whittle",
-]
-
-[[package]]
-name = "whittle-macros"
-version = "0.0.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

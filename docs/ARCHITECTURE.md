@@ -125,8 +125,6 @@ The implementation uses these concrete foundations:
 - Bounded collections: `bounded-vec`, `non-empty-string`, shared across
   crates via `workspace.dependencies`.
 - Error handling: `thiserror` for typed error definitions.
-- Proc-macro support: `proc-macro2`, `syn`, `quote`, `darling` for
-  attribute parsing.
 
 Local `whittle-core` domain types built on the foundations above include
 the `Rule` trait, the `Refined<T, R>` carrier, `RuleWith<T, Env>`, the
@@ -195,10 +193,9 @@ whittle/
 │   ├── config.toml             cargo aliases + build flags
 │   └── deny.toml               license allowlist, registry rules
 ├── src/lib.rs                  re-exports core + selected features
+├── tests/                      integration tests exercising the feature matrix
 ├── crates/
-│   ├── whittle-core/           Rule, Refined, primitives, Schema, Implies
-│   ├── whittle-macros/         refinement! macro + derive
-│   └── whittle-it/             integration-test crate exercising features
+│   └── whittle-core/           Rule, Refined, refinement!, primitives, Schema, Implies
 └── docs/
     ├── README.md
     ├── IDEA.md
@@ -218,21 +215,18 @@ The dependency graph MUST be one-way through the facade boundary:
 - `whittle-core` depends on `serde` (optional), `thiserror`,
   `rust_decimal` (optional), `chrono` (optional), `bounded-vec`,
   `non-empty-string`. It MUST NOT depend on any other whittle crate.
-- `whittle-macros` depends on `proc-macro2`, `syn`, `quote`, `darling`.
-  It MUST NOT depend on `whittle-core` at compile time (proc-macro
-  crates are compiled for the host and cannot share types with their
-  target).
+  The `refinement!` declarative macro lives in `whittle-core::macros`;
+  there is no separate proc-macro crate.
 - The `proptest::Strategy` derivation and the `Arbitrary` impl for
   `Refined<T, R>` live inside `whittle-core` behind a `proptest`
   Cargo feature. They cannot live in a separate crate without an
   orphan-rule violation, because both the `Arbitrary` trait
   (foreign, from `proptest`) and `Refined<T, R>` would be foreign
   to that crate.
-- `whittle-it` depends on every other whittle crate and exercises the
-  full feature matrix.
-- The root facade `whittle` re-exports `whittle-core`'s public surface,
-  re-exports the macros from `whittle-macros`, and gates each
-  integration module behind a Cargo feature.
+- The root facade `whittle` re-exports `whittle-core`'s public surface
+  (including the `refinement!` macro) and gates each integration
+  module behind a Cargo feature. Integration tests live in the root
+  `tests/` directory and exercise the full feature matrix.
 
 The default feature set enables `serde` and the `refinement!` macro.
 `proptest`, `schemars`, and `sqlx` are opt-in features. A consumer that
@@ -959,12 +953,12 @@ abstraction the user wants to expose.
 
 ### 15.2. Macro tests
 
-`whittle-macros` MUST contain:
+The `refinement!` declarative macro in `whittle-core::macros` is
+covered by:
 
-- trybuild-style positive tests for successful macro expansion over
-  numeric, string, collection, enum-subset, and composition cases;
-- trybuild-style negative tests for malformed pipeline, contradictory
-  steps, unknown named steps, and missing required fields.
+- doctests on the macro itself showing each supported invocation shape;
+- `compile_fail` doctests for malformed invocations (missing
+  separators, contradictory steps, unknown named steps).
 
 ### 15.3. Arbitrary derivation tests
 
@@ -977,7 +971,7 @@ bounded filtering on dense or composed regions.
 
 ### 15.4. Integration tests
 
-`whittle-it` MUST exercise:
+The root `tests/` directory MUST exercise:
 
 - the `serde` feature against deserialization fixtures that include
   both admissible and invariant-violating payloads;
@@ -1024,15 +1018,14 @@ Phase B — contextual and integrations:
 1. `whittle-core::contextual`: `RuleWith`, `RefinedWithRef`,
    `RefinedWithOwned`.
 2. `serde` integration on `Refined`.
-3. `whittle-macros::refinement`: declarative macro with the step
+3. `whittle-core::macros::refinement`: declarative macro with the step
    vocabulary in Section 14.2.
-4. `whittle-macros::derive`: `#[derive(Refined)]` derive macro.
-5. `whittle-core::arbitrary` (under `proptest` feature):
+4. `whittle-core::arbitrary` (under `proptest` feature):
    schema-driven `StrategyFromSchema` trait, primitive impls, and
    the `Arbitrary` impl for `Refined<T, R>`.
-6. `whittle-it`: full integration coverage.
-7. `schemars` integration.
-8. `sqlx` integration.
+5. Root `tests/`: full integration coverage.
+6. `schemars` integration.
+7. `sqlx` integration.
 
 Each step is its own commit. Each commit passes the full gate.
 

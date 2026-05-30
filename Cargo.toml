@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members  = ["crates/whittle-core", "crates/whittle-macros", "crates/whittle-it"]
+members  = ["crates/whittle-core"]
 
 [workspace.package]
 edition      = "2024"
@@ -96,9 +96,6 @@ serde       = { version = "1", default-features = false }
 serde_json  = "1"
 serde_test  = "1"
 thiserror   = "2"
-proc-macro2 = "1"
-quote       = "1"
-syn         = { version = "2", features = ["full"] }
 
 [package]
 name        = "whittle"
