@@ -91,8 +91,9 @@ the domain; `Refined<T, R>` is implementation.
   rule's typed rejection. Implementers discharge the soundness obligation:
   `Ok(y)` implies `y` is admissible under the rule. Markers are zero-sized.
 - `Refined<T, R>` (carrier, `crates/whittle-core/src/rule.rs:83`):
-  `#[repr(transparent)]` over `T`. Methods: `try_new(raw) -> Result<Self,
-  R::Error>`, `as_inner(&self) -> &T`, `into_inner(self) -> T`. Forwards
+  `#[repr(transparent)]` over `T`. Methods:
+  `try_new(raw) -> Result<Self, R::Error>`, `as_inner(&self) -> &T`,
+  `into_inner(self) -> T`. Forwards
   `Debug`, `Clone`, `Copy`, `Hash`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`
   to `T` with no rule wrapper noise.
 - `refinement!` (macro, `crates/whittle-core/src/macros.rs:69`): expands
@@ -190,8 +191,9 @@ Path (`crates/whittle-core/src/primitive/path.rs`, `Rule<String>`, returns
 
 - `RelativePath` — non-empty, no leading `/`, no Windows drive letter or
   UNC prefix, no empty segments (no `//`, no trailing `/`), no `..`
-  segments. `PathError::{Empty, Absolute, ParentTraversal{index},
-  EmptySegment{index}}`.
+  segments. Error variants: `PathError::Empty`, `PathError::Absolute`,
+  `PathError::ParentTraversal { index }`,
+  `PathError::EmptySegment { index }`.
 
 Date (`crates/whittle-core/src/primitive/date.rs`,
 `Rule<chrono::NaiveDate>`, return `DateError`; behind the `chrono`
@@ -433,8 +435,9 @@ tractable to read.
 
 For a custom rule that wraps the library primitives:
 
-- Delegate to the inner rule's strategy. `refinement! { pub Foo: Inner,
-  Rule; }` does not implement `ArbitraryRule` for the newtype; if you
+- Delegate to the inner rule's strategy.
+  `refinement! { pub Foo: Inner, Rule; }` does not implement
+  `ArbitraryRule` for the newtype; if you
   want `proptest::any::<Foo>()` to work, hand-write `ArbitraryRule<...>`
   on the rule type and call `proptest::strategy::Strategy::prop_map` to
   wrap the inner value in your newtype.
@@ -551,9 +554,10 @@ features are additive.
    - Inner rule is an `And` / `Or` composition: write a flat domain
      enum with `Debug + PartialEq + Eq` plus `Display` + `Error` impls
      (hand-rolled, or via any derive macro you prefer — see the
-     "Error derive macros are your choice" note below). For `And<A,
-     B>`, the composition's `Self::Error` is the rules' shared flat
-     enum, so the match is a flat 1:1 mapping. For `Or<A, B>`, it is
+     "Error derive macros are your choice" note below). For
+     `And<A, B>`, the composition's `Self::Error` is the rules' shared
+     flat enum, so the match is a flat 1:1 mapping. For `Or<A, B>`,
+     it is
      `[E; 2]` — destructure the array and produce your flat variant.
 4. Implement:
    - For single-error rules, `refinement! { pub Foo: Inner, Rule; }` is
@@ -586,8 +590,9 @@ features are additive.
 dep-free — `whittle-core`'s primitive errors (`NumericError`,
 `StringError`, `FloatError`, `CollectionError`, `PathError`) are
 hand-rolled `impl Display + impl Error`, so downstream `cargo tree`
-shows no `thiserror` (or any other error-derive crate) under whittle. The `Rule` trait does NOT require
-any specific derive — `Rule::Error` only needs
+shows no `thiserror` (or any other error-derive crate) under whittle.
+The `Rule` trait does NOT require any specific derive — `Rule::Error`
+only needs
 `Debug + Display + core::error::Error`. Your domain errors can use
 `thiserror`, `snafu`, `miette`, or hand-roll — whittle is agnostic.
 The test corpus under `tests/` uses `thiserror` for brevity (it is a
