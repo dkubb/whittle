@@ -135,6 +135,11 @@ path             = "tests/hex-and-normalization.rs"
 required-features = ["hex"]
 
 [[test]]
+name             = "transformer-newtype"
+path             = "tests/transformer-newtype.rs"
+required-features = ["hex"]
+
+[[test]]
 name             = "proptest-arbitrary"
 path             = "tests/proptest-arbitrary.rs"
 required-features = ["proptest", "hex"]
