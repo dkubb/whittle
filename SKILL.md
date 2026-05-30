@@ -125,8 +125,14 @@ all return `NumericError`):
 
 - `Within<MIN, MAX>` — inclusive `MIN..=MAX` (`i128` const generics);
   nominal domain newtype hiding `And<AtLeast, AtMost>`.
-- `AtLeast<MIN>` — `MIN <= value`.
-- `AtMost<MAX>` — `value <= MAX`.
+- `AtLeast<MIN>` — `MIN <= value` (closed lower bound).
+- `AtMost<MAX>` — `value <= MAX` (closed upper bound).
+- `GreaterThan<MIN>` — `MIN < value` (open lower bound; strict
+  counterpart of `AtLeast`).
+- `LessThan<MAX>` — `value < MAX` (open upper bound; strict
+  counterpart of `AtMost`). Compose `GreaterThan` and `LessThan`
+  via `And` for the half-open and open-open ranges (PostgreSQL
+  range syntax `(MIN, MAX]`, `[MIN, MAX)`, `(MIN, MAX)`).
 - `NonZero` — rejects `0`.
 - `Positive` — `value > 0`.
 - `Negative` — `value < 0`.

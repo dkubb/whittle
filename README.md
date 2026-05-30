@@ -136,8 +136,10 @@ enum, so an `And<A, B>` composition surfaces a flat enum the newtype
 can map 1:1 into its domain variants.
 
 - **Numeric** (signed and unsigned integers, `usize`, `isize`) —
-  `Within<MIN, MAX>`, `AtLeast`, `AtMost`, `NonZero`, `Positive`,
-  `Negative`.
+  `Within<MIN, MAX>`, `AtLeast`, `AtMost`, `GreaterThan`, `LessThan`,
+  `NonZero`, `Positive`, `Negative`. The closed (`AtLeast`/`AtMost`)
+  and open (`GreaterThan`/`LessThan`) bounds compose to all four
+  PostgreSQL range shapes.
 - **Float** (`f32`, `f64`) — `NotNan`, `NotInfinite`, `Finite`,
   plus `InClosedRange` with four `i64` const generics
   (`MIN_NUMERATOR`, `MIN_DENOMINATOR`, `MAX_NUMERATOR`,

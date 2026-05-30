@@ -74,6 +74,48 @@ pub struct AtLeast<const MIN: i128>;
 /// ```
 pub struct AtMost<const MAX: i128>;
 
+/// Open lower-bound rule: `MIN < value`.
+///
+/// The strict counterpart of [`AtLeast`]. Use when the bound itself
+/// is inadmissible (e.g. "strictly positive", "strictly greater than
+/// zero", "must exceed the previous timestamp").
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{GreaterThan, NumericError};
+///
+/// let ok: Refined<i32, GreaterThan<10>> = Refined::try_new(11).unwrap();
+/// assert_eq!(*ok.as_inner(), 11);
+///
+/// // The bound itself is rejected.
+/// let err = Refined::<i32, GreaterThan<10>>::try_new(10).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: 10 });
+/// ```
+pub struct GreaterThan<const MIN: i128>;
+
+/// Open upper-bound rule: `value < MAX`.
+///
+/// The strict counterpart of [`AtMost`]. Use when the bound itself
+/// is inadmissible (e.g. "less than the array length", "less than
+/// the page limit").
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{LessThan, NumericError};
+///
+/// let ok: Refined<i32, LessThan<100>> = Refined::try_new(99).unwrap();
+/// assert_eq!(*ok.as_inner(), 99);
+///
+/// // The bound itself is rejected.
+/// let err = Refined::<i32, LessThan<100>>::try_new(100).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: 100 });
+/// ```
+pub struct LessThan<const MAX: i128>;
+
 /// Rejects zero.
 ///
 /// # Examples
@@ -471,6 +513,62 @@ where
     }
 }
 
+impl<const MIN: i128> GreaterThan<MIN> {
+    /// Single source of the bound invariant: `MIN < i128::MAX` so
+    /// the strategy's `MIN + 1` never overflows. Referenced from
+    /// `Rule::refine` and `ArbitraryRule::arbitrary_strategy` via
+    /// `const { Self::VALID }`.
+    const VALID: () = assert!(
+        MIN < i128::MAX,
+        "GreaterThan: MIN must be less than i128::MAX",
+    );
+}
+
+impl<T, const MIN: i128> Rule<T> for GreaterThan<MIN>
+where
+    T: Numeric,
+{
+    type Error = NumericError;
+
+    #[inline]
+    fn refine(raw: T) -> Result<T, Self::Error> {
+        const { Self::VALID };
+        let widened = raw.into_i128();
+        if widened <= MIN {
+            return Err(NumericError::OutOfRange { value: widened });
+        }
+        T::from_i128(widened)
+    }
+}
+
+impl<const MAX: i128> LessThan<MAX> {
+    /// Single source of the bound invariant: `MAX > i128::MIN` so
+    /// the strategy's `MAX - 1` never underflows. Referenced from
+    /// `Rule::refine` and `ArbitraryRule::arbitrary_strategy` via
+    /// `const { Self::VALID }`.
+    const VALID: () = assert!(
+        MAX > i128::MIN,
+        "LessThan: MAX must be greater than i128::MIN",
+    );
+}
+
+impl<T, const MAX: i128> Rule<T> for LessThan<MAX>
+where
+    T: Numeric,
+{
+    type Error = NumericError;
+
+    #[inline]
+    fn refine(raw: T) -> Result<T, Self::Error> {
+        const { Self::VALID };
+        let widened = raw.into_i128();
+        if widened >= MAX {
+            return Err(NumericError::OutOfRange { value: widened });
+        }
+        T::from_i128(widened)
+    }
+}
+
 impl<T> Rule<T> for NonZero
 where
     T: Numeric,
@@ -571,6 +669,42 @@ where
 }
 
 #[cfg(feature = "proptest")]
+impl<T, const MIN: i128> ArbitraryRule<T> for GreaterThan<MIN>
+where
+    T: ArbitraryNumeric + core::fmt::Debug,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        const { Self::VALID };
+        // `MIN + 1` is the smallest admissible value; VALID
+        // guarantees `MIN < i128::MAX` so the addition does not
+        // overflow.
+        T::arbitrary_in_range(MIN + 1, i128::MAX).boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, const MAX: i128> ArbitraryRule<T> for LessThan<MAX>
+where
+    T: ArbitraryNumeric + core::fmt::Debug,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        const { Self::VALID };
+        // `MAX - 1` is the largest admissible value; VALID
+        // guarantees `MAX > i128::MIN` so the subtraction does not
+        // underflow.
+        T::arbitrary_in_range(i128::MIN, MAX - 1).boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
 fn numeric_is_non_zero<T: Numeric + Copy>(value: &T) -> bool {
     (*value).into_i128() != 0_i128
 }
@@ -631,7 +765,9 @@ where
 mod tests {
     use alloc::string::ToString;
 
-    use super::{AtLeast, AtMost, Negative, NonZero, NumericError, Positive, Within};
+    use super::{
+        AtLeast, AtMost, GreaterThan, LessThan, Negative, NonZero, NumericError, Positive, Within,
+    };
     use crate::rule::{Refined, Rule};
 
     refinement! {
@@ -687,6 +823,69 @@ mod tests {
         );
         let accept: Refined<i32, NonZero> = Refined::try_new(-3_i32).unwrap();
         assert_eq!(*accept.as_inner(), -3_i32);
+    }
+
+    #[test]
+    fn greater_than_admits_one_above_bound_and_rejects_at_bound() {
+        let above: Refined<i32, GreaterThan<10>> = Refined::try_new(11_i32).unwrap();
+        assert_eq!(*above.as_inner(), 11_i32);
+
+        let at_bound: Result<Refined<i32, GreaterThan<10>>, _> = Refined::try_new(10_i32);
+        assert_eq!(
+            at_bound.unwrap_err(),
+            NumericError::OutOfRange { value: 10_i128 },
+        );
+
+        let below: Result<Refined<i32, GreaterThan<10>>, _> = Refined::try_new(9_i32);
+        assert_eq!(
+            below.unwrap_err(),
+            NumericError::OutOfRange { value: 9_i128 },
+        );
+    }
+
+    #[test]
+    fn less_than_admits_one_below_bound_and_rejects_at_bound() {
+        let below: Refined<i32, LessThan<100>> = Refined::try_new(99_i32).unwrap();
+        assert_eq!(*below.as_inner(), 99_i32);
+
+        let at_bound: Result<Refined<i32, LessThan<100>>, _> = Refined::try_new(100_i32);
+        assert_eq!(
+            at_bound.unwrap_err(),
+            NumericError::OutOfRange { value: 100_i128 },
+        );
+
+        let above: Result<Refined<i32, LessThan<100>>, _> = Refined::try_new(101_i32);
+        assert_eq!(
+            above.unwrap_err(),
+            NumericError::OutOfRange { value: 101_i128 },
+        );
+    }
+
+    #[test]
+    fn open_bounds_work_for_unsigned_types() {
+        let ok: Refined<u32, GreaterThan<0>> = Refined::try_new(1_u32).unwrap();
+        assert_eq!(*ok.as_inner(), 1_u32);
+
+        let zero: Result<Refined<u32, GreaterThan<0>>, _> = Refined::try_new(0_u32);
+        assert_eq!(
+            zero.unwrap_err(),
+            NumericError::OutOfRange { value: 0_i128 },
+        );
+    }
+
+    #[test]
+    fn open_bounds_compose_with_each_other_via_and() {
+        // `And<GreaterThan<MIN>, LessThan<MAX>>` is the open-open
+        // range — the equivalent of PostgreSQL's `(MIN, MAX)`.
+        use crate::And;
+        type OpenOpen = And<GreaterThan<0>, LessThan<10>>;
+        let mid: Refined<i32, OpenOpen> = Refined::try_new(5_i32).unwrap();
+        assert_eq!(*mid.as_inner(), 5_i32);
+
+        let zero: Result<Refined<i32, OpenOpen>, _> = Refined::try_new(0_i32);
+        zero.unwrap_err();
+        let ten: Result<Refined<i32, OpenOpen>, _> = Refined::try_new(10_i32);
+        ten.unwrap_err();
     }
 
     #[test]
@@ -930,6 +1129,20 @@ mod tests {
             r in proptest::arbitrary::any::<Refined<i32, AtMost<10>>>()
         ) {
             proptest::prop_assert!(*r.as_inner() <= 10);
+        }
+
+        #[test]
+        fn arbitrary_greater_than_is_strictly_above_min(
+            r in proptest::arbitrary::any::<Refined<i32, GreaterThan<10>>>()
+        ) {
+            proptest::prop_assert!(*r.as_inner() > 10);
+        }
+
+        #[test]
+        fn arbitrary_less_than_is_strictly_below_max(
+            r in proptest::arbitrary::any::<Refined<i32, LessThan<10>>>()
+        ) {
+            proptest::prop_assert!(*r.as_inner() < 10);
         }
 
         #[test]
