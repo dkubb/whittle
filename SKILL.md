@@ -163,9 +163,12 @@ return `FloatError`; `Float` implemented for `f32`, `f64`, sealed):
 - `NotInfinite` — rejects `+/-INF`; admits NaN.
 - `Finite` — rejects NaN and infinities (nominal newtype hiding
   `And<NotNan, NotInfinite>`, flat `FloatError`).
-- `InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>` — closed range
-  written as ratios because Rust 2024 lacks `f64` const generics
-  (`InClosedRange<0, 1, 1, 1>` is `0.0..=1.0`).
+- `InClosedRange` with four `i64` const generics
+  (`MIN_NUMERATOR`, `MIN_DENOMINATOR`, `MAX_NUMERATOR`,
+  `MAX_DENOMINATOR`) — closed range written as numerator /
+  denominator ratios because Rust 2024 lacks `f64` const generics.
+  `InClosedRange<0, 1, 1, 1>` is `0.0..=1.0`,
+  `InClosedRange<1, 2, 3, 4>` is `0.5..=0.75`.
 
 Collection (`crates/whittle-core/src/primitive/collection.rs`,
 `Rule<Vec<T>>`, return `CollectionError` or `CollectionError<EI>`):

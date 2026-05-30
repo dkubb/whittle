@@ -417,7 +417,7 @@ impl<F: Float> Rule<F> for Finite {
     }
 }
 
-/// `MIN_NUM/MIN_DEN <= raw <= MAX_NUM/MAX_DEN`.
+/// `MIN_NUMERATOR/MIN_DENOMINATOR <= raw <= MAX_NUMERATOR/MAX_DENOMINATOR`.
 ///
 /// Endpoints are passed as ratios because Rust 2024 does not yet
 /// permit `f64` const-generic parameters. To express `0.0..=1.0`,
@@ -446,32 +446,48 @@ impl<F: Float> Rule<F> for Finite {
 /// assert_eq!(err, FloatError::OutOfRange { value: 1.5_f64 });
 /// ```
 pub struct InClosedRange<
-    const MIN_NUM: i64,
-    const MIN_DEN: i64,
-    const MAX_NUM: i64,
-    const MAX_DEN: i64,
+    const MIN_NUMERATOR: i64,
+    const MIN_DENOMINATOR: i64,
+    const MAX_NUMERATOR: i64,
+    const MAX_DENOMINATOR: i64,
 >;
 
-impl<const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DEN: i64>
-    InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>
+impl<
+    const MIN_NUMERATOR: i64,
+    const MIN_DENOMINATOR: i64,
+    const MAX_NUMERATOR: i64,
+    const MAX_DENOMINATOR: i64,
+> InClosedRange<MIN_NUMERATOR, MIN_DENOMINATOR, MAX_NUMERATOR, MAX_DENOMINATOR>
 {
     /// Single source of the bound invariants: positive denominators
-    /// and `MIN_NUM/MIN_DEN <= MAX_NUM/MAX_DEN`. Referenced from
+    /// and `MIN_NUMERATOR/MIN_DENOMINATOR <= MAX_NUMERATOR/MAX_DENOMINATOR`. Referenced from
     /// `Rule::refine` and `ArbitraryRule::arbitrary_strategy` via
     /// `const { Self::VALID }` so the three asserts cannot drift
     /// between the two sites.
     const VALID: () = {
-        assert!(MIN_DEN > 0, "InClosedRange requires MIN_DEN > 0");
-        assert!(MAX_DEN > 0, "InClosedRange requires MAX_DEN > 0");
         assert!(
-            (MIN_NUM as i128) * (MAX_DEN as i128) <= (MAX_NUM as i128) * (MIN_DEN as i128),
-            "InClosedRange requires MIN_NUM/MIN_DEN <= MAX_NUM/MAX_DEN",
+            MIN_DENOMINATOR > 0,
+            "InClosedRange requires MIN_DENOMINATOR > 0"
+        );
+        assert!(
+            MAX_DENOMINATOR > 0,
+            "InClosedRange requires MAX_DENOMINATOR > 0"
+        );
+        assert!(
+            (MIN_NUMERATOR as i128) * (MAX_DENOMINATOR as i128)
+                <= (MAX_NUMERATOR as i128) * (MIN_DENOMINATOR as i128),
+            "InClosedRange requires MIN_NUMERATOR/MIN_DENOMINATOR <= MAX_NUMERATOR/MAX_DENOMINATOR",
         );
     };
 }
 
-impl<F: Float, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DEN: i64>
-    Rule<F> for InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>
+impl<
+    F: Float,
+    const MIN_NUMERATOR: i64,
+    const MIN_DENOMINATOR: i64,
+    const MAX_NUMERATOR: i64,
+    const MAX_DENOMINATOR: i64,
+> Rule<F> for InClosedRange<MIN_NUMERATOR, MIN_DENOMINATOR, MAX_NUMERATOR, MAX_DENOMINATOR>
 {
     type Error = FloatError;
 
@@ -483,8 +499,8 @@ impl<F: Float, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const
         // parameters, so invalid configurations become compile
         // errors rather than runtime states.
         const { Self::VALID };
-        let lo = F::from_ratio(MIN_NUM, MIN_DEN);
-        let hi = F::from_ratio(MAX_NUM, MAX_DEN);
+        let lo = F::from_ratio(MIN_NUMERATOR, MIN_DENOMINATOR);
+        let hi = F::from_ratio(MAX_NUMERATOR, MAX_DENOMINATOR);
         if raw.float_is_nan() {
             return Err(FloatError::IsNan);
         }
@@ -563,8 +579,13 @@ where
 }
 
 #[cfg(feature = "proptest")]
-impl<F, const MIN_NUM: i64, const MIN_DEN: i64, const MAX_NUM: i64, const MAX_DEN: i64>
-    ArbitraryRule<F> for InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>
+impl<
+    F,
+    const MIN_NUMERATOR: i64,
+    const MIN_DENOMINATOR: i64,
+    const MAX_NUMERATOR: i64,
+    const MAX_DENOMINATOR: i64,
+> ArbitraryRule<F> for InClosedRange<MIN_NUMERATOR, MIN_DENOMINATOR, MAX_NUMERATOR, MAX_DENOMINATOR>
 where
     F: ArbitraryFloat + core::fmt::Debug,
 {
@@ -574,8 +595,8 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         const { Self::VALID };
-        let lo = F::from_ratio(MIN_NUM, MIN_DEN);
-        let hi = F::from_ratio(MAX_NUM, MAX_DEN);
+        let lo = F::from_ratio(MIN_NUMERATOR, MIN_DENOMINATOR);
+        let hi = F::from_ratio(MAX_NUMERATOR, MAX_DENOMINATOR);
         F::arbitrary_in_closed_range(lo, hi).boxed()
     }
 }

@@ -139,8 +139,10 @@ can map 1:1 into its domain variants.
   `Within<MIN, MAX>`, `AtLeast`, `AtMost`, `NonZero`, `Positive`,
   `Negative`.
 - **Float** (`f32`, `f64`) — `NotNan`, `NotInfinite`, `Finite`,
-  `InClosedRange<MIN_NUM, MIN_DEN, MAX_NUM, MAX_DEN>` (ratio-encoded
-  const generics).
+  plus `InClosedRange` with four `i64` const generics
+  (`MIN_NUMERATOR`, `MIN_DENOMINATOR`, `MAX_NUMERATOR`,
+  `MAX_DENOMINATOR`) — numerator / denominator pairs since Rust
+  2024 lacks `f64` const generics.
 - **String** — `LenChars`, `LenBytes`, `NonEmpty`, `EachChar<P>`,
   `FirstChar<P>`.
 - **Collection** (`Vec<T>`) — `LenItems`, `AllItems<R>`,
