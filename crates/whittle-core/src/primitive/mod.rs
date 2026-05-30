@@ -34,8 +34,8 @@ pub use float::{Finite, Float, FloatError, InClosedRange, NotInfinite, NotNan};
 #[cfg(feature = "proptest")]
 pub use numeric::ArbitraryNumeric;
 pub use numeric::{
-    AtLeast, AtMost, GreaterThan, LessThan, Negative, NonZero, Numeric, NumericError, Positive,
-    Within,
+    AtLeast, AtMost, EqualTo, GreaterThan, LessThan, Negative, NonZero, NotEqualTo, Numeric,
+    NumericError, Positive, Within,
 };
 pub use path::{PathError, RelativePath};
 #[cfg(feature = "proptest")]

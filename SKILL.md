@@ -133,7 +133,11 @@ all return `NumericError`):
   counterpart of `AtMost`). Compose `GreaterThan` and `LessThan`
   via `And` for the half-open and open-open ranges (PostgreSQL
   range syntax `(MIN, MAX]`, `[MIN, MAX)`, `(MIN, MAX)`).
-- `NonZero` — rejects `0`.
+- `EqualTo<N>` — admits only `value == N` (singleton). Panics at
+  proptest strategy construction if `N` doesn't fit the carrier.
+- `NotEqualTo<N>` — admits every value except `N` (dual of
+  `EqualTo`).
+- `NonZero` — type alias for `NotEqualTo<0>`.
 - `Positive` — type alias for `GreaterThan<0>` (`value > 0`).
 - `Negative` — type alias for `LessThan<0>` (`value < 0`).
 - `Numeric` trait — `into_i128` / `from_i128`; implemented for

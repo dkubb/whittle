@@ -116,7 +116,49 @@ pub struct GreaterThan<const MIN: i128>;
 /// ```
 pub struct LessThan<const MAX: i128>;
 
-/// Rejects zero.
+/// Singleton rule: admits only `value == N`.
+///
+/// Useful for marker fields (a fixed protocol version, a known
+/// status code, a sentinel constant). `N` must fit in the carrier
+/// type for the rule to admit any value at all; `EqualTo<300>` over
+/// `u8` admits nothing because 300 exceeds `u8::MAX`.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{EqualTo, NumericError};
+///
+/// let ok: Refined<u8, EqualTo<42>> = Refined::try_new(42).unwrap();
+/// assert_eq!(*ok.as_inner(), 42);
+///
+/// // Any other value is rejected.
+/// let err = Refined::<u8, EqualTo<42>>::try_new(7).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: 7 });
+/// ```
+pub struct EqualTo<const N: i128>;
+
+/// Exclusion rule: admits every value except `N`. The dual of
+/// [`EqualTo`].
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{NotEqualTo, NumericError};
+///
+/// let ok: Refined<i32, NotEqualTo<-1>> = Refined::try_new(0).unwrap();
+/// assert_eq!(*ok.as_inner(), 0);
+///
+/// let err = Refined::<i32, NotEqualTo<-1>>::try_new(-1).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: -1 });
+/// ```
+pub struct NotEqualTo<const N: i128>;
+
+/// Rejects zero — type alias for [`NotEqualTo<0>`].
+///
+/// `NonZero` is the conventional spelling of the exclude-zero rule.
+/// The underlying machinery is [`NotEqualTo<0>`].
 ///
 /// # Examples
 ///
@@ -130,7 +172,7 @@ pub struct LessThan<const MAX: i128>;
 /// let err = Refined::<i32, NonZero>::try_new(0).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: 0 });
 /// ```
-pub struct NonZero;
+pub type NonZero = NotEqualTo<0>;
 
 /// `value > 0` — alias for [`GreaterThan<0>`].
 ///
@@ -575,7 +617,7 @@ where
     }
 }
 
-impl<T> Rule<T> for NonZero
+impl<T, const N: i128> Rule<T> for EqualTo<N>
 where
     T: Numeric,
 {
@@ -584,16 +626,34 @@ where
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
         let widened = raw.into_i128();
-        if widened == 0_i128 {
-            return Err(NumericError::OutOfRange { value: 0_i128 });
+        if widened == N {
+            T::from_i128(widened)
+        } else {
+            Err(NumericError::OutOfRange { value: widened })
+        }
+    }
+}
+
+impl<T, const N: i128> Rule<T> for NotEqualTo<N>
+where
+    T: Numeric,
+{
+    type Error = NumericError;
+
+    #[inline]
+    fn refine(raw: T) -> Result<T, Self::Error> {
+        let widened = raw.into_i128();
+        if widened == N {
+            return Err(NumericError::OutOfRange { value: widened });
         }
         T::from_i128(widened)
     }
 }
 
-// `Positive` and `Negative` are type aliases for `GreaterThan<0>` /
-// `LessThan<0>`; their `Rule` and `ArbitraryRule` impls come from
-// the underlying generic impls above.
+// `NonZero`, `Positive`, and `Negative` are type aliases for
+// `NotEqualTo<0>`, `GreaterThan<0>`, and `LessThan<0>` respectively;
+// their `Rule` and `ArbitraryRule` impls come from the underlying
+// generic impls above.
 
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
@@ -683,16 +743,30 @@ where
 }
 
 #[cfg(feature = "proptest")]
-fn numeric_is_non_zero<T: Numeric + Copy>(value: &T) -> bool {
-    (*value).into_i128() != 0_i128
-}
-
-#[cfg(feature = "proptest")]
-impl<T> ArbitraryRule<T> for NonZero
+impl<T, const N: i128> ArbitraryRule<T> for EqualTo<N>
 where
     T: ArbitraryNumeric + core::fmt::Debug,
 {
-    // `NonZero` admits every value except `0`; the admissible
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+    /// `EqualTo<N>` admits exactly one value: `N` rendered in `T`.
+    /// Panics at strategy construction if `N` is outside `T`'s
+    /// representable range — a programming error caught at test
+    /// time.
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        let value: T = T::from_i128(N).expect("EqualTo<N>: N must fit in the carrier type T");
+        proptest::strategy::Just(value).boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, const N: i128> ArbitraryRule<T> for NotEqualTo<N>
+where
+    T: ArbitraryNumeric + core::fmt::Debug,
+{
+    // `NotEqualTo<N>` admits every value except `N`; the admissible
     // region is dense (one excluded value out of ~2^N). Rejection
     // sampling on the full range is cheap.
     type Strategy = proptest::strategy::BoxedStrategy<T>;
@@ -701,7 +775,7 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         T::arbitrary_in_range(i128::MIN, i128::MAX)
-            .prop_filter("non-zero", numeric_is_non_zero::<T>)
+            .prop_filter("not equal to N", |v| (*v).into_i128() != N)
             .boxed()
     }
 }
