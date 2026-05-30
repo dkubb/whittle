@@ -79,9 +79,8 @@ shadow_reuse                    = "allow" # Local rebind via `let x = x.refine()
 shadow_unrelated                = "allow" # Same as above
 str_to_string                   = "allow" # Tests use `"...".to_string()` for clarity; `String::from` would not improve readability
 tests_outside_test_module       = "allow" # Integration tests in `tests/` are conventionally top-level `#[test]` fns, not nested in `#[cfg(test)] mod tests`
-unreachable                     = "allow" # `unreachable!("unexpected: ...")` documents impossible match arms in `#[non_exhaustive]` errors
+unreachable                     = "allow" # `unreachable!("composition emits only ...")` documents arms in exhaustive matches where the rule composition guarantees a subset of variants
 unused_trait_names              = "allow" # `use Trait as _;` would obscure that the trait is the API surface
-wildcard_enum_match_arm         = "allow" # `other => unreachable!(...)` is preferred over listing every future variant of `#[non_exhaustive]` errors
 
 [workspace.lints.rustdoc]
 # Rustdoc lints
