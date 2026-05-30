@@ -119,6 +119,10 @@ the domain; `Refined<T, R>` is implementation.
   `NumericError::OutOfRange` when `R` accepts.
   `type NotEqualTo<const N: i128> = Not<EqualTo<N>>` is the
   canonical use; `NonZero` chains through `NotEqualTo<0>`.
+- `Xor<A, B>` (`crates/whittle-core/src/composition.rs`): exactly
+  one of `A` and `B` must accept. Same numeric-only constraint as
+  `Not<R>`. Emits `NumericError::OutOfRange` when both accept or
+  both reject.
 - N-ary `All<(...)>` / `Any<(...)>` operators that collapse the
   binary nesting are planned follow-up.
 - Transformers (`crates/whittle-core/src/transform.rs`): `AsciiLowercase<R>`,

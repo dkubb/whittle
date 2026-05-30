@@ -1,4 +1,5 @@
-//! Rule composition: `And<A, B>`, `Or<A, B>`, and `Not<R>`.
+//! Rule composition: `And<A, B>`, `Or<A, B>`, `Not<R>`, and
+//! `Xor<A, B>`.
 //!
 //! `And` and `Or` are binary and share the same `Rule::Error` type
 //! across operands. The composition's `Self::Error` is that shared
@@ -6,14 +7,13 @@
 //! callers. Domain newtypes pattern-match on the rules' flat error
 //! enum directly.
 //!
-//! `Not<R>` is a unary inversion combinator. The current impl is
-//! restricted to numeric carriers (`T: Numeric + Copy, R: Rule<T,
-//! Error = NumericError>`) because rejection mapping requires a
-//! variant in the parent error to express "the inner rule
-//! unexpectedly accepted." Numeric primitives reuse the existing
-//! `NumericError::OutOfRange { value }` variant. Other carrier
-//! families can add their own `Not<R>` impls under the same
-//! constraint.
+//! `Not<R>` and `Xor<A, B>` are restricted to numeric carriers
+//! (`T: Numeric + Copy`, inner rules sharing
+//! `Rule::Error = NumericError`) because their rejection paths need
+//! to fabricate an error variant — `Not` when the inner rule
+//! unexpectedly accepts, `Xor` when both inner rules accept. Both
+//! reuse `NumericError::OutOfRange { value }`. Other carrier
+//! families can add their own impls under the same constraint.
 //!
 //! N-ary composition is expressed via nesting until N-ary lands —
 //! `And<A, And<B, C>>` today; the `All<(...)>` / `Any<(...)>`
@@ -125,6 +125,48 @@ pub struct Or<A, B>(PhantomData<(A, B)>);
 /// ```
 pub struct Not<R>(PhantomData<fn() -> R>);
 
+/// Exactly one of `A`, `B` must accept; both-accept and
+/// both-reject both fail.
+///
+/// The truth table:
+///
+/// | `A` | `B` | `Xor<A, B>` |
+/// | --- | --- | --- |
+/// | accept | reject | accept |
+/// | reject | accept | accept |
+/// | accept | accept | reject (both matched) |
+/// | reject | reject | reject (neither matched) |
+///
+/// Same carrier and error-type constraints as `Not<R>`: numeric
+/// only, both operands sharing `Rule::Error = NumericError`, the
+/// rejection paths reuse `NumericError::OutOfRange { value }`.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::{AtLeast, AtMost, NumericError};
+/// use whittle_core::{Refined, Xor};
+///
+/// // Exactly one bound must hold: outside [0, 10] (so `< 0` xor
+/// // `> 10`, where `AtLeast<0>` is `>= 0` and `AtMost<10>` is
+/// // `<= 10`, which means inside [0, 10] both accept and Xor
+/// // rejects, and outside [0, 10] exactly one accepts).
+/// type Outside = Xor<AtLeast<0>, AtMost<10>>;
+///
+/// // Admit: `-5` only `AtMost<10>` accepts.
+/// let r: Refined<i32, Outside> = Refined::try_new(-5).unwrap();
+/// assert_eq!(*r.as_inner(), -5);
+///
+/// // Admit: `100` only `AtLeast<0>` accepts.
+/// let r: Refined<i32, Outside> = Refined::try_new(100).unwrap();
+/// assert_eq!(*r.as_inner(), 100);
+///
+/// // Reject: `5` is in `[0, 10]` so both accept.
+/// let err = Refined::<i32, Outside>::try_new(5).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: 5 });
+/// ```
+pub struct Xor<A, B>(PhantomData<(A, B)>);
+
 impl<T, E, A, B> Rule<T> for And<A, B>
 where
     T: 'static,
@@ -183,6 +225,31 @@ where
             Err(crate::primitive::NumericError::OutOfRange { value: widened })
         } else {
             T::from_i128(widened)
+        }
+    }
+}
+
+impl<T, A, B> Rule<T> for Xor<A, B>
+where
+    T: crate::primitive::Numeric + Copy,
+    A: Rule<T, Error = crate::primitive::NumericError>,
+    B: Rule<T, Error = crate::primitive::NumericError>,
+{
+    type Error = crate::primitive::NumericError;
+
+    #[inline]
+    fn refine(raw: T) -> Result<T, Self::Error> {
+        // `T: Copy` lets both rules run against the same input
+        // without cloning. The widened i128 form of the offending
+        // value is what `NumericError::OutOfRange` carries when
+        // either both accept or both reject.
+        let widened = raw.into_i128();
+        let a_ok = A::refine(raw).is_ok();
+        let b_ok = B::refine(raw).is_ok();
+        if a_ok ^ b_ok {
+            T::from_i128(widened)
+        } else {
+            Err(crate::primitive::NumericError::OutOfRange { value: widened })
         }
     }
 }
@@ -302,6 +369,30 @@ where
         T::arbitrary_in_range(i128::MIN, i128::MAX)
             .prop_filter("Not: inner rule unexpectedly accepted", |v| {
                 R::refine(*v).is_err()
+            })
+            .boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<T, A, B> ArbitraryRule<T> for Xor<A, B>
+where
+    T: crate::primitive::ArbitraryNumeric + core::fmt::Debug,
+    A: ArbitraryRule<T> + Rule<T, Error = crate::primitive::NumericError>,
+    B: ArbitraryRule<T> + Rule<T, Error = crate::primitive::NumericError>,
+{
+    // Strategy: union of `A` and `B`'s strategies, filtered to the
+    // symmetric difference. When `A` and `B`'s admissible regions
+    // are nearly disjoint the filter is cheap; when they overlap
+    // heavily the filter rate climbs. Documented tradeoff.
+    type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::prop_oneof![A::arbitrary_strategy(), B::arbitrary_strategy()]
+            .prop_filter("Xor: exactly one operand must accept", |v| {
+                A::refine(*v).is_ok() ^ B::refine(*v).is_ok()
             })
             .boxed()
     }
