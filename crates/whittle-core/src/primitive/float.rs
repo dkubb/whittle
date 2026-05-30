@@ -281,7 +281,6 @@ impl ArbitraryFloat for f64 {
 /// pattern (`NumericError::OutOfRange { value: i128 }`,
 /// `StringError::CharCountOutOfRange { actual: usize }`).
 #[derive(Debug, PartialEq)]
-#[non_exhaustive]
 pub enum FloatError {
     /// Value was NaN.
     IsNan,

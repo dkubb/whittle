@@ -140,7 +140,6 @@ pub struct FirstChar<P>(PhantomData<P>);
 /// blocks inside `Rule::refine`, so their error variant is
 /// unrepresentable.
 #[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum StringError {
     /// Character count not in the admissible range.
     CharCountOutOfRange {

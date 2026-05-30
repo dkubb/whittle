@@ -101,10 +101,11 @@ impl OrderItemList {
                 CollectionError::LenOutOfRange { actual } => OrderItemListError::Length { actual },
                 CollectionError::DuplicateKey { index } => OrderItemListError::Duplicate { index },
                 CollectionError::NotSorted { index } => OrderItemListError::OutOfOrder { index },
-                // `CollectionError` is `#[non_exhaustive]`, so the
-                // catch-all is required even though the composition
-                // above can only emit the three variants we just named.
-                other => unreachable!("unexpected inner CollectionError variant: {other:?}"),
+                CollectionError::BadItem { .. }
+                | CollectionError::MatchingItem { .. }
+                | CollectionError::NoMatchingItem => unreachable!(
+                    "composition emits only LenOutOfRange, DuplicateKey, and NotSorted"
+                ),
             })
     }
 

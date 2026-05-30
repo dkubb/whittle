@@ -28,8 +28,7 @@ use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// Flat domain error for date rules.
-#[derive(Debug, PartialEq)]
-#[non_exhaustive]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DateError {
     /// Value is outside the admissible closed range. Returned by
     /// [`DateAtLeast`], [`DateAtMost`], and [`DateInRange`]. Carries

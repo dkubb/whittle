@@ -31,8 +31,7 @@ use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
 
 /// Flat domain error for `DateTime<Utc>` rules.
-#[derive(Debug, PartialEq)]
-#[non_exhaustive]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DateTimeError {
     /// Value is outside the admissible closed range. Returned by
     /// [`DateTimeAtLeast`], [`DateTimeAtMost`], and

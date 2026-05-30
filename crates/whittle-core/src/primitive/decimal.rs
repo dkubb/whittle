@@ -40,8 +40,7 @@ const DECIMAL_MIN_MANTISSA: i128 = Decimal::MIN.mantissa();
 /// diagnostic without leaking the rule's marker type. The variant
 /// set is the union over all decimal rules in this module:
 /// individual primitives only ever return a subset.
-#[derive(Debug, PartialEq)]
-#[non_exhaustive]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DecimalError {
     /// Value was not strictly positive: `value <= 0`. Returned by
     /// [`DecimalPositive`]. Carries the offending value.

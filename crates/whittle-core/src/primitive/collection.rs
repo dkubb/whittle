@@ -338,7 +338,6 @@ pub struct AnyOf<P>(PhantomData<P>);
 /// (...) }` blocks inside the affected `Rule::refine` impls, so
 /// the corresponding error variant is unrepresentable.
 #[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum CollectionError<EI = core::convert::Infallible> {
     /// Length not in the admissible range.
     LenOutOfRange {

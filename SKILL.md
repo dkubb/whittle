@@ -304,10 +304,15 @@ impl FlightNumber {
                 FlightNumberError::BadLength { actual },
             StringError::BadChar { offset } =>
                 FlightNumberError::BadCharacter { offset },
-            // `StringError` is #[non_exhaustive]; the catch-all is
-            // required even though the composition only emits the
-            // two variants above.
-            other => unreachable!("unexpected: {other:?}"),
+            // The composition only emits the two variants above.
+            // Listing the rest explicitly turns any future
+            // `StringError` variant into a compile error here.
+            StringError::ByteLenOutOfRange { .. }
+            | StringError::Empty
+            | StringError::BadFirstChar
+            | StringError::BadHexLength { .. } => unreachable!(
+                "composition emits only CharCountOutOfRange and BadChar"
+            ),
         })
     }
     // as_inner / into_inner delegate to self.0.

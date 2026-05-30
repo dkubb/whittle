@@ -98,7 +98,12 @@ impl IataAirportCode {
             .map_err(|err: StringError| match err {
                 StringError::CharCountOutOfRange { actual } => IataError::Length { actual },
                 StringError::BadChar { offset } => IataError::NotUppercase { offset },
-                other => unreachable!("unexpected: {other:?}"),
+                StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadFirstChar
+                | StringError::BadHexLength { .. } => {
+                    unreachable!("composition emits only CharCountOutOfRange and BadChar")
+                }
             })
     }
     pub fn as_str(&self) -> &str {
@@ -113,7 +118,12 @@ impl BookingReference {
             .map_err(|err: StringError| match err {
                 StringError::CharCountOutOfRange { actual } => PnrError::Length { actual },
                 StringError::BadChar { offset } => PnrError::BadChar { offset },
-                other => unreachable!("unexpected: {other:?}"),
+                StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadFirstChar
+                | StringError::BadHexLength { .. } => {
+                    unreachable!("composition emits only CharCountOutOfRange and BadChar")
+                }
             })
     }
     pub fn as_str(&self) -> &str {
@@ -133,11 +143,11 @@ impl FlightCode {
                 StringError::CharCountOutOfRange { actual } => E::Length { actual },
                 StringError::BadFirstChar => E::BadFirstChar,
                 StringError::BadChar { offset } => E::BadChar { offset },
-                // `StringError` is `#[non_exhaustive]`, so the catch-all
-                // is required. The composition above can only emit the
-                // three variants we just named, so this arm is dead in
-                // practice — but the compiler requires it.
-                other => unreachable!("unexpected inner StringError variant: {other:?}"),
+                StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadHexLength { .. } => unreachable!(
+                    "composition emits only CharCountOutOfRange, BadFirstChar, and BadChar"
+                ),
             })
     }
     pub fn as_str(&self) -> &str {

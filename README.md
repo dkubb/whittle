@@ -108,10 +108,15 @@ impl FlightCode {
                 FlightCodeError::Length { actual },
             StringError::BadChar { offset } =>
                 FlightCodeError::BadChar { offset },
-            // `StringError` is `#[non_exhaustive]`; the catch-all is
-            // required even though the composition above only emits
-            // the two variants matched.
-            other => unreachable!("unexpected: {other:?}"),
+            // The composition only emits the two variants above.
+            // The remaining variants are matched together so the
+            // compiler tells us if a new variant ever lands.
+            StringError::ByteLenOutOfRange { .. }
+            | StringError::Empty
+            | StringError::BadFirstChar
+            | StringError::BadHexLength { .. } => unreachable!(
+                "composition emits only CharCountOutOfRange and BadChar"
+            ),
         })
     }
 

@@ -64,10 +64,13 @@ impl UserName {
     pub fn try_new(raw: String) -> Result<Self, UserNameError> {
         Refined::try_new(raw).map(Self).map_err(|err| match err {
             StringError::CharCountOutOfRange { actual } => UserNameError::Length { actual },
-            // `LenChars` only emits `CharCountOutOfRange`; the
-            // catch-all is dead in practice but required because
-            // `StringError` is `#[non_exhaustive]`.
-            other => unreachable!("unexpected inner StringError variant: {other:?}"),
+            StringError::ByteLenOutOfRange { .. }
+            | StringError::Empty
+            | StringError::BadChar { .. }
+            | StringError::BadFirstChar
+            | StringError::BadHexLength { .. } => {
+                unreachable!("LenChars only emits CharCountOutOfRange")
+            }
         })
     }
 
@@ -98,10 +101,6 @@ impl Age {
     pub fn try_new(raw: u8) -> Result<Self, AgeError> {
         Refined::try_new(raw).map(Self).map_err(|err| match err {
             NumericError::OutOfRange { value } => AgeError::OutOfRange { value },
-            // `Within` only emits `OutOfRange`; the catch-all is
-            // dead in practice but required because `NumericError`
-            // is `#[non_exhaustive]`.
-            other => unreachable!("unexpected inner NumericError variant: {other:?}"),
         })
     }
 

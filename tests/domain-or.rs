@@ -57,12 +57,9 @@ impl BatchSize {
             .map_err(|errs: [NumericError; 2]| {
                 // Both inner arms carry the same offending value;
                 // pull it from the left rejection and drop the right.
-                // `NumericError` is `#[non_exhaustive]`, so the match
-                // needs a catch-all even though only one variant exists.
                 let [left, _right] = errs;
                 match left {
                     NumericError::OutOfRange { .. } => BatchSizeError::OutOfRange { value: raw },
-                    other => unreachable!("unexpected inner NumericError variant: {other:?}"),
                 }
             })
     }

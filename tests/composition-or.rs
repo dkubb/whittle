@@ -74,14 +74,9 @@ fn newtype_collapses_or_error_pair_into_a_flat_domain_enum() {
                 .map(Self)
                 .map_err(|errs: [NumericError; 2]| {
                     // Both inner errors carry the same offending value;
-                    // collapse to a single variant. `NumericError` is
-                    // `#[non_exhaustive]`, so the match needs a
-                    // catch-all even though only one variant exists.
+                    // collapse to a single variant.
                     let [left, _right] = errs;
-                    let value = match left {
-                        NumericError::OutOfRange { value } => value,
-                        _ => i128::from(raw),
-                    };
+                    let NumericError::OutOfRange { value } = left;
                     ExtremeError::NotExtreme { value }
                 })
         }

@@ -72,7 +72,6 @@ pub struct RelativePath;
 
 /// Errors common to every path primitive.
 #[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum PathError {
     /// Empty input. Construction-time only; never produced for any
     /// non-empty input.

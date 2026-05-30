@@ -95,11 +95,11 @@ impl CargoPackageName {
                 StringError::CharCountOutOfRange { actual } => E::Length { actual },
                 StringError::BadFirstChar => E::BadFirstChar,
                 StringError::BadChar { offset } => E::BadChar { offset },
-                // `StringError` is `#[non_exhaustive]`, so the catch-all
-                // is required. The composition above can only emit the
-                // three variants we just named, so this arm is dead in
-                // practice — but the compiler requires it.
-                other => unreachable!("unexpected inner StringError variant: {other:?}"),
+                StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadHexLength { .. } => unreachable!(
+                    "composition emits only CharCountOutOfRange, BadFirstChar, and BadChar"
+                ),
             })
     }
 

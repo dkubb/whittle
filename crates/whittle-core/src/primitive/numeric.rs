@@ -133,7 +133,6 @@ pub struct Negative;
 /// blocks inside the affected `Rule::refine` impls, so their
 /// error variant is unrepresentable.
 #[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum NumericError {
     /// Value lies outside the rule's admissible range.
     OutOfRange {

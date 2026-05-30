@@ -78,11 +78,14 @@ impl FlightCode {
             .map_err(|err: StringError| match err {
                 StringError::CharCountOutOfRange { actual } => FlightCodeError::Length { actual },
                 StringError::BadChar { offset } => FlightCodeError::BadChar { offset },
-                // `StringError` is `#[non_exhaustive]`, so the catch-all
-                // is required. The `LenChars` + `EachChar` composition
-                // can only emit the two variants above, so this arm is
-                // dead in practice — but the compiler requires it.
-                other => unreachable!("unexpected inner StringError: {other:?}"),
+                // `LenChars` + `EachChar` emits only the two variants
+                // above; the remaining ones are unreachable.
+                StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadFirstChar
+                | StringError::BadHexLength { .. } => {
+                    unreachable!("composition emits only CharCountOutOfRange and BadChar")
+                }
             })
     }
 

@@ -42,7 +42,6 @@ impl Year {
             .map(Self)
             .map_err(|err: NumericError| match err {
                 NumericError::OutOfRange { .. } => YearError::OutOfRange { value: raw },
-                other => unreachable!("unexpected inner NumericError variant: {other:?}"),
             })
     }
 

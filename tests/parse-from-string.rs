@@ -54,7 +54,12 @@ impl FlightCode {
             .map_err(|err: StringError| match err {
                 StringError::CharCountOutOfRange { actual } => FlightCodeError::Length { actual },
                 StringError::BadChar { offset } => FlightCodeError::BadChar { offset },
-                other => unreachable!("unexpected inner StringError variant: {other:?}"),
+                StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadFirstChar
+                | StringError::BadHexLength { .. } => {
+                    unreachable!("composition emits only CharCountOutOfRange and BadChar")
+                }
             })
     }
 

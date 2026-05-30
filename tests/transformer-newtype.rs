@@ -54,7 +54,12 @@ impl Sha1HashHex {
             .map_err(|err: StringError| match err {
                 StringError::BadHexLength { actual } => Sha1HashHexError::Length { actual },
                 StringError::BadChar { offset } => Sha1HashHexError::NonHex { offset },
-                other => unreachable!("unexpected inner StringError variant: {other:?}"),
+                StringError::CharCountOutOfRange { .. }
+                | StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadFirstChar => {
+                    unreachable!("composition emits only BadHexLength and BadChar")
+                }
             })
     }
 

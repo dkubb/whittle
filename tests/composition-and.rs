@@ -69,9 +69,10 @@ fn newtype_wraps_and_composition_with_a_flat_domain_enum() {
     //
     // Both inner rules now share `StringError`, so the match on
     // `try_new`'s error is a direct 1:1 mapping into the flat
-    // domain enum. The catch-all is required because `StringError`
-    // is `#[non_exhaustive]`, but the named arms already cover
-    // every variant the composition can emit.
+    // domain enum. The named arms cover every variant the
+    // composition can emit; the remaining `StringError` variants
+    // are matched together with `unreachable!` to make that
+    // assumption explicit.
     #[derive(Debug, PartialEq, Eq)]
     enum LabelError {
         Length { actual: usize },
@@ -88,10 +89,12 @@ fn newtype_wraps_and_composition_with_a_flat_domain_enum() {
                 .map_err(|err: StringError| match err {
                     StringError::CharCountOutOfRange { actual } => LabelError::Length { actual },
                     StringError::BadChar { offset } => LabelError::BadChar { offset },
-                    // `StringError` is `#[non_exhaustive]`; the
-                    // catch-all is required even though `LenChars` and
-                    // `EachChar` only emit the two variants above.
-                    other => unreachable!("unexpected inner StringError variant: {other:?}"),
+                    StringError::ByteLenOutOfRange { .. }
+                    | StringError::Empty
+                    | StringError::BadFirstChar
+                    | StringError::BadHexLength { .. } => {
+                        unreachable!("composition emits only CharCountOutOfRange and BadChar")
+                    }
                 })
         }
     }
