@@ -1161,6 +1161,15 @@ mod tests {
             proptest::prop_assert!(*r.as_inner() < 0);
         }
 
+        #[test]
+        fn arbitrary_equal_to_is_exactly_n(
+            r in proptest::arbitrary::any::<Refined<i32, super::EqualTo<42>>>()
+        ) {
+            // `EqualTo<N>`'s strategy is `Just(N)`; the single
+            // admissible value is `N` rendered in the carrier.
+            proptest::prop_assert_eq!(*r.as_inner(), 42);
+        }
+
         // ─── Reject properties: bounded ranges. ────────────────
 
         #[test]

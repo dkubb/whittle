@@ -421,13 +421,18 @@ impl<const P: u8> ArbitraryDecimal for DecimalPrecision<P> {
         // sparse precisions (e.g. P=5 over Decimal's 96-bit range)
         // do not rely on rejection sampling. For P >= 29 the bound
         // saturates at the full Decimal mantissa range; for P == 0
-        // only zero is admissible.
-        let max_mantissa: i128 = if P == 0 {
-            0
-        } else if P >= 29 {
-            DECIMAL_MAX_MANTISSA
-        } else {
-            10_i128.pow(u32::from(P)) - 1
+        // only zero is admissible. The bound is resolved in a `const`
+        // block so the per-`P` selection happens at compile time —
+        // no runtime branch to leave one direction structurally dead
+        // in each monomorphisation.
+        let max_mantissa: i128 = const {
+            if P == 0 {
+                0
+            } else if P >= 29 {
+                DECIMAL_MAX_MANTISSA
+            } else {
+                10_i128.pow(P as u32) - 1
+            }
         };
         let min_mantissa = -max_mantissa;
         (
@@ -706,6 +711,27 @@ mod tests {
         ) {
             proptest::prop_assert!(
                 super::significant_digits(r.as_inner().mantissa()) <= 5
+            );
+        }
+
+        #[test]
+        fn arbitrary_decimal_precision_zero_admits_only_zero(
+            r in proptest::arbitrary::any::<Refined<Decimal, DecimalPrecision<0>>>()
+        ) {
+            // `P == 0` admits zero significant digits, so the
+            // strategy's mantissa bound collapses to `0`.
+            proptest::prop_assert_eq!(r.as_inner().mantissa(), 0);
+        }
+
+        #[test]
+        fn arbitrary_decimal_precision_saturated_within_limit(
+            r in proptest::arbitrary::any::<Refined<Decimal, DecimalPrecision<29>>>()
+        ) {
+            // `P >= 29` saturates the bound at the full Decimal
+            // mantissa range; every emitted value stays within the
+            // 29-significant-digit limit by construction.
+            proptest::prop_assert!(
+                super::significant_digits(r.as_inner().mantissa()) <= 29
             );
         }
 

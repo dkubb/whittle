@@ -2255,6 +2255,18 @@ mod tests {
     #[cfg(all(feature = "unicode", feature = "proptest"))]
     proptest::proptest! {
         #[test]
+        fn arbitrary_printable_char_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<super::PrintableChar>>>()
+        ) {
+            // `PrintableChar`'s `ArbitraryChar` strategy filters
+            // `proptest::char::any()` through `char_is_printable`,
+            // so every emitted char must satisfy the predicate.
+            proptest::prop_assert!(
+                r.as_inner().chars().all(<super::PrintableChar as CharPredicate>::test),
+            );
+        }
+
+        #[test]
         fn arbitrary_printable_line_admissible(
             r in proptest::arbitrary::any::<Refined<String, EachChar<super::PrintableLine>>>()
         ) {
