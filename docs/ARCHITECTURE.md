@@ -46,6 +46,11 @@ Table of Contents
 - [Section 8: Core Traits](#8-core-traits)
 - [Section 9: The Refined Carrier](#9-the-refined-carrier)
 - [Section 10: Library-Supplied Primitive Rules](#10-library-supplied-primitive-rules)
+  ([Numeric](#101-numeric), [Floating-Point](#102-floating-point),
+  [Decimal](#103-decimal), [String Grammar](#104-string-grammar),
+  [Collection](#105-collection), [Enum Subset](#106-enum-subset),
+  [Composition](#107-composition), [Date](#108-date),
+  [DateTime](#109-datetime))
 - [Section 11: Contextual Rules](#11-contextual-rules)
 - [Section 12: Schema Reflection and Derived Integrations](#12-schema-reflection-and-derived-integrations)
 - [Section 13: Implication and Subtyping](#13-implication-and-subtyping)
@@ -118,10 +123,12 @@ The implementation uses these concrete foundations:
 - SQL row decoding: `sqlx`, behind a Cargo feature.
 - Property testing: `proptest`, behind a Cargo feature. `quickcheck`
   support is a future extension.
-- Numeric representation for decimals: `rust_decimal`, behind a Cargo
-  feature.
-- Time representation: `chrono` with `clock` and `serde`, behind a
-  Cargo feature.
+- Numeric representation for decimals: `rust_decimal`, behind the
+  `decimal` Cargo feature (shipped).
+- Time representation: `chrono` (no-default-features,
+  `no_std`-compatible), behind the `chrono` Cargo feature (shipped).
+- Unicode general-category lookup: `unicode-general-category`, behind
+  the `unicode` Cargo feature (shipped); backs `PrintableChar`.
 - Bounded collections: `bounded-vec`, `non-empty-string`, shared across
   crates via `workspace.dependencies`.
 - Error handling: `thiserror` for typed error definitions.
@@ -361,28 +368,37 @@ The library provides the following primitive rule markers in
 
 ### 10.1. Numeric
 
+Standalone primitives:
+
 ```rust
 pub struct Within<const MIN: i128, const MAX: i128>;
-pub struct AtLeast<const MIN: i128>;
-pub struct AtMost<const MAX: i128>;
-pub struct NonZero;
-pub struct Positive;
-pub struct Negative;
+pub struct AtLeast<const MIN: i128>;        // closed lower bound
+pub struct AtMost<const MAX: i128>;         // closed upper bound
+pub struct GreaterThan<const MIN: i128>;    // open lower bound
+pub struct LessThan<const MAX: i128>;       // open upper bound
+pub struct EqualTo<const N: i128>;          // singleton
 ```
 
-`Within<MIN, MAX>` MUST reject `MIN > MAX` at the boundary that has
-the most static information available. The library SHOULD enforce
-this through a `const_assert` (compile-time check) when stable Rust
-admits it, and MUST verify it through a `Rule` impl whose `refine`
-returns `Err(NumericError::EmptyRange)` on the first call when the
-const-generic check could not be performed at compile time.
+Type aliases that name the conventional spelling of common rules:
 
-Numeric primitives are generic over the underlying type via a blanket
-`impl<T: TryInto<i128> + TryFrom<i128>, ...> Rule<T> for Within<…>`.
-Implementations exist for `i8`, `i16`, `i32`, `i64`, `i128`, `u8`,
-`u16`, `u32`, `u64`, `usize`. Unsigned bounds delegate to the
-signed-`i128` implementation and reject out-of-range conversions with
-`NumericError::OutOfRange`.
+```rust
+pub type NotEqualTo<const N: i128> = Not<EqualTo<N>>;
+pub type NonZero   = NotEqualTo<0>;
+pub type Positive  = GreaterThan<0>;
+pub type Negative  = LessThan<0>;
+```
+
+`Within<MIN, MAX>` rejects `MIN > MAX` at compile time via
+`const { assert!(MIN <= MAX) }` inside the `Rule::refine` impl, so
+the empty-range case is unrepresentable in instantiated types and
+no `NumericError::EmptyRange` variant is needed.
+
+Numeric primitives are generic over the underlying type via a
+`Numeric` trait that exposes `into_i128` / `from_i128`. The trait
+is implemented for `i8`, `i16`, `i32`, `i64`, `i128`, `u8`, `u16`,
+`u32`, `u64`, `usize`, `isize`. Out-of-range conversions during
+`from_i128` (e.g. an admissible `i128` value that doesn't fit the
+narrower carrier) return `NumericError::OutOfRange { value: i128 }`.
 
 `u128` is not covered by the `i128`-parameterised primitives because
 `i128` cannot represent values above `i128::MAX`. Consumers needing
@@ -393,23 +409,30 @@ use-case appears).
 ### 10.2. Floating-Point
 
 ```rust
-pub struct Finite;        // rejects ±inf and NaN
-pub struct NotNan;        // rejects NaN, accepts ±inf
-pub struct InClosedRange<const MIN_BITS: u64, const MAX_BITS: u64>;
+pub struct NotNan;          // rejects NaN, admits ±inf
+pub struct NotInfinite;     // rejects ±inf, admits NaN
+pub struct Finite;          // nominal newtype hiding And<NotNan, NotInfinite>
+pub struct InClosedRange<
+    const MIN_NUMERATOR: i64,
+    const MIN_DENOMINATOR: i64,
+    const MAX_NUMERATOR: i64,
+    const MAX_DENOMINATOR: i64,
+>;
 ```
 
-Float-range constants use bit-pattern encoding because const-generic
-`f64` is not stable. Helper macros (`closed_range!(0.0, 1.0)`) emit
-the bit patterns at compile time. The check is performed on `f64`
-values reconstructed via `f64::from_bits`, NOT on the raw bit
-patterns (whose `u64` ordering does not match float ordering — `-1.0`
-has a larger `u64` representation than `+1.0`). Callers MUST ensure
-`f64::from_bits(MIN_BITS) <= f64::from_bits(MAX_BITS)`; the
-`closed_range!` macro emits a `const_assert` to that effect.
+Float-range endpoints are encoded as `(numerator, denominator)`
+ratios because const-generic `f64` is not stable in Rust 2024. The
+endpoints are reconstructed at refine time via
+`F::from_ratio(num, den)`. `InClosedRange<0, 1, 1, 1>` is
+`0.0..=1.0`; `InClosedRange<1, 2, 3, 4>` is `0.5..=0.75`. The
+denominators MUST be positive, and
+`MIN_NUMERATOR / MIN_DENOMINATOR` MUST be less than or equal to
+`MAX_NUMERATOR / MAX_DENOMINATOR`. Both checks are
+`const { assert!(...) }` blocks inside the `Rule::refine` impl.
 
-For `f32` ranges, the companion type `InClosedRangeF32` (a
-`u32`-parameterised analogue) exists so the const-generic parameter
-is correctly sized.
+A single `InClosedRange` definition serves both `f32` and `f64`
+because the sealed `Float` trait abstracts over the ratio
+reconstruction. No separate `InClosedRangeF32` is needed.
 
 ### 10.3. Decimal
 
@@ -427,25 +450,49 @@ integer with explicit scale. The same dodge `InClosedRange` uses for
 
 ### 10.4. String Grammar
 
+Shipped validation rules:
+
 ```rust
 pub struct LenChars<const MIN: usize, const MAX: usize>;
 pub struct LenBytes<const MIN: usize, const MAX: usize>;
 pub struct NonEmpty;
 pub struct EachChar<P: CharPredicate>(PhantomData<P>);
-pub struct AsciiOnly;
-pub struct IsTrimmed;     // PureFilter: rejects leading/trailing whitespace
-pub struct Trim;          // canonicalising: normalises by trimming
-pub struct LowerCase;     // canonicalising: normalises to lowercase
-pub struct IsLowerCase;   // PureFilter: rejects non-lowercase input
-pub struct UpperCase;     // canonicalising: normalises to uppercase
-pub struct IsUpperCase;   // PureFilter: rejects non-uppercase input
-pub struct NfcNormalised; // canonicalising: Unicode NFC normalisation
-pub struct IsNfcNormalised; // PureFilter: rejects non-NFC input
+pub struct FirstChar<P: CharPredicate>(PhantomData<P>);
 ```
 
-`CharPredicate` is a sub-trait with library-supplied implementations
-(`NonControl`, `AsciiAlphanumeric`, `Identifier`, `Digit`, ...). Users
-may add their own.
+Shipped string transformers (in `whittle-core::transform`, not the
+primitive module; each transformer normalises input before
+delegating to its inner rule, so the stored carrier is the
+canonical form):
+
+```rust
+pub struct Trim<R>(PhantomData<R>);           // strips ASCII whitespace, then delegates
+pub struct AsciiLowercase<R>(PhantomData<R>); // lowercases ASCII, then delegates
+pub struct AsciiUppercase<R>(PhantomData<R>); // uppercases ASCII, then delegates
+```
+
+`CharPredicate` is a sub-trait with library-supplied
+implementations: `AsciiAlphanumeric`, `IdentChar`, `IdentStart`,
+`IdentDashChar`, `NonControl`, plus `HexChar` (behind the `hex`
+feature) and `PrintableLine` / `PrintableMultiline` / `PrintableChar`
+(behind the `unicode` feature). `PrintableChar` rejects the Unicode
+General Categories Cc/Cf/Cs/Co/Cn/Zl/Zp via the
+`unicode-general-category` crate; `PrintableLine` and
+`PrintableMultiline` are dep-free hardcoded subsets. Users may
+implement `CharPredicate` for their own predicates.
+
+Fixed-length hex string rules (behind the `hex` feature):
+
+```rust
+pub struct HexFixedLower<const LEN: usize>;        // exactly LEN lowercase hex chars
+pub struct HexFixedAny<const LEN: usize>;          // exactly LEN mixed-case hex chars
+pub type HexFixedNormalized<const LEN: usize>
+    = AsciiLowercase<HexFixedAny<LEN>>;            // admits any case, stores lowercase
+```
+
+NFC normalisation (`NfcNormalised`, `IsNfcNormalised`) and the
+non-canonical lowercase / uppercase rules (`IsLowerCase` /
+`IsUpperCase`) remain planned future extensions, not shipped.
 
 ### 10.5. Collection
 
@@ -454,17 +501,18 @@ use core::cmp::Ordering;
 use core::marker::PhantomData;
 
 pub struct LenItems<const MIN: usize, const MAX: usize>;
-pub struct NonEmptyCollection;
 pub struct AllItems<R>(PhantomData<R>);          // every item satisfies R
-pub struct UniqueByKey<T, F: KeyOf<T>>(PhantomData<(T, F)>);
+pub struct UniqueByKey<T, K: KeyOf<T>>(PhantomData<(T, K)>);
+pub type   Distinct<T> = UniqueByKey<T, IdentityKey<T>>;
 pub struct Sorted<T, K: KeyOf<T> = IdentityKey<T>>(PhantomData<(T, K)>);
-pub struct SortedBy<T, C: Cmp<T>>(PhantomData<(T, C)>);
+pub struct NoneOf<P>(PhantomData<P>);            // no item matches P
+pub struct AnyOf<P>(PhantomData<P>);             // at least one item matches P
 
 pub trait KeyOf<T> {
-    type Key: Ord + Eq;
+    type Key: Ord + Clone;
     fn key_of(t: &T) -> Self::Key;
 }
-pub trait Cmp<T> { fn compare(a: &T, b: &T) -> Ordering; }
+pub trait Predicate<T> { fn test(value: &T) -> bool; }
 
 /// Identity key: a type that uses `T` itself as the ordering key.
 /// Requires `T: Ord + Clone`.
@@ -514,17 +562,94 @@ derive-emitted by `#[derive(EnumRule)]`.
 
 ### 10.7. Composition
 
+Binary operators (generic over any carrier whose operands share
+`Rule::Error`):
+
 ```rust
-pub struct And<A, B>(PhantomData<(A, B)>);   // both rules must accept
-pub struct Or<A, B>(PhantomData<(A, B)>);    // either rule may accept
+pub struct And<A, B>(PhantomData<(A, B)>);   // both rules must accept; Error = E
+pub struct Or<A, B>(PhantomData<(A, B)>);    // either may accept; Error = [E; 2]
 ```
 
-`And` short-circuits on first failure; `Or` short-circuits on first
-success. Both compose with any other rule. There is no `AndN` n-ary
-alias; the `refinement!` macro nests binary `And<A, And<B, ...>>` to
-build longer compositions, and the `<And<A, B> as Rule<T>>::schema`
-impl flattens its right-spine into a single `Schema::And(vec![...])`
-so the reflectable schema is flat regardless of nesting depth.
+`And` short-circuits on first failure and threads the previous
+operand's (possibly canonicalised) output into the next. `Or`
+short-circuits on first success and runs the right operand against
+a clone of the original input. Both compose with any other rule.
+
+Boolean inversion and exclusive-or, restricted to numeric carriers
+(`T: Numeric + Copy`, operands sharing `Rule::Error = NumericError`)
+because the rejection paths fabricate an error variant:
+
+```rust
+pub struct Not<R>(PhantomData<fn() -> R>);   // admits exactly what R rejects
+pub struct Xor<A, B>(PhantomData<(A, B)>);   // exactly one of A, B accepts
+```
+
+Both reuse `NumericError::OutOfRange { value }` for the inverted
+rejection case. Other carrier families MAY add their own `Not<R>` /
+`Xor<A, B>` impls under the same constraint (each family's error
+enum needs a generic "value rejected by composition" variant).
+`type NotEqualTo<const N: i128> = Not<EqualTo<N>>` is the canonical
+use; `NonZero = NotEqualTo<0>` chains through it.
+
+N-ary tuple-based operators (carrier-generic, same `Rule::Error`
+sharing as `And`/`Or`):
+
+```rust
+pub struct All<TUPLE>(PhantomData<fn() -> TUPLE>); // every operand must accept; Error = E
+pub struct Any<TUPLE>(PhantomData<fn() -> TUPLE>); // any operand may accept; Error = [E; N]
+```
+
+Supported arities: 2..=8. `All<(A, B, C)>` runs three operands
+sequentially (equivalent to `And<A, And<B, C>>` without nesting);
+`Any<(A, B, C)>` tries each in order against a clone and returns
+the first acceptance or `[E; 3]` collecting every rejection. For
+arity 2 they reduce to the same shape as `And` / `Or`. Common
+includes/excludes patterns:
+
+```rust
+type AllowedRoll = Any<(EqualTo<1>, EqualTo<3>, EqualTo<6>)>;
+type Forbidden   = All<(NotEqualTo<13>, NotEqualTo<666>)>;
+```
+
+There is no `AndN` n-ary alias; `All<(...)>` is the supported flat
+form. The `<And<A, B> as Rule<T>>::schema` impl flattens its
+right-spine into a single `Schema::And(vec![...])` so the
+reflectable schema is flat regardless of nesting depth.
+
+### 10.8. Date
+
+Behind the `chrono` Cargo feature. Carrier: `chrono::NaiveDate`.
+
+```rust
+pub struct DateAtLeast<const MIN_DAYS_FROM_CE: i32>;
+pub struct DateAtMost<const MAX_DAYS_FROM_CE: i32>;
+pub struct DateInRange<const MIN_DAYS_FROM_CE: i32, const MAX_DAYS_FROM_CE: i32>;
+```
+
+Bounds are encoded as `i32` days from CE (the value returned by
+`NaiveDate::num_days_from_ce`) because Rust 2024 does not yet allow
+`NaiveDate` const generics. Compile-time `const { ... }` blocks
+validate that each bound is within `NaiveDate`'s representable
+range and that `MIN_DAYS_FROM_CE <= MAX_DAYS_FROM_CE`. Cross-field
+ordering (e.g. a `from <= to` date-range struct) is multi-field
+and remains a downstream concern, not a primitive.
+
+### 10.9. DateTime
+
+Behind the `chrono` Cargo feature. Carrier: `chrono::DateTime<Utc>`
+only (`DateTime<FixedOffset>` / `DateTime<Local>` deliberately
+unsupported; convert at the boundary).
+
+```rust
+pub struct DateTimeAtLeast<const MIN_SECS_SINCE_EPOCH: i64>;
+pub struct DateTimeAtMost<const MAX_SECS_SINCE_EPOCH: i64>;
+pub struct DateTimeInRange<const MIN_SECS_SINCE_EPOCH: i64, const MAX_SECS_SINCE_EPOCH: i64>;
+```
+
+Bounds are encoded as `i64` seconds since the Unix epoch
+(`DateTime::<Utc>::timestamp`) because Rust 2024 does not yet allow
+`DateTime` const generics. Same compile-time validation pattern as
+`DateInRange`.
 
 ## 11. Contextual Rules
 
