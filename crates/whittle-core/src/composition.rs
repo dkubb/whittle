@@ -1,11 +1,12 @@
-//! Rule composition: `And<A, B>`, `Or<A, B>`, `Not<R>`, and
-//! `Xor<A, B>`.
+//! Rule composition: binary `And<A, B>` / `Or<A, B>`, unary
+//! `Not<R>`, binary `Xor<A, B>`, and n-ary `All<(...)>` / `Any<(...)>`.
 //!
-//! `And` and `Or` are binary and share the same `Rule::Error` type
-//! across operands. The composition's `Self::Error` is that shared
-//! type — no positional `Left` / `Right` wrapping is exposed to
-//! callers. Domain newtypes pattern-match on the rules' flat error
-//! enum directly.
+//! `And` / `Or` / `All` / `Any` are generic over any carrier whose
+//! operands share the same `Rule::Error` type. The composition's
+//! `Self::Error` is that shared type (or `[E; N]` for the
+//! disjunctions on full rejection) — no positional `Left` / `Right`
+//! wrapping is exposed to callers. Domain newtypes pattern-match
+//! on the rules' flat error enum directly.
 //!
 //! `Not<R>` and `Xor<A, B>` are restricted to numeric carriers
 //! (`T: Numeric + Copy`, inner rules sharing
@@ -15,9 +16,11 @@
 //! reuse `NumericError::OutOfRange { value }`. Other carrier
 //! families can add their own impls under the same constraint.
 //!
-//! N-ary composition is expressed via nesting until N-ary lands —
-//! `And<A, And<B, C>>` today; the `All<(...)>` / `Any<(...)>`
-//! operators are planned follow-up.
+//! The n-ary `All` / `Any` operators are tuple-based:
+//! `All<(R1, R2, R3)>` runs three rules sequentially;
+//! `Any<(R1, R2, R3)>` returns the first acceptance or `[E; 3]` on
+//! full rejection. Arities 2..=8 are supported. For arity 2 they
+//! reduce to the same shape as `And` / `Or`.
 
 use core::marker::PhantomData;
 
@@ -167,6 +170,60 @@ pub struct Not<R>(PhantomData<fn() -> R>);
 /// ```
 pub struct Xor<A, B>(PhantomData<(A, B)>);
 
+/// Every operand in the tuple must accept. The n-ary generalisation
+/// of [`And`] — `All<(A, B, C)>` is equivalent to
+/// `And<A, And<B, C>>` but without the nesting.
+///
+/// Operands run sequentially, each receiving the previous one's
+/// (possibly canonicalised) output. All operands must share
+/// `Rule::Error = E`; the composition's `Self::Error` is that
+/// shared type. Supported arities: 2..=8.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::{AtLeast, AtMost, NonZero, NumericError};
+/// use whittle_core::{All, Refined};
+///
+/// // 1..=100, non-zero — three rules composed flat.
+/// type SmallNonZero = All<(AtLeast<1>, AtMost<100>, NonZero)>;
+///
+/// let r: Refined<i32, SmallNonZero> = Refined::try_new(42).unwrap();
+/// assert_eq!(*r.as_inner(), 42);
+///
+/// let err = Refined::<i32, SmallNonZero>::try_new(0).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: 0 });
+/// ```
+pub struct All<TUPLE>(PhantomData<fn() -> TUPLE>);
+
+/// Any operand in the tuple may accept. The n-ary generalisation of
+/// [`Or`] — `Any<(A, B, C)>` is equivalent to `Or<A, Or<B, C>>` but
+/// without the nested error type.
+///
+/// Operands are tried in order against a clone of the input; the
+/// first to accept wins. If all reject, `Self::Error = [E; N]`
+/// collects each operand's rejection (left to right). Requires
+/// `T: Clone`. Supported arities: 2..=8.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::{EqualTo, NumericError};
+/// use whittle_core::{Any, Refined};
+///
+/// // Includes-like: admit only one of these three values.
+/// type AllowedRoll = Any<(EqualTo<1>, EqualTo<3>, EqualTo<6>)>;
+///
+/// let r: Refined<i32, AllowedRoll> = Refined::try_new(3).unwrap();
+/// assert_eq!(*r.as_inner(), 3);
+///
+/// let err = Refined::<i32, AllowedRoll>::try_new(4).unwrap_err();
+/// // Three rejections, one per operand.
+/// assert_eq!(err.len(), 3);
+/// assert_eq!(err[0], NumericError::OutOfRange { value: 4 });
+/// ```
+pub struct Any<TUPLE>(PhantomData<fn() -> TUPLE>);
+
 impl<T, E, A, B> Rule<T> for And<A, B>
 where
     T: 'static,
@@ -253,6 +310,86 @@ where
         }
     }
 }
+
+// ─── N-ary `All` / `Any` impls. ────────────────────────────────────
+//
+// Each arity gets its own `impl Rule<T>` block. The macro
+// generates the body so the same `?`-chaining (`All`) /
+// short-circuit-collect (`Any`) shape applies across every
+// supported arity. Supported arities: 2..=8.
+
+macro_rules! impl_all_for_arity {
+    ($($Ri:ident),+ $(,)?) => {
+        impl<T, E, $($Ri),+> Rule<T> for All<($($Ri,)+)>
+        where
+            T: 'static,
+            E: 'static,
+            $($Ri: Rule<T, Error = E>,)+
+        {
+            type Error = E;
+
+            #[inline]
+            fn refine(raw: T) -> Result<T, Self::Error> {
+                // Each operand receives the previous one's output;
+                // `?` short-circuits on the first rejection.
+                $(let raw = $Ri::refine(raw)?;)+
+                Ok(raw)
+            }
+        }
+    };
+}
+
+impl_all_for_arity!(R1, R2);
+impl_all_for_arity!(R1, R2, R3);
+impl_all_for_arity!(R1, R2, R3, R4);
+impl_all_for_arity!(R1, R2, R3, R4, R5);
+impl_all_for_arity!(R1, R2, R3, R4, R5, R6);
+impl_all_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+impl_all_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
+macro_rules! impl_any_for_arity {
+    ($N:literal; $($Ri:ident),+ $(,)?) => {
+        impl<T, E, $($Ri),+> Rule<T> for Any<($($Ri,)+)>
+        where
+            T: 'static + Clone,
+            E: 'static,
+            $($Ri: Rule<T, Error = E>,)+
+        {
+            type Error = [E; $N];
+
+            #[inline]
+            fn refine(raw: T) -> Result<T, Self::Error> {
+                // Try each operand against a clone of the input;
+                // the first acceptance wins. Collect each
+                // rejection so the caller gets the full failure
+                // story when none accept.
+                let mut errors: ::alloc::vec::Vec<E> =
+                    ::alloc::vec::Vec::with_capacity($N);
+                $(
+                    match $Ri::refine(raw.clone()) {
+                        Ok(value) => return Ok(value),
+                        Err(err) => errors.push(err),
+                    }
+                )+
+                // `errors` contains exactly `$N` items by
+                // construction; the `try_into` cannot fail.
+                let arr: [E; $N] = match errors.try_into() {
+                    Ok(arr) => arr,
+                    Err(_) => unreachable!("any: collected exactly N rejections"),
+                };
+                Err(arr)
+            }
+        }
+    };
+}
+
+impl_any_for_arity!(2; R1, R2);
+impl_any_for_arity!(3; R1, R2, R3);
+impl_any_for_arity!(4; R1, R2, R3, R4);
+impl_any_for_arity!(5; R1, R2, R3, R4, R5);
+impl_any_for_arity!(6; R1, R2, R3, R4, R5, R6);
+impl_any_for_arity!(7; R1, R2, R3, R4, R5, R6, R7);
+impl_any_for_arity!(8; R1, R2, R3, R4, R5, R6, R7, R8);
 
 // ─── Transformer stability. If both operands are stable under a
 //      transformation, the composition's admissible region is the
@@ -397,6 +534,97 @@ where
             .boxed()
     }
 }
+
+// ─── N-ary `All` / `Any` `ArbitraryRule` impls. ───────────────────
+//
+// `All<(R1, R2, ..., RN)>` drives the leftmost rule's strategy and
+// filters each candidate through the remaining rules in order, the
+// same shape as `And<A, B>`'s strategy with one more level for each
+// extra operand. `Any<(R1, R2, ..., RN)>` is `prop_oneof!` over
+// each operand's strategy.
+
+#[cfg(feature = "proptest")]
+macro_rules! impl_all_arbitrary_for_arity {
+    ($First:ident $(, $Rest:ident)+ $(,)?) => {
+        impl<T, E, $First, $($Rest),+> ArbitraryRule<T>
+            for All<($First, $($Rest,)+)>
+        where
+            T: core::fmt::Debug + 'static,
+            E: 'static,
+            $First: ArbitraryRule<T> + Rule<T, Error = E>,
+            $($Rest: Rule<T, Error = E>,)+
+        {
+            type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+            #[inline]
+            fn arbitrary_strategy() -> Self::Strategy {
+                use proptest::strategy::Strategy as _;
+                $First::arbitrary_strategy()
+                    $(.prop_filter_map(
+                        concat!(
+                            "All: operand ",
+                            stringify!($Rest),
+                            " rejected",
+                        ),
+                        |raw| $Rest::refine(raw).ok(),
+                    ))+
+                    .boxed()
+            }
+        }
+    };
+}
+
+#[cfg(feature = "proptest")]
+impl_all_arbitrary_for_arity!(R1, R2);
+#[cfg(feature = "proptest")]
+impl_all_arbitrary_for_arity!(R1, R2, R3);
+#[cfg(feature = "proptest")]
+impl_all_arbitrary_for_arity!(R1, R2, R3, R4);
+#[cfg(feature = "proptest")]
+impl_all_arbitrary_for_arity!(R1, R2, R3, R4, R5);
+#[cfg(feature = "proptest")]
+impl_all_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6);
+#[cfg(feature = "proptest")]
+impl_all_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+#[cfg(feature = "proptest")]
+impl_all_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
+#[cfg(feature = "proptest")]
+macro_rules! impl_any_arbitrary_for_arity {
+    ($($Ri:ident),+ $(,)?) => {
+        impl<T, E, $($Ri),+> ArbitraryRule<T> for Any<($($Ri,)+)>
+        where
+            T: core::fmt::Debug + Clone + 'static,
+            E: 'static,
+            $($Ri: ArbitraryRule<T> + Rule<T, Error = E>,)+
+        {
+            type Strategy = proptest::strategy::BoxedStrategy<T>;
+
+            #[inline]
+            fn arbitrary_strategy() -> Self::Strategy {
+                use proptest::strategy::Strategy as _;
+                proptest::prop_oneof![
+                    $($Ri::arbitrary_strategy()),+
+                ].boxed()
+            }
+        }
+    };
+}
+
+#[cfg(feature = "proptest")]
+impl_any_arbitrary_for_arity!(R1, R2);
+#[cfg(feature = "proptest")]
+impl_any_arbitrary_for_arity!(R1, R2, R3);
+#[cfg(feature = "proptest")]
+impl_any_arbitrary_for_arity!(R1, R2, R3, R4);
+#[cfg(feature = "proptest")]
+impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5);
+#[cfg(feature = "proptest")]
+impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6);
+#[cfg(feature = "proptest")]
+impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+#[cfg(feature = "proptest")]
+impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
 
 #[cfg(test)]
 #[expect(

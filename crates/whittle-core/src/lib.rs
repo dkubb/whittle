@@ -14,7 +14,7 @@ pub mod primitive;
 mod rule;
 pub mod transform;
 
-pub use composition::{And, Not, Or, Xor};
+pub use composition::{All, And, Any, Not, Or, Xor};
 #[cfg(feature = "proptest")]
 pub use rule::ArbitraryRule;
 pub use rule::{Refined, Rule};

@@ -151,7 +151,9 @@ can map 1:1 into its domain variants.
   `UniqueByKey`, `Distinct`, `Sorted`, `NoneOf<P>`, `AnyOf<P>`.
 - **Path** (`String`) — `RelativePath`.
 - **Composition** — `And<A, B>`, `Or<A, B>`, plus `Not<R>` and
-  `Xor<A, B>` (numeric-only for now).
+  `Xor<A, B>` (numeric-only for now). N-ary tuple-based
+  `All<(R1, ..., RN)>` and `Any<(R1, ..., RN)>` (arities 2..=8) for
+  flat composition without binary nesting.
 - **Transformers** (`Rule<String>`) — `Trim<R>`, `AsciiLowercase<R>`,
   `AsciiUppercase<R>`. Normalise input before delegating, so the
   stored carrier is the canonical form.

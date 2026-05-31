@@ -123,8 +123,14 @@ the domain; `Refined<T, R>` is implementation.
   one of `A` and `B` must accept. Same numeric-only constraint as
   `Not<R>`. Emits `NumericError::OutOfRange` when both accept or
   both reject.
-- N-ary `All<(...)>` / `Any<(...)>` operators that collapse the
-  binary nesting are planned follow-up.
+- `All<(R1, R2, ..., RN)>` (`crates/whittle-core/src/composition.rs`):
+  n-ary `And`. Every operand must accept; sequential like `And`,
+  threading output. `Self::Error = E` (shared). Supported arities
+  2..=8.
+- `Any<(R1, R2, ..., RN)>` (`crates/whittle-core/src/composition.rs`):
+  n-ary `Or`. Any operand may accept; tries in order against a
+  clone, returns the first acceptance or `[E; N]` on full
+  rejection. Requires `T: Clone`. Supported arities 2..=8.
 - Transformers (`crates/whittle-core/src/transform.rs`): `AsciiLowercase<R>`,
   `AsciiUppercase<R>`, `Trim<R>`. Each is a `Rule<String>` that normalises
   the input then delegates to `R`; `Self::Error = R::Error`.
