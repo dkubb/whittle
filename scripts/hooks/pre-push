@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Gate: the branch must be 100%-covered before it leaves the machine.
+# Coverage is too slow for pre-commit (breaks the atomic-commit workflow),
+# so it runs here, once, before push.
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Pin the nightly from rust-toolchain.toml for this hook and every nested
+# `cargo` / `rustc` it spawns. `cargo coverage` runs `cargo-llvm-cov`,
+# which re-execs `cargo` for the inner build; a stale stable `cargo`
+# earlier on PATH (e.g. a Homebrew install) would otherwise be picked
+# and reject the nightly `-Z coverage-options=branch` flag.
+#
+# `RUSTUP_TOOLCHAIN` forces the rustup proxies onto the pinned channel,
+# and prepending the rustup `bin` dir guarantees those proxies (not a
+# Homebrew `cargo`) are what every layer resolves.
+TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
+export PATH="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN-$(rustc -vV | sed -n 's/^host: //p')/bin:${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+
+# Resolve the pinned toolchain's llvm tools (cargo-llvm-cov can't always
+# auto-find them when installed against a different channel).
+SYSROOT="$(rustc --print sysroot)"
+HOST="$(rustc -vV | sed -n 's/^host: //p')"
+LLVM_BIN="$SYSROOT/lib/rustlib/$HOST/bin"
+
+echo "pre-push: running cargo coverage (100% gate)..." >&2
+if ! LLVM_COV="$LLVM_BIN/llvm-cov" LLVM_PROFDATA="$LLVM_BIN/llvm-profdata" \
+      cargo coverage >/tmp/whittle-prepush-coverage.log 2>&1; then
+    echo "pre-push: coverage gate FAILED — see /tmp/whittle-prepush-coverage.log" >&2
+    tail -20 /tmp/whittle-prepush-coverage.log >&2
+    echo "pre-push: push aborted. Add tests to restore 100% coverage." >&2
+    exit 1
+fi
+echo "pre-push: coverage gate passed." >&2

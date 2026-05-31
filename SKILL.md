@@ -678,3 +678,23 @@ A whittle domain type is well-formed when:
 - No `coverage(off)` attribute is used to silence missing coverage.
 - Downstream code does not re-check the invariant the type already
   witnesses.
+
+## Git hooks
+
+Two hooks enforce the gates locally. Their canonical bodies are tracked
+in `scripts/hooks/`; `.git/hooks/` is not version-controlled, so install
+them once after cloning:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+- `pre-commit` runs `cargo fmt --all -- --check` (fast, per commit).
+- `pre-push` runs `cargo coverage` and aborts the push unless coverage
+  is 100% on regions, lines, functions, and branches. It resolves the
+  pinned toolchain's `llvm-cov` / `llvm-profdata` from the active
+  sysroot, so `cargo-llvm-cov` finds them even when installed against a
+  different channel. Coverage is deliberately on pre-push rather than
+  pre-commit: it is too slow per commit and would break the atomic
+  red/green/refactor workflow, where intermediate commits legitimately
+  are not yet 100% until a later commit adds the covering tests.
