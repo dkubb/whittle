@@ -348,7 +348,7 @@ impl_all_for_arity!(R1, R2, R3, R4, R5, R6, R7);
 impl_all_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
 
 macro_rules! impl_any_for_arity {
-    ($N:literal; $($Ri:ident),+ $(,)?) => {
+    ($N:literal; $($Ri:ident => $ei:ident),+ $(,)?) => {
         impl<T, E, $($Ri),+> Rule<T> for Any<($($Ri,)+)>
         where
             T: 'static + Clone,
@@ -360,36 +360,33 @@ macro_rules! impl_any_for_arity {
             #[inline]
             fn refine(raw: T) -> Result<T, Self::Error> {
                 // Try each operand against a clone of the input;
-                // the first acceptance wins. Collect each
-                // rejection so the caller gets the full failure
-                // story when none accept.
-                let mut errors: ::alloc::vec::Vec<E> =
-                    ::alloc::vec::Vec::with_capacity($N);
+                // the first acceptance returns early. Each rejection
+                // binds its error to a per-operand local, and the
+                // array is assembled directly from those bindings —
+                // no fallible `Vec::try_into`, so the `[E; $N]`
+                // length is guaranteed by construction with no
+                // unreachable branch.
                 $(
-                    match $Ri::refine(raw.clone()) {
+                    let $ei: E = match $Ri::refine(raw.clone()) {
                         Ok(value) => return Ok(value),
-                        Err(err) => errors.push(err),
-                    }
+                        Err(err) => err,
+                    };
                 )+
-                // `errors` contains exactly `$N` items by
-                // construction; the `try_into` cannot fail.
-                let arr: [E; $N] = match errors.try_into() {
-                    Ok(arr) => arr,
-                    Err(_) => unreachable!("any: collected exactly N rejections"),
-                };
-                Err(arr)
+                Err([$($ei),+])
             }
         }
     };
 }
 
-impl_any_for_arity!(2; R1, R2);
-impl_any_for_arity!(3; R1, R2, R3);
-impl_any_for_arity!(4; R1, R2, R3, R4);
-impl_any_for_arity!(5; R1, R2, R3, R4, R5);
-impl_any_for_arity!(6; R1, R2, R3, R4, R5, R6);
-impl_any_for_arity!(7; R1, R2, R3, R4, R5, R6, R7);
-impl_any_for_arity!(8; R1, R2, R3, R4, R5, R6, R7, R8);
+impl_any_for_arity!(2; R1 => e1, R2 => e2);
+impl_any_for_arity!(3; R1 => e1, R2 => e2, R3 => e3);
+impl_any_for_arity!(4; R1 => e1, R2 => e2, R3 => e3, R4 => e4);
+impl_any_for_arity!(5; R1 => e1, R2 => e2, R3 => e3, R4 => e4, R5 => e5);
+impl_any_for_arity!(6; R1 => e1, R2 => e2, R3 => e3, R4 => e4, R5 => e5, R6 => e6);
+impl_any_for_arity!(7; R1 => e1, R2 => e2, R3 => e3, R4 => e4, R5 => e5, R6 => e6, R7 => e7);
+impl_any_for_arity!(
+    8; R1 => e1, R2 => e2, R3 => e3, R4 => e4, R5 => e5, R6 => e6, R7 => e7, R8 => e8
+);
 
 // ─── Transformer stability. If both operands are stable under a
 //      transformation, the composition's admissible region is the
@@ -635,9 +632,10 @@ impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
 mod tests {
     use alloc::string::{String, ToString};
 
-    use super::{And, Or};
+    use super::{All, And, Any, Or, Xor};
     use crate::primitive::{
-        AtLeast, AtMost, EachChar, IdentChar, LenChars, NonZero, NumericError, StringError,
+        AtLeast, AtMost, EachChar, EqualTo, GreaterThan, IdentChar, LenChars, LessThan, NonZero,
+        NumericError, StringError, Within,
     };
     use crate::rule::Refined;
 
@@ -766,6 +764,248 @@ mod tests {
         assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 0 },);
     }
 
+    // ─── `Xor<A, B>` numeric combinator. ──────────────────────────
+
+    #[test]
+    fn xor_admits_when_exactly_one_operand_accepts() {
+        // `<= 10` XOR `>= 0`: inside [0, 10] both accept (rejected),
+        // outside exactly one accepts (admitted). `-5` is `<= 10`
+        // only; `15` is `>= 0` only.
+        type Outside = Xor<AtMost<10>, AtLeast<0>>;
+        let low: Refined<i32, Outside> = Refined::try_new(-5_i32).unwrap();
+        let high: Refined<i32, Outside> = Refined::try_new(15_i32).unwrap();
+        assert_eq!(*low.as_inner(), -5_i32);
+        assert_eq!(*high.as_inner(), 15_i32);
+    }
+
+    #[test]
+    fn xor_rejects_when_both_operands_accept() {
+        // `5` is inside [0, 10], so both `<= 10` and `>= 0` accept;
+        // `Xor` rejects and reports the offending value.
+        type Outside = Xor<AtMost<10>, AtLeast<0>>;
+        let result: Result<Refined<i32, Outside>, _> = Refined::try_new(5_i32);
+        assert_eq!(result.unwrap_err(), NumericError::OutOfRange { value: 5 });
+    }
+
+    #[test]
+    fn xor_rejects_when_neither_operand_accepts() {
+        // `>= 100` XOR `<= -100`: `0` satisfies neither, so both
+        // reject and `Xor` rejects with the offending value.
+        type Extremes = Xor<AtLeast<100>, AtMost<-100>>;
+        let result: Result<Refined<i32, Extremes>, _> = Refined::try_new(0_i32);
+        assert_eq!(result.unwrap_err(), NumericError::OutOfRange { value: 0 });
+    }
+
+    // ─── N-ary `All<(...)>` `Rule` impl, arities 2..=8. Each arity
+    //     is a separate monomorphisation; admit a value passing all
+    //     operands, then reject with a value failing one — the
+    //     shared `NumericError` surfaces directly. ─────────────────
+
+    #[test]
+    fn all_arity_2_admits_and_rejects() {
+        type R = All<(AtLeast<0>, AtMost<100>)>;
+        let ok: Refined<i32, R> = Refined::try_new(50_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 50_i32);
+        let bad: Result<Refined<i32, R>, _> = Refined::try_new(101_i32);
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 101 });
+    }
+
+    #[test]
+    fn all_arity_3_admits_and_rejects() {
+        type R = All<(AtLeast<0>, AtMost<100>, NonZero)>;
+        let ok: Refined<i32, R> = Refined::try_new(50_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 50_i32);
+        let bad: Result<Refined<i32, R>, _> = Refined::try_new(0_i32);
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 0 });
+    }
+
+    #[test]
+    fn all_arity_4_admits_and_rejects() {
+        type R = All<(AtLeast<0>, AtMost<100>, NonZero, GreaterThan<-1>)>;
+        let ok: Refined<i32, R> = Refined::try_new(50_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 50_i32);
+        let bad: Result<Refined<i32, R>, _> = Refined::try_new(0_i32);
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 0 });
+    }
+
+    #[test]
+    fn all_arity_5_admits_and_rejects() {
+        type R = All<(
+            AtLeast<0>,
+            AtMost<100>,
+            NonZero,
+            GreaterThan<-1>,
+            LessThan<200>,
+        )>;
+        let ok: Refined<i32, R> = Refined::try_new(50_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 50_i32);
+        let bad: Result<Refined<i32, R>, _> = Refined::try_new(101_i32);
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 101 });
+    }
+
+    #[test]
+    fn all_arity_6_admits_and_rejects() {
+        type R = All<(
+            AtLeast<0>,
+            AtMost<100>,
+            NonZero,
+            GreaterThan<-1>,
+            LessThan<200>,
+            Within<0, 100>,
+        )>;
+        let ok: Refined<i32, R> = Refined::try_new(50_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 50_i32);
+        let bad: Result<Refined<i32, R>, _> = Refined::try_new(0_i32);
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 0 });
+    }
+
+    #[test]
+    fn all_arity_7_admits_and_rejects() {
+        type R = All<(
+            AtLeast<0>,
+            AtMost<100>,
+            NonZero,
+            GreaterThan<-1>,
+            LessThan<200>,
+            Within<0, 100>,
+            AtLeast<10>,
+        )>;
+        let ok: Refined<i32, R> = Refined::try_new(50_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 50_i32);
+        let bad: Result<Refined<i32, R>, _> = Refined::try_new(5_i32);
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 5 });
+    }
+
+    #[test]
+    fn all_arity_8_admits_and_rejects() {
+        type R = All<(
+            AtLeast<0>,
+            AtMost<100>,
+            NonZero,
+            GreaterThan<-1>,
+            LessThan<200>,
+            Within<0, 100>,
+            AtLeast<10>,
+            AtMost<90>,
+        )>;
+        let ok: Refined<i32, R> = Refined::try_new(50_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 50_i32);
+        let bad: Result<Refined<i32, R>, _> = Refined::try_new(91_i32);
+        assert_eq!(bad.unwrap_err(), NumericError::OutOfRange { value: 91 });
+    }
+
+    // ─── N-ary `Any<(...)>` `Rule` impl, arities 2..=8. Admit via
+    //     one branch; reject with a value failing every operand and
+    //     assert the full `[NumericError; N]` rejection array. ─────
+
+    #[test]
+    fn any_arity_2_admits_and_rejects() {
+        type R = Any<(EqualTo<1>, EqualTo<2>)>;
+        let ok: Refined<i32, R> = Refined::try_new(2_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 2_i32);
+        let bad: [NumericError; 2] = Refined::<i32, R>::try_new(9_i32).unwrap_err();
+        assert_eq!(
+            bad,
+            core::array::from_fn(|_| NumericError::OutOfRange { value: 9 })
+        );
+    }
+
+    #[test]
+    fn any_arity_3_admits_and_rejects() {
+        type R = Any<(EqualTo<1>, EqualTo<2>, EqualTo<3>)>;
+        let ok: Refined<i32, R> = Refined::try_new(3_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 3_i32);
+        let bad: [NumericError; 3] = Refined::<i32, R>::try_new(9_i32).unwrap_err();
+        assert_eq!(
+            bad,
+            core::array::from_fn(|_| NumericError::OutOfRange { value: 9 })
+        );
+    }
+
+    #[test]
+    fn any_arity_4_admits_and_rejects() {
+        type R = Any<(EqualTo<1>, EqualTo<2>, EqualTo<3>, EqualTo<4>)>;
+        let ok: Refined<i32, R> = Refined::try_new(4_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 4_i32);
+        let bad: [NumericError; 4] = Refined::<i32, R>::try_new(9_i32).unwrap_err();
+        assert_eq!(
+            bad,
+            core::array::from_fn(|_| NumericError::OutOfRange { value: 9 })
+        );
+    }
+
+    #[test]
+    fn any_arity_5_admits_and_rejects() {
+        type R = Any<(EqualTo<1>, EqualTo<2>, EqualTo<3>, EqualTo<4>, EqualTo<5>)>;
+        let ok: Refined<i32, R> = Refined::try_new(5_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 5_i32);
+        let bad: [NumericError; 5] = Refined::<i32, R>::try_new(9_i32).unwrap_err();
+        assert_eq!(
+            bad,
+            core::array::from_fn(|_| NumericError::OutOfRange { value: 9 })
+        );
+    }
+
+    #[test]
+    fn any_arity_6_admits_and_rejects() {
+        type R = Any<(
+            EqualTo<1>,
+            EqualTo<2>,
+            EqualTo<3>,
+            EqualTo<4>,
+            EqualTo<5>,
+            EqualTo<6>,
+        )>;
+        let ok: Refined<i32, R> = Refined::try_new(6_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 6_i32);
+        let bad: [NumericError; 6] = Refined::<i32, R>::try_new(9_i32).unwrap_err();
+        assert_eq!(
+            bad,
+            core::array::from_fn(|_| NumericError::OutOfRange { value: 9 })
+        );
+    }
+
+    #[test]
+    fn any_arity_7_admits_and_rejects() {
+        type R = Any<(
+            EqualTo<1>,
+            EqualTo<2>,
+            EqualTo<3>,
+            EqualTo<4>,
+            EqualTo<5>,
+            EqualTo<6>,
+            EqualTo<7>,
+        )>;
+        let ok: Refined<i32, R> = Refined::try_new(7_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 7_i32);
+        let bad: [NumericError; 7] = Refined::<i32, R>::try_new(9_i32).unwrap_err();
+        assert_eq!(
+            bad,
+            core::array::from_fn(|_| NumericError::OutOfRange { value: 9 })
+        );
+    }
+
+    #[test]
+    fn any_arity_8_admits_and_rejects() {
+        type R = Any<(
+            EqualTo<1>,
+            EqualTo<2>,
+            EqualTo<3>,
+            EqualTo<4>,
+            EqualTo<5>,
+            EqualTo<6>,
+            EqualTo<7>,
+            EqualTo<8>,
+        )>;
+        let ok: Refined<i32, R> = Refined::try_new(8_i32).unwrap();
+        assert_eq!(*ok.as_inner(), 8_i32);
+        let bad: [NumericError; 8] = Refined::<i32, R>::try_new(9_i32).unwrap_err();
+        assert_eq!(
+            bad,
+            core::array::from_fn(|_| NumericError::OutOfRange { value: 9 })
+        );
+    }
+
     proptest::proptest! {
         // ─── Self-hosted Arbitrary on composed rules. The kernel's
         //     `Refined<T, R>` Arbitrary impl maps the rule's
@@ -807,6 +1047,212 @@ mod tests {
             // construction.
             let value = *r.as_inner();
             proptest::prop_assert!(value <= 0 || value >= 100);
+        }
+
+        // ─── `Xor<A, B>`'s `ArbitraryRule` impl: union of both
+        //     strategies filtered to the symmetric difference. ─────
+
+        #[test]
+        fn arbitrary_xor_admits_only_symmetric_difference(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Xor<AtMost<0>, AtLeast<100>>>,
+            >()
+        ) {
+            // `AtMost<0>` and `AtLeast<100>` are disjoint, so the
+            // symmetric difference is their union; every emitted
+            // value satisfies exactly one operand.
+            let value = *r.as_inner();
+            proptest::prop_assert!((value <= 0) ^ (value >= 100));
+        }
+
+        // ─── N-ary `All<(...)>`'s `ArbitraryRule` impl, arities
+        //     2..=8. `Within<0, 100>` is the generator; the
+        //     remaining operands trim densely so the filter chain
+        //     does not exhaust the retry budget. Every emitted
+        //     value lies in the intersection. ────────────────────
+
+        #[test]
+        fn arbitrary_all_arity_2_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, All<(Within<0, 100>, AtLeast<50>)>>,
+            >()
+        ) {
+            proptest::prop_assert!((50..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_all_arity_3_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, All<(Within<0, 100>, AtLeast<50>, AtMost<90>)>>,
+            >()
+        ) {
+            proptest::prop_assert!((50..=90).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_all_arity_4_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, All<(Within<0, 100>, AtLeast<50>, AtMost<90>, NonZero)>>,
+            >()
+        ) {
+            proptest::prop_assert!((50..=90).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_all_arity_5_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, All<(
+                    Within<0, 100>,
+                    AtLeast<50>,
+                    AtMost<90>,
+                    NonZero,
+                    GreaterThan<49>,
+                )>>,
+            >()
+        ) {
+            proptest::prop_assert!((50..=90).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_all_arity_6_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, All<(
+                    Within<0, 100>,
+                    AtLeast<50>,
+                    AtMost<90>,
+                    NonZero,
+                    GreaterThan<49>,
+                    LessThan<91>,
+                )>>,
+            >()
+        ) {
+            proptest::prop_assert!((50..=90).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_all_arity_7_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, All<(
+                    Within<0, 100>,
+                    AtLeast<50>,
+                    AtMost<90>,
+                    NonZero,
+                    GreaterThan<49>,
+                    LessThan<91>,
+                    AtLeast<0>,
+                )>>,
+            >()
+        ) {
+            proptest::prop_assert!((50..=90).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_all_arity_8_in_intersection(
+            r in proptest::arbitrary::any::<
+                Refined<i32, All<(
+                    Within<0, 100>,
+                    AtLeast<50>,
+                    AtMost<90>,
+                    NonZero,
+                    GreaterThan<49>,
+                    LessThan<91>,
+                    AtLeast<0>,
+                    AtMost<100>,
+                )>>,
+            >()
+        ) {
+            proptest::prop_assert!((50..=90).contains(r.as_inner()));
+        }
+
+        // ─── N-ary `Any<(...)>`'s `ArbitraryRule` impl, arities
+        //     2..=8. `prop_oneof!` over each `EqualTo<N>` strategy;
+        //     every emitted value equals one of the operands. ─────
+
+        #[test]
+        fn arbitrary_any_arity_2_in_union(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Any<(EqualTo<1>, EqualTo<2>)>>,
+            >()
+        ) {
+            proptest::prop_assert!([1, 2].contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_any_arity_3_in_union(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Any<(EqualTo<1>, EqualTo<2>, EqualTo<3>)>>,
+            >()
+        ) {
+            proptest::prop_assert!([1, 2, 3].contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_any_arity_4_in_union(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Any<(EqualTo<1>, EqualTo<2>, EqualTo<3>, EqualTo<4>)>>,
+            >()
+        ) {
+            proptest::prop_assert!([1, 2, 3, 4].contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_any_arity_5_in_union(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Any<(EqualTo<1>, EqualTo<2>, EqualTo<3>, EqualTo<4>, EqualTo<5>)>>,
+            >()
+        ) {
+            proptest::prop_assert!([1, 2, 3, 4, 5].contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_any_arity_6_in_union(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Any<(
+                    EqualTo<1>,
+                    EqualTo<2>,
+                    EqualTo<3>,
+                    EqualTo<4>,
+                    EqualTo<5>,
+                    EqualTo<6>,
+                )>>,
+            >()
+        ) {
+            proptest::prop_assert!([1, 2, 3, 4, 5, 6].contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_any_arity_7_in_union(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Any<(
+                    EqualTo<1>,
+                    EqualTo<2>,
+                    EqualTo<3>,
+                    EqualTo<4>,
+                    EqualTo<5>,
+                    EqualTo<6>,
+                    EqualTo<7>,
+                )>>,
+            >()
+        ) {
+            proptest::prop_assert!([1, 2, 3, 4, 5, 6, 7].contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_any_arity_8_in_union(
+            r in proptest::arbitrary::any::<
+                Refined<i32, Any<(
+                    EqualTo<1>,
+                    EqualTo<2>,
+                    EqualTo<3>,
+                    EqualTo<4>,
+                    EqualTo<5>,
+                    EqualTo<6>,
+                    EqualTo<7>,
+                    EqualTo<8>,
+                )>>,
+            >()
+        ) {
+            proptest::prop_assert!([1, 2, 3, 4, 5, 6, 7, 8].contains(r.as_inner()));
         }
     }
 }
