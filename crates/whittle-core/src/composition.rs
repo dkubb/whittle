@@ -515,12 +515,12 @@ where
 
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
-// `And<A, B>` drives `A`'s strategy as the generator and filters
-// candidates against `B::refine`. The user picks `A` as the
-// generator-shaped rule (`Within`, `LenChars`, etc.); `B` may be a
-// further predicate (e.g. `EachChar<...>`). If `B` rejects most of
-// `A`'s output, swap the operands so the generator-shaped rule is
-// on the left.
+// `And<A, B>` samples both operands together and keeps whichever
+// candidate also satisfies the opposite rule. This keeps dense
+// intersections cheap while giving sparse, asymmetric intersections
+// a constructive path from whichever operand already knows how to
+// generate the narrower shape (e.g. `EachChar<P>` provides the
+// alphabet, while `LenChars<N, N>` provides the exact length).
 //
 // `Or<A, B>` is the union of admissible regions; `prop_oneof!`
 // picks uniformly between the two sub-strategies.
@@ -531,15 +531,18 @@ where
     T: core::fmt::Debug + 'static,
     E: 'static,
     A: ArbitraryRule<T> + Rule<T, Error = E>,
-    B: Rule<T, Error = E>,
+    B: ArbitraryRule<T> + Rule<T, Error = E>,
 {
     type Strategy = proptest::strategy::BoxedStrategy<T>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        A::arbitrary_strategy()
-            .prop_filter_map("And: right rule rejected", |raw| B::refine(raw).ok())
+        (A::arbitrary_strategy(), B::arbitrary_strategy())
+            .prop_filter_map(
+                "And: no sampled operand satisfied both rules",
+                |(left, right)| A::refine(right).or_else(|_| B::refine(left)).ok(),
+            )
             .boxed()
     }
 }
@@ -1183,18 +1186,21 @@ mod tests {
                 Refined<i32, And<crate::primitive::Within<0, 100>, crate::primitive::AtLeast<50>>>,
             >()
         ) {
-            // `And<A, B>`'s `ArbitraryRule` impl uses `A`'s
-            // strategy filtered through `B::refine`. Pick `A` to
-            // be the narrowing generator (`Within<0, 100>` emits
-            // values in `[0, 100]`); `B` (`AtLeast<50>`) trims to
-            // the upper half. The admissible region is dense
-            // enough — 51 values out of 101 — that filtering does
-            // not exhaust the retry budget. For broader
-            // `A`-strategies (`AtLeast<0>` over `i32` is one), the
-            // intersection may be too sparse; pick the narrowing
-            // rule as `A`, or use the nominal newtype that already
-            // composes them.
+            // `And<A, B>`'s `ArbitraryRule` impl can generate from
+            // either operand and filters through the other. Every
+            // emitted value must satisfy both operands.
             proptest::prop_assert!((50..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_and_string_length_and_alphabet_does_not_reject_to_death(
+            r in proptest::arbitrary::any::<
+                Refined<String, And<LenChars<3, 3>, EachChar<AsciiAlphanumeric>>>,
+            >()
+        ) {
+            let value = r.as_inner();
+            proptest::prop_assert_eq!(value.chars().count(), 3);
+            proptest::prop_assert!(value.chars().all(|ch| ch.is_ascii_alphanumeric()));
         }
 
         #[test]
