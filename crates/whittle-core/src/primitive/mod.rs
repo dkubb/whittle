@@ -41,9 +41,10 @@ pub use path::{PathError, RelativePath};
 #[cfg(feature = "proptest")]
 pub use string::ArbitraryChar;
 pub use string::{
-    AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiLowercase, AsciiUppercase, CharEither,
-    CharLiteral, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart,
-    LenBytes, LenChars, NonControl, NonEmpty, RejectsTrimWhitespace, StringError,
+    AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase, AsciiUppercase,
+    CharEither, CharExcept, CharLiteral, CharPredicate, EachChar, FirstChar, IdentChar,
+    IdentDashChar, IdentStart, LenBytes, LenChars, NonControl, NonEmpty, RejectsTrimWhitespace,
+    StringError,
 };
 #[cfg(feature = "hex")]
 pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};

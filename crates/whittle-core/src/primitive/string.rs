@@ -375,6 +375,107 @@ where
     }
 }
 
+/// Predicate subtraction: admit a character when `A` admits it and
+/// `B` rejects it.
+///
+/// Use this for exact alphabets that are naturally specified as a
+/// broad set minus a few forbidden characters.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{
+///     AsciiGraphic, CharEither, CharExcept, CharLiteral, EachChar, StringError,
+/// };
+///
+/// type QuoteOrBackslash = CharEither<CharLiteral<'"'>, CharLiteral<'\\'>>;
+/// type CursorChar = CharExcept<AsciiGraphic, QuoteOrBackslash>;
+///
+/// let ok: Refined<String, EachChar<CursorChar>>
+///     = Refined::try_new("abc_:-.".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "abc_:-.");
+///
+/// let err = Refined::<String, EachChar<CursorChar>>::try_new(
+///     "abc\"".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 3 });
+/// ```
+pub struct CharExcept<A, B>(PhantomData<fn() -> (A, B)>);
+impl<A, B> CharPredicate for CharExcept<A, B>
+where
+    A: CharPredicate,
+    B: CharPredicate,
+{
+    #[inline]
+    fn test(ch: char) -> bool {
+        A::test(ch) && !B::test(ch)
+    }
+}
+impl<A, B> RejectsTrimWhitespace for CharExcept<A, B>
+where
+    A: RejectsTrimWhitespace,
+    B: CharPredicate,
+{
+}
+
+#[cfg(feature = "proptest")]
+impl<A, B> ArbitraryChar for CharExcept<A, B>
+where
+    A: ArbitraryChar,
+    B: CharPredicate,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        A::arbitrary_char()
+            .prop_filter("excluded character", |ch| !B::test(*ch))
+            .boxed()
+    }
+}
+
+/// Predicate: ASCII graphic characters (`!` through `~`).
+///
+/// This excludes ASCII space and every control character, but admits
+/// punctuation. Combine with [`CharExcept`] to remove protocol-specific
+/// forbidden punctuation.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{AsciiGraphic, EachChar, StringError};
+///
+/// let ok: Refined<String, EachChar<AsciiGraphic>>
+///     = Refined::try_new("AZaz09_:-.".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "AZaz09_:-.");
+///
+/// let err = Refined::<String, EachChar<AsciiGraphic>>::try_new(
+///     "has space".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 3 });
+/// ```
+pub struct AsciiGraphic;
+impl CharPredicate for AsciiGraphic {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch.is_ascii_graphic()
+    }
+}
+impl RejectsTrimWhitespace for AsciiGraphic {}
+
+#[cfg(feature = "proptest")]
+impl ArbitraryChar for AsciiGraphic {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['!'..='~'])
+    }
+}
+
 /// Predicate: ASCII alphanumeric (`A`–`Z`, `a`–`z`, `0`–`9`).
 ///
 /// # Examples
@@ -1600,9 +1701,10 @@ mod tests {
     use alloc::string::{String, ToString};
 
     use super::{
-        AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiLowercase, AsciiUppercase, CharEither,
-        CharLiteral, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart,
-        LenBytes, LenChars, NonControl, NonEmpty, StringError,
+        AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase,
+        AsciiUppercase, CharEither, CharExcept, CharLiteral, CharPredicate, EachChar, FirstChar,
+        IdentChar, IdentDashChar, IdentStart, LenBytes, LenChars, NonControl, NonEmpty,
+        StringError,
     };
     use crate::composition::And;
     use crate::rule::Refined;
@@ -1799,6 +1901,35 @@ mod tests {
         let bad: Result<Refined<String, EachChar<SymbolChar>>, _> =
             Refined::try_new("BRK/B".to_string());
         assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 3 });
+    }
+
+    #[test]
+    fn ascii_graphic_admits_visible_ascii_only() {
+        let r: Refined<String, EachChar<AsciiGraphic>> =
+            Refined::try_new("AZaz09_:-.".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "AZaz09_:-.");
+
+        let bad: Result<Refined<String, EachChar<AsciiGraphic>>, _> =
+            Refined::try_new("has space".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 3 });
+    }
+
+    #[test]
+    fn char_except_subtracts_forbidden_punctuation() {
+        type QuoteOrBackslash = CharEither<CharLiteral<'"'>, CharLiteral<'\\'>>;
+        type CursorChar = CharExcept<AsciiGraphic, QuoteOrBackslash>;
+
+        let r: Refined<String, EachChar<CursorChar>> =
+            Refined::try_new("abc_:-.".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "abc_:-.");
+
+        let quote: Result<Refined<String, EachChar<CursorChar>>, _> =
+            Refined::try_new("abc\"".to_string());
+        assert_eq!(quote.unwrap_err(), StringError::BadChar { offset: 3 });
+
+        let space: Result<Refined<String, EachChar<CursorChar>>, _> =
+            Refined::try_new("abc def".to_string());
+        assert_eq!(space.unwrap_err(), StringError::BadChar { offset: 3 });
     }
 
     #[test]
@@ -2503,6 +2634,30 @@ mod tests {
                 r.as_inner()
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-'),
+            );
+        }
+
+        #[test]
+        fn arbitrary_each_char_ascii_graphic_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiGraphic>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_graphic()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_except_admissible(
+            r in proptest::arbitrary::any::<Refined<
+                String,
+                EachChar<CharExcept<
+                    AsciiGraphic,
+                    CharEither<CharLiteral<'"'>, CharLiteral<'\\'>>,
+                >>,
+            >>()
+        ) {
+            proptest::prop_assert!(
+                r.as_inner()
+                    .chars()
+                    .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\'),
             );
         }
 
