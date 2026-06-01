@@ -197,6 +197,13 @@ impl<T: fmt::Debug, R> fmt::Debug for Refined<T, R> {
     }
 }
 
+impl<T: fmt::Display, R> fmt::Display for Refined<T, R> {
+    #[inline]
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(formatter)
+    }
+}
+
 impl<T: Clone, R> Clone for Refined<T, R> {
     #[inline]
     fn clone(&self) -> Self {
@@ -562,6 +569,13 @@ mod tests {
     fn pass_through_debug_prints_inner() {
         let a: Refined<i32, Always> = Refined::try_new(99).unwrap();
         let formatted = format!("{a:?}");
+        assert_eq!(formatted, "99");
+    }
+
+    #[test]
+    fn pass_through_display_prints_inner() {
+        let a: Refined<i32, Always> = Refined::try_new(99).unwrap();
+        let formatted = format!("{a}");
         assert_eq!(formatted, "99");
     }
 
