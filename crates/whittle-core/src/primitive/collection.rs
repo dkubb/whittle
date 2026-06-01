@@ -11,7 +11,7 @@ use core::marker::PhantomData;
 
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
-use crate::rule::Rule;
+use crate::rule::{Refined, Rule};
 
 /// Inclusive bound on the number of items in a `Vec<T>`:
 /// `MIN <= len <= MAX`.
@@ -429,6 +429,31 @@ impl<const MIN: usize, const MAX: usize> LenItems<MIN, MAX> {
     const VALID: () = assert!(MIN <= MAX, "LenItems requires MIN <= MAX");
 }
 
+impl<T, const MAX: usize> Refined<Vec<T>, LenItems<1, MAX>> {
+    /// Borrow the first item of a statically non-empty refined
+    /// vector.
+    ///
+    /// `LenItems<1, MAX>` rejects the empty vector at construction
+    /// time, so callers do not need to handle the `None` branch that
+    /// `Vec::first` exposes for unrefined vectors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<1, 3>>
+    ///     = Refined::try_new(vec![10, 20]).unwrap();
+    /// assert_eq!(*items.first(), 10);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn first(&self) -> &T {
+        &self.as_inner()[0]
+    }
+}
+
 impl<T, const MIN: usize, const MAX: usize> Rule<Vec<T>> for LenItems<MIN, MAX>
 where
     T: 'static,
@@ -769,6 +794,12 @@ mod tests {
         let five: Refined<Vec<i32>, LenItems<1, 5>> =
             Refined::try_new(vec![1, 2, 3, 4, 5]).unwrap();
         assert_eq!(five.as_inner(), &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn len_items_non_empty_first_returns_head_without_option() {
+        let items: Refined<Vec<i32>, LenItems<1, 5>> = Refined::try_new(vec![10, 20, 30]).unwrap();
+        assert_eq!(*items.first(), 10);
     }
 
     #[test]
