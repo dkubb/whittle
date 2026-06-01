@@ -325,6 +325,151 @@ impl ArbitraryChar for AsciiAlphanumeric {
     }
 }
 
+/// Predicate: ASCII alphabetic (`A`-`Z`, `a`-`z`).
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{AsciiAlphabetic, EachChar, StringError};
+///
+/// let ok: Refined<String, EachChar<AsciiAlphabetic>>
+///     = Refined::try_new("FlightCode".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "FlightCode");
+///
+/// let err = Refined::<String, EachChar<AsciiAlphabetic>>::try_new(
+///     "Flight42".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 6 });
+/// ```
+pub struct AsciiAlphabetic;
+impl CharPredicate for AsciiAlphabetic {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch.is_ascii_alphabetic()
+    }
+}
+impl RejectsTrimWhitespace for AsciiAlphabetic {}
+
+#[cfg(feature = "proptest")]
+impl ArbitraryChar for AsciiAlphabetic {
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        char_strategy_from_ranges(alloc::vec!['A'..='Z', 'a'..='z']).boxed()
+    }
+}
+
+/// Predicate: ASCII uppercase alphabetic (`A`-`Z`).
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{AsciiUppercase, EachChar, StringError};
+///
+/// let ok: Refined<String, EachChar<AsciiUppercase>>
+///     = Refined::try_new("CAD".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "CAD");
+///
+/// let err = Refined::<String, EachChar<AsciiUppercase>>::try_new(
+///     "CaD".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 1 });
+/// ```
+pub struct AsciiUppercase;
+impl CharPredicate for AsciiUppercase {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch.is_ascii_uppercase()
+    }
+}
+impl RejectsTrimWhitespace for AsciiUppercase {}
+
+#[cfg(feature = "proptest")]
+impl ArbitraryChar for AsciiUppercase {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['A'..='Z'])
+    }
+}
+
+/// Predicate: ASCII lowercase alphabetic (`a`-`z`).
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{AsciiLowercase, EachChar, StringError};
+///
+/// let ok: Refined<String, EachChar<AsciiLowercase>>
+///     = Refined::try_new("cad".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "cad");
+///
+/// let err = Refined::<String, EachChar<AsciiLowercase>>::try_new(
+///     "caD".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 2 });
+/// ```
+pub struct AsciiLowercase;
+impl CharPredicate for AsciiLowercase {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch.is_ascii_lowercase()
+    }
+}
+impl RejectsTrimWhitespace for AsciiLowercase {}
+
+#[cfg(feature = "proptest")]
+impl ArbitraryChar for AsciiLowercase {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['a'..='z'])
+    }
+}
+
+/// Predicate: ASCII digit (`0`-`9`).
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{AsciiDigit, EachChar, StringError};
+///
+/// let ok: Refined<String, EachChar<AsciiDigit>>
+///     = Refined::try_new("12345".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "12345");
+///
+/// let err = Refined::<String, EachChar<AsciiDigit>>::try_new(
+///     "12A45".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 2 });
+/// ```
+pub struct AsciiDigit;
+impl CharPredicate for AsciiDigit {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch.is_ascii_digit()
+    }
+}
+impl RejectsTrimWhitespace for AsciiDigit {}
+
+#[cfg(feature = "proptest")]
+impl ArbitraryChar for AsciiDigit {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['0'..='9'])
+    }
+}
+
 /// Predicate: ASCII alphanumeric or underscore. Matches the usual
 /// identifier-body grammar.
 ///
@@ -1108,10 +1253,16 @@ impl<P> StableUnderTrim for FirstChar<P> where P: RejectsTrimWhitespace {}
 //
 // - `AsciiAlphanumeric`: `A-Za-z0-9`. Letters case-flip within the
 //   alphabet; digits are unchanged.
+// - `AsciiAlphabetic`: `A-Za-z`; letters case-flip within the alphabet.
+// - `AsciiUppercase`: stable under uppercasing only; lowercasing
+//   would leave the admissible set.
+// - `AsciiLowercase`: stable under lowercasing only; uppercasing
+//   would leave the admissible set.
 // - `IdentChar` / `IdentDashChar` / `IdentStart`: the above plus
 //   `_` (and `-` for `IdentDashChar`), which are case-invariant.
 // - `HexChar`: `0-9a-fA-F`; same closure as `AsciiAlphanumeric` on
 //   the relevant subset.
+// - `AsciiDigit`: `0-9`; digits are case-invariant.
 // - `NonControl`: ASCII case-change of a non-control character is
 //   still a non-control character (lowercase / uppercase of a letter
 //   is still a letter, etc.).
@@ -1120,6 +1271,12 @@ impl<P> StableUnderTrim for FirstChar<P> where P: RejectsTrimWhitespace {}
 //   forbidden zero-width / BOM character.
 impl StableUnderAsciiLowercase for EachChar<AsciiAlphanumeric> {}
 impl StableUnderAsciiUppercase for EachChar<AsciiAlphanumeric> {}
+impl StableUnderAsciiLowercase for EachChar<AsciiAlphabetic> {}
+impl StableUnderAsciiUppercase for EachChar<AsciiAlphabetic> {}
+impl StableUnderAsciiUppercase for EachChar<AsciiUppercase> {}
+impl StableUnderAsciiLowercase for EachChar<AsciiLowercase> {}
+impl StableUnderAsciiLowercase for EachChar<AsciiDigit> {}
+impl StableUnderAsciiUppercase for EachChar<AsciiDigit> {}
 impl StableUnderAsciiLowercase for EachChar<IdentChar> {}
 impl StableUnderAsciiUppercase for EachChar<IdentChar> {}
 impl StableUnderAsciiLowercase for EachChar<IdentStart> {}
@@ -1131,6 +1288,12 @@ impl StableUnderAsciiUppercase for EachChar<NonControl> {}
 
 impl StableUnderAsciiLowercase for FirstChar<AsciiAlphanumeric> {}
 impl StableUnderAsciiUppercase for FirstChar<AsciiAlphanumeric> {}
+impl StableUnderAsciiLowercase for FirstChar<AsciiAlphabetic> {}
+impl StableUnderAsciiUppercase for FirstChar<AsciiAlphabetic> {}
+impl StableUnderAsciiUppercase for FirstChar<AsciiUppercase> {}
+impl StableUnderAsciiLowercase for FirstChar<AsciiLowercase> {}
+impl StableUnderAsciiLowercase for FirstChar<AsciiDigit> {}
+impl StableUnderAsciiUppercase for FirstChar<AsciiDigit> {}
 impl StableUnderAsciiLowercase for FirstChar<IdentChar> {}
 impl StableUnderAsciiUppercase for FirstChar<IdentChar> {}
 impl StableUnderAsciiLowercase for FirstChar<IdentStart> {}
@@ -1337,8 +1500,9 @@ mod tests {
     use alloc::string::{String, ToString};
 
     use super::{
-        AsciiAlphanumeric, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar,
-        IdentStart, LenBytes, LenChars, NonControl, NonEmpty, StringError,
+        AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiLowercase, AsciiUppercase,
+        CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart, LenBytes,
+        LenChars, NonControl, NonEmpty, StringError,
     };
     use crate::composition::And;
     use crate::rule::Refined;
@@ -1466,6 +1630,50 @@ mod tests {
         let result: Result<Refined<String, EachChar<AsciiAlphanumeric>>, _> =
             Refined::try_new("user-42".to_string());
         assert_eq!(result.unwrap_err(), StringError::BadChar { offset: 4 },);
+    }
+
+    #[test]
+    fn ascii_alphabetic_admits_letters_only() {
+        let r: Refined<String, EachChar<AsciiAlphabetic>> =
+            Refined::try_new("FlightCode".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "FlightCode");
+
+        let bad: Result<Refined<String, EachChar<AsciiAlphabetic>>, _> =
+            Refined::try_new("Flight42".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 6 });
+    }
+
+    #[test]
+    fn ascii_uppercase_admits_uppercase_letters_only() {
+        let r: Refined<String, EachChar<AsciiUppercase>> =
+            Refined::try_new("CAD".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "CAD");
+
+        let bad: Result<Refined<String, EachChar<AsciiUppercase>>, _> =
+            Refined::try_new("CaD".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    #[test]
+    fn ascii_lowercase_admits_lowercase_letters_only() {
+        let r: Refined<String, EachChar<AsciiLowercase>> =
+            Refined::try_new("cad".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "cad");
+
+        let bad: Result<Refined<String, EachChar<AsciiLowercase>>, _> =
+            Refined::try_new("caD".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 2 });
+    }
+
+    #[test]
+    fn ascii_digit_admits_digits_only() {
+        let r: Refined<String, EachChar<AsciiDigit>> =
+            Refined::try_new("12345".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "12345");
+
+        let bad: Result<Refined<String, EachChar<AsciiDigit>>, _> =
+            Refined::try_new("12A45".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 2 });
     }
 
     #[test]
@@ -2119,6 +2327,34 @@ mod tests {
             r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiAlphanumeric>>>()
         ) {
             proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_alphanumeric()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_ascii_alphabetic_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiAlphabetic>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_alphabetic()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_ascii_uppercase_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiUppercase>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_uppercase()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_ascii_lowercase_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiLowercase>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_lowercase()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_ascii_digit_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiDigit>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_digit()));
         }
 
         #[test]
