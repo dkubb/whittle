@@ -1,5 +1,6 @@
 //! Rule composition: binary `And<A, B>` / `Or<A, B>`, unary
-//! `Not<R>`, binary `Xor<A, B>`, and n-ary `All<(...)>` / `Any<(...)>`.
+//! `Not<R>`, binary `Xor<A, B>`, error-mapping `MapErr<R, M>`,
+//! and n-ary `All<(...)>` / `Any<(...)>`.
 //!
 //! `And` / `Or` / `All` / `Any` are generic over any carrier whose
 //! operands share the same `Rule::Error` type. The composition's
@@ -170,6 +171,69 @@ pub struct Not<R>(PhantomData<fn() -> R>);
 /// ```
 pub struct Xor<A, B>(PhantomData<(A, B)>);
 
+/// Zero-sized mapper from one rule error type into another.
+///
+/// `MapErr<R, M>` uses this trait to shrink or reshape a rule's
+/// public error codomain without changing the rule's admissible
+/// value set.
+pub trait ErrorMapper<E>: 'static {
+    /// The mapped error type exposed by `MapErr`.
+    type Error;
+
+    /// Convert an inner rule error into the mapped error.
+    fn map_error(error: E) -> Self::Error;
+}
+
+/// Preserve a rule's accepted values while mapping its rejection
+/// error through `M`.
+///
+/// This is useful when a composed primitive rule reuses a broad
+/// domain error enum but a domain type wants to expose only the
+/// rejection cases reachable through that composition.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::{And, ErrorMapper, MapErr, Refined};
+/// use whittle_core::primitive::{
+///     AsciiAlphanumeric, EachChar, LenChars, StringError,
+/// };
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// enum CodeError {
+///     BadLength,
+///     BadCharacter,
+/// }
+///
+/// enum CodeErrorMapper {}
+/// impl ErrorMapper<StringError> for CodeErrorMapper {
+///     type Error = CodeError;
+///
+///     fn map_error(error: StringError) -> Self::Error {
+///         match error {
+///             StringError::CharCountOutOfRange { .. } => CodeError::BadLength,
+///             StringError::BadChar { .. } => CodeError::BadCharacter,
+///             StringError::ByteLenOutOfRange { .. }
+///             | StringError::Empty
+///             | StringError::BadFirstChar
+///             | StringError::BadHexLength { .. } => {
+///                 unreachable!("Code rule cannot produce this StringError")
+///             }
+///         }
+///     }
+/// }
+///
+/// type CodeRule = MapErr<
+///     And<LenChars<3, 3>, EachChar<AsciiAlphanumeric>>,
+///     CodeErrorMapper,
+/// >;
+///
+/// let err = Refined::<String, CodeRule>::try_new("ab".to_string())
+///     .unwrap_err();
+/// assert_eq!(err, CodeError::BadLength);
+/// ```
+pub struct MapErr<R, M>(PhantomData<(R, M)>);
+
 /// Every operand in the tuple must accept. The n-ary generalisation
 /// of [`And`] — `All<(A, B, C)>` is equivalent to
 /// `And<A, And<B, C>>` but without the nesting.
@@ -308,6 +372,20 @@ where
         } else {
             Err(crate::primitive::NumericError::OutOfRange { value: widened })
         }
+    }
+}
+
+impl<T, R, M> Rule<T> for MapErr<R, M>
+where
+    T: 'static,
+    R: Rule<T>,
+    M: ErrorMapper<R::Error>,
+{
+    type Error = M::Error;
+
+    #[inline]
+    fn refine(raw: T) -> Result<T, Self::Error> {
+        R::refine(raw).map_err(M::map_error)
     }
 }
 
@@ -532,6 +610,21 @@ where
     }
 }
 
+#[cfg(feature = "proptest")]
+impl<T, R, M> ArbitraryRule<T> for MapErr<R, M>
+where
+    T: core::fmt::Debug + 'static,
+    R: ArbitraryRule<T>,
+    M: ErrorMapper<R::Error>,
+{
+    type Strategy = R::Strategy;
+
+    #[inline]
+    fn arbitrary_strategy() -> Self::Strategy {
+        R::arbitrary_strategy()
+    }
+}
+
 // ─── N-ary `All` / `Any` `ArbitraryRule` impls. ───────────────────
 //
 // `All<(R1, R2, ..., RN)>` drives the leftmost rule's strategy and
@@ -632,10 +725,10 @@ impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
 mod tests {
     use alloc::string::{String, ToString};
 
-    use super::{All, And, Any, Or, Xor};
+    use super::{All, And, Any, ErrorMapper, MapErr, Or, Xor};
     use crate::primitive::{
-        AtLeast, AtMost, EachChar, EqualTo, GreaterThan, IdentChar, LenChars, LessThan, NonZero,
-        NumericError, StringError, Within,
+        AsciiAlphanumeric, AtLeast, AtMost, EachChar, EqualTo, GreaterThan, IdentChar, LenChars,
+        LessThan, NonZero, NumericError, StringError, Within,
     };
     use crate::rule::Refined;
 
@@ -654,6 +747,48 @@ mod tests {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub OutOfMiddle: i32, Or<AtMost<10>, AtLeast<100>>;
     }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum CodeError {
+        BadLength,
+        BadCharacter,
+    }
+
+    enum CodeErrorMapper {}
+    impl ErrorMapper<StringError> for CodeErrorMapper {
+        type Error = CodeError;
+
+        fn map_error(error: StringError) -> Self::Error {
+            match error {
+                StringError::CharCountOutOfRange { .. } => CodeError::BadLength,
+                StringError::BadChar { .. } => CodeError::BadCharacter,
+                StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadFirstChar
+                | StringError::BadHexLength { .. } => {
+                    unreachable!("code rule cannot produce this StringError")
+                }
+            }
+        }
+    }
+
+    type CodeRule = MapErr<And<LenChars<3, 3>, EachChar<AsciiAlphanumeric>>, CodeErrorMapper>;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum UpperHalfError {
+        Outside,
+    }
+
+    enum UpperHalfErrorMapper {}
+    impl ErrorMapper<NumericError> for UpperHalfErrorMapper {
+        type Error = UpperHalfError;
+
+        fn map_error(_error: NumericError) -> Self::Error {
+            UpperHalfError::Outside
+        }
+    }
+
+    type UpperHalf = MapErr<And<Within<0, 100>, AtLeast<50>>, UpperHalfErrorMapper>;
 
     #[test]
     fn and_passes_through_canonicalised_output() {
@@ -698,6 +833,33 @@ mod tests {
 
         let bad_char: Result<Refined<String, Ident>, _> = Refined::try_new("user-42".to_string());
         assert_eq!(bad_char.unwrap_err(), StringError::BadChar { offset: 4 },);
+    }
+
+    #[test]
+    fn map_err_preserves_acceptance_and_maps_left_failure() {
+        let ok: Refined<String, CodeRule> = Refined::try_new("A1z".to_string()).unwrap();
+        assert_eq!(ok.as_inner(), "A1z");
+
+        let bad_len: Result<Refined<String, CodeRule>, _> = Refined::try_new("A1".to_string());
+        assert_eq!(bad_len.unwrap_err(), CodeError::BadLength);
+    }
+
+    #[test]
+    fn map_err_maps_right_failure() {
+        let bad_char: Result<Refined<String, CodeRule>, _> = Refined::try_new("A-z".to_string());
+        assert_eq!(bad_char.unwrap_err(), CodeError::BadCharacter);
+    }
+
+    #[test]
+    #[should_panic(expected = "code rule cannot produce this StringError")]
+    fn map_err_mapper_rejects_unreachable_inner_error() {
+        CodeErrorMapper::map_error(StringError::Empty);
+    }
+
+    #[test]
+    fn map_err_maps_numeric_failure() {
+        let bad: Result<Refined<i32, UpperHalf>, _> = Refined::try_new(10_i32);
+        assert_eq!(bad.unwrap_err(), UpperHalfError::Outside);
     }
 
     #[test]
@@ -1047,6 +1209,13 @@ mod tests {
             // construction.
             let value = *r.as_inner();
             proptest::prop_assert!(value <= 0 || value >= 100);
+        }
+
+        #[test]
+        fn arbitrary_map_err_preserves_inner_strategy(
+            r in proptest::arbitrary::any::<Refined<i32, UpperHalf>>()
+        ) {
+            proptest::prop_assert!((50..=100).contains(r.as_inner()));
         }
 
         // ─── `Xor<A, B>`'s `ArbitraryRule` impl: union of both
