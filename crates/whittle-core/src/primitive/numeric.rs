@@ -509,49 +509,124 @@ impl ArbitraryNumeric for isize {
 // rules share `NumericError`, so the composition's error is
 // `NumericError` directly — no flattening shim is needed.
 
+macro_rules! const_within_constructor {
+    ($(#[$doc:meta])* $method:ident, $ty:ty) => {
+        $(#[$doc])*
+        ///
+        /// # Errors
+        ///
+        /// Returns [`NumericError::OutOfRange`] when `raw` is
+        /// outside the inclusive range.
+        #[inline]
+        pub const fn $method(raw: $ty) -> Result<Refined<$ty, Self>, NumericError> {
+            const { Self::VALID };
+            let widened = raw as i128;
+            if widened < MIN || widened > MAX {
+                Err(NumericError::OutOfRange { value: widened })
+            } else {
+                Ok(Refined::from_inner(raw))
+            }
+        }
+    };
+}
+
 impl<const MIN: i128, const MAX: i128> Within<MIN, MAX> {
     /// Single source of the bound invariant: `MIN <= MAX`. Referenced
     /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
     /// via `const { Self::VALID }`.
     const VALID: () = assert!(MIN <= MAX, "Within: MIN must be <= MAX");
 
-    /// Const-capable construction for `u16` carriers.
-    ///
-    /// This is the literal-friendly counterpart to
-    /// `Refined::<u16, Within<MIN, MAX>>::try_new`: the same range
-    /// predicate is checked in a `const fn`, so known protocol
-    /// constants can be represented as refined values without a
-    /// runtime `unwrap`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NumericError::OutOfRange`] when `raw` is outside the
-    /// inclusive range.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use whittle_core::Refined;
-    /// use whittle_core::primitive::Within;
-    ///
-    /// const OK: Refined<u16, Within<100, 599>> =
-    ///     match Within::<100, 599>::try_new_u16(200) {
-    ///         Ok(value) => value,
-    ///         Err(_) => panic!("invalid status literal"),
-    ///     };
-    ///
-    /// assert_eq!(*OK.as_inner(), 200);
-    /// ```
-    #[inline]
-    pub const fn try_new_u16(raw: u16) -> Result<Refined<u16, Self>, NumericError> {
-        const { Self::VALID };
-        let widened = raw as i128;
-        if widened < MIN || widened > MAX {
-            Err(NumericError::OutOfRange { value: widened })
-        } else {
-            Ok(Refined::from_inner(raw))
-        }
-    }
+    const_within_constructor!(
+        /// Const-capable construction for `i8` carriers.
+        ///
+        /// This is the literal-friendly counterpart to
+        /// `Refined::<i8, Within<MIN, MAX>>::try_new`: the same
+        /// range predicate is checked in a `const fn`, so known
+        /// protocol constants can be represented as refined values
+        /// without a runtime `unwrap`.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`NumericError::OutOfRange`] when `raw` is
+        /// outside the inclusive range.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<i8, Within<-10, 10>> =
+        ///     match Within::<-10, 10>::try_new_i8(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
+        try_new_i8,
+        i8
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `i16` carriers.
+        try_new_i16,
+        i16
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `i32` carriers.
+        try_new_i32,
+        i32
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `i64` carriers.
+        try_new_i64,
+        i64
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `i128` carriers.
+        try_new_i128,
+        i128
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `isize` carriers.
+        try_new_isize,
+        isize
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `u8` carriers.
+        try_new_u8,
+        u8
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `u16` carriers.
+        try_new_u16,
+        u16
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `u32` carriers.
+        try_new_u32,
+        u32
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `u64` carriers.
+        try_new_u64,
+        u64
+    );
+
+    const_within_constructor!(
+        /// Const-capable construction for `usize` carriers.
+        try_new_usize,
+        usize
+    );
 }
 
 impl<T, const MIN: i128, const MAX: i128> Rule<T> for Within<MIN, MAX>
@@ -829,6 +904,105 @@ mod tests {
         };
 
         assert_eq!(*OK.as_inner(), 200_u16);
+    }
+
+    #[test]
+    fn within_const_constructors_accept_supported_numeric_carriers() {
+        const I8: Refined<i8, Within<-10, 10>> = match Within::<-10, 10>::try_new_i8(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid i8 literal"),
+        };
+        const I16: Refined<i16, Within<-10, 10>> = match Within::<-10, 10>::try_new_i16(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid i16 literal"),
+        };
+        const I32: Refined<i32, Within<-10, 10>> = match Within::<-10, 10>::try_new_i32(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid i32 literal"),
+        };
+        const I64: Refined<i64, Within<-10, 10>> = match Within::<-10, 10>::try_new_i64(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid i64 literal"),
+        };
+        const I128: Refined<i128, Within<-10, 10>> = match Within::<-10, 10>::try_new_i128(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid i128 literal"),
+        };
+        const ISIZE: Refined<isize, Within<-10, 10>> = match Within::<-10, 10>::try_new_isize(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid isize literal"),
+        };
+        const U8: Refined<u8, Within<0, 10>> = match Within::<0, 10>::try_new_u8(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid u8 literal"),
+        };
+        const U32: Refined<u32, Within<0, 10>> = match Within::<0, 10>::try_new_u32(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid u32 literal"),
+        };
+        const U64: Refined<u64, Within<0, 10>> = match Within::<0, 10>::try_new_u64(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid u64 literal"),
+        };
+        const USIZE: Refined<usize, Within<0, 10>> = match Within::<0, 10>::try_new_usize(7) {
+            Ok(value) => value,
+            Err(_) => panic!("valid usize literal"),
+        };
+
+        assert_eq!(*I8.as_inner(), 7_i8);
+        assert_eq!(*I16.as_inner(), 7_i16);
+        assert_eq!(*I32.as_inner(), 7_i32);
+        assert_eq!(*I64.as_inner(), 7_i64);
+        assert_eq!(*I128.as_inner(), 7_i128);
+        assert_eq!(*ISIZE.as_inner(), 7_isize);
+        assert_eq!(*U8.as_inner(), 7_u8);
+        assert_eq!(*U32.as_inner(), 7_u32);
+        assert_eq!(*U64.as_inner(), 7_u64);
+        assert_eq!(*USIZE.as_inner(), 7_usize);
+    }
+
+    #[test]
+    fn within_const_constructors_reject_supported_numeric_carriers() {
+        assert_eq!(
+            Within::<-10, 10>::try_new_i8(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<-10, 10>::try_new_i16(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<-10, 10>::try_new_i32(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<-10, 10>::try_new_i64(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<-10, 10>::try_new_i128(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<-10, 10>::try_new_isize(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<0, 10>::try_new_u8(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<0, 10>::try_new_u32(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<0, 10>::try_new_u64(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
+        assert_eq!(
+            Within::<0, 10>::try_new_usize(11).unwrap_err(),
+            NumericError::OutOfRange { value: 11 },
+        );
     }
 
     #[test]
