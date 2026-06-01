@@ -275,6 +275,106 @@ pub trait ArbitraryChar: CharPredicate {
     fn arbitrary_char() -> Self::Strategy;
 }
 
+/// Predicate: exactly one character.
+///
+/// Use this as the leaf for literal punctuation in exact ASCII token
+/// alphabets, then combine it with [`CharEither`].
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{CharEither, CharLiteral, EachChar, StringError};
+///
+/// type DotOrDash = CharEither<CharLiteral<'.'>, CharLiteral<'-'>>;
+///
+/// let ok: Refined<String, EachChar<DotOrDash>>
+///     = Refined::try_new(".-.-".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), ".-.-");
+///
+/// let err = Refined::<String, EachChar<DotOrDash>>::try_new(
+///     "._".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 1 });
+/// ```
+pub struct CharLiteral<const CH: char>;
+impl<const CH: char> CharPredicate for CharLiteral<CH> {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch == CH
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl<const CH: char> ArbitraryChar for CharLiteral<CH> {
+    type Strategy = proptest::strategy::Just<char>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        proptest::strategy::Just(CH)
+    }
+}
+
+/// Predicate union: admit a character when either `A` or `B` admits it.
+///
+/// This is the per-character counterpart of [`crate::Or`]. It lets
+/// callers build exact alphabets for [`EachChar`] and [`FirstChar`]
+/// without writing a custom predicate and generator for every domain
+/// token.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{
+///     AsciiAlphanumeric, CharEither, CharLiteral, EachChar, StringError,
+/// };
+///
+/// type DotDash = CharEither<CharLiteral<'.'>, CharLiteral<'-'>>;
+/// type SymbolChar = CharEither<AsciiAlphanumeric, DotDash>;
+///
+/// let ok: Refined<String, EachChar<SymbolChar>>
+///     = Refined::try_new("BRK.B-1".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "BRK.B-1");
+///
+/// let err = Refined::<String, EachChar<SymbolChar>>::try_new(
+///     "BRK/B".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 3 });
+/// ```
+pub struct CharEither<A, B>(PhantomData<fn() -> (A, B)>);
+impl<A, B> CharPredicate for CharEither<A, B>
+where
+    A: CharPredicate,
+    B: CharPredicate,
+{
+    #[inline]
+    fn test(ch: char) -> bool {
+        A::test(ch) || B::test(ch)
+    }
+}
+impl<A, B> RejectsTrimWhitespace for CharEither<A, B>
+where
+    A: RejectsTrimWhitespace,
+    B: RejectsTrimWhitespace,
+{
+}
+
+#[cfg(feature = "proptest")]
+impl<A, B> ArbitraryChar for CharEither<A, B>
+where
+    A: ArbitraryChar,
+    B: ArbitraryChar,
+{
+    type Strategy = proptest::strategy::BoxedStrategy<char>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::prop_oneof![A::arbitrary_char(), B::arbitrary_char()].boxed()
+    }
+}
+
 /// Predicate: ASCII alphanumeric (`A`–`Z`, `a`–`z`, `0`–`9`).
 ///
 /// # Examples
@@ -1500,9 +1600,9 @@ mod tests {
     use alloc::string::{String, ToString};
 
     use super::{
-        AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiLowercase, AsciiUppercase,
-        CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart, LenBytes,
-        LenChars, NonControl, NonEmpty, StringError,
+        AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiLowercase, AsciiUppercase, CharEither,
+        CharLiteral, CharPredicate, EachChar, FirstChar, IdentChar, IdentDashChar, IdentStart,
+        LenBytes, LenChars, NonControl, NonEmpty, StringError,
     };
     use crate::composition::And;
     use crate::rule::Refined;
@@ -1674,6 +1774,31 @@ mod tests {
         let bad: Result<Refined<String, EachChar<AsciiDigit>>, _> =
             Refined::try_new("12A45".to_string());
         assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 2 });
+    }
+
+    #[test]
+    fn char_literal_admits_exact_character_only() {
+        let r: Refined<String, EachChar<CharLiteral<'.'>>> =
+            Refined::try_new("...".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "...");
+
+        let bad: Result<Refined<String, EachChar<CharLiteral<'.'>>>, _> =
+            Refined::try_new("..-".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 2 });
+    }
+
+    #[test]
+    fn char_either_composes_exact_token_alphabet() {
+        type DotDash = CharEither<CharLiteral<'.'>, CharLiteral<'-'>>;
+        type SymbolChar = CharEither<AsciiAlphanumeric, DotDash>;
+
+        let r: Refined<String, EachChar<SymbolChar>> =
+            Refined::try_new("BRK.B-1".to_string()).unwrap();
+        assert_eq!(r.as_inner(), "BRK.B-1");
+
+        let bad: Result<Refined<String, EachChar<SymbolChar>>, _> =
+            Refined::try_new("BRK/B".to_string());
+        assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 3 });
     }
 
     #[test]
@@ -2355,6 +2480,30 @@ mod tests {
             r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiDigit>>>()
         ) {
             proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_digit()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_literal_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<CharLiteral<'.'>>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c == '.'));
+        }
+
+        #[test]
+        fn arbitrary_each_char_either_admissible(
+            r in proptest::arbitrary::any::<Refined<
+                String,
+                EachChar<CharEither<
+                    AsciiAlphanumeric,
+                    CharEither<CharLiteral<'.'>, CharLiteral<'-'>>,
+                >>,
+            >>()
+        ) {
+            proptest::prop_assert!(
+                r.as_inner()
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-'),
+            );
         }
 
         #[test]
