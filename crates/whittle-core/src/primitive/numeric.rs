@@ -7,7 +7,7 @@
 
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
-use crate::rule::Rule;
+use crate::rule::{Refined, Rule};
 
 /// Inclusive numeric range: `MIN <= value <= MAX`.
 ///
@@ -514,6 +514,44 @@ impl<const MIN: i128, const MAX: i128> Within<MIN, MAX> {
     /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
     /// via `const { Self::VALID }`.
     const VALID: () = assert!(MIN <= MAX, "Within: MIN must be <= MAX");
+
+    /// Const-capable construction for `u16` carriers.
+    ///
+    /// This is the literal-friendly counterpart to
+    /// `Refined::<u16, Within<MIN, MAX>>::try_new`: the same range
+    /// predicate is checked in a `const fn`, so known protocol
+    /// constants can be represented as refined values without a
+    /// runtime `unwrap`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NumericError::OutOfRange`] when `raw` is outside the
+    /// inclusive range.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::Within;
+    ///
+    /// const OK: Refined<u16, Within<100, 599>> =
+    ///     match Within::<100, 599>::try_new_u16(200) {
+    ///         Ok(value) => value,
+    ///         Err(_) => panic!("invalid status literal"),
+    ///     };
+    ///
+    /// assert_eq!(*OK.as_inner(), 200);
+    /// ```
+    #[inline]
+    pub const fn try_new_u16(raw: u16) -> Result<Refined<u16, Self>, NumericError> {
+        const { Self::VALID };
+        let widened = raw as i128;
+        if widened < MIN || widened > MAX {
+            Err(NumericError::OutOfRange { value: widened })
+        } else {
+            Ok(Refined::from_inner(raw))
+        }
+    }
 }
 
 impl<T, const MIN: i128, const MAX: i128> Rule<T> for Within<MIN, MAX>
@@ -781,6 +819,36 @@ mod tests {
         let hundred: Refined<i32, Within<0, 100>> = Refined::try_new(100_i32).unwrap();
         assert_eq!(*zero.as_inner(), 0_i32);
         assert_eq!(*hundred.as_inner(), 100_i32);
+    }
+
+    #[test]
+    fn within_try_new_u16_constructs_const_refined_literal() {
+        const OK: Refined<u16, Within<100, 599>> = match Within::<100, 599>::try_new_u16(200) {
+            Ok(value) => value,
+            Err(_) => panic!("200 is a valid HTTP status code"),
+        };
+
+        assert_eq!(*OK.as_inner(), 200_u16);
+    }
+
+    #[test]
+    fn within_try_new_u16_accepts_at_runtime_for_coverage() {
+        let ok = Within::<100, 599>::try_new_u16(200).unwrap();
+        assert_eq!(*ok.as_inner(), 200_u16);
+    }
+
+    #[test]
+    fn within_try_new_u16_rejects_out_of_range() {
+        const ERR: Result<Refined<u16, Within<100, 599>>, NumericError> =
+            Within::<100, 599>::try_new_u16(99);
+
+        assert_eq!(ERR.unwrap_err(), NumericError::OutOfRange { value: 99 });
+    }
+
+    #[test]
+    fn within_try_new_u16_rejects_at_runtime_for_coverage() {
+        let err = Within::<100, 599>::try_new_u16(99).unwrap_err();
+        assert_eq!(err, NumericError::OutOfRange { value: 99 });
     }
 
     #[test]

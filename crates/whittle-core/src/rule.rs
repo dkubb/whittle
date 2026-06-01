@@ -131,6 +131,16 @@ where
 }
 
 impl<T, R> Refined<T, R> {
+    /// Internal constructor for const-capable primitive rules that
+    /// have already checked their invariant.
+    #[inline]
+    pub(crate) const fn from_inner(inner: T) -> Self {
+        Self {
+            inner,
+            rule: PhantomData,
+        }
+    }
+
     /// Borrow the inner value.
     ///
     /// Returning a shared reference is proof-preserving: callers
