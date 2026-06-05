@@ -14,6 +14,16 @@ coverage = [
   "0",
   "--final-status-level",
   "fail",
+  # whittle-macros is a proc-macro crate: its code runs inside the
+  # compiler during expansion, not inside the test binaries, so
+  # cargo-llvm-cov cannot observe its execution and reports it as
+  # uncovered. Its runtime output (`Pattern<RE>`) is fully covered by
+  # whittle-core's tests, and its expansion is exercised by the facade
+  # `pattern!` tests + the compile-fail doctest. Exclude its source
+  # from the line/region/function gate rather than lowering any
+  # threshold.
+  "--ignore-filename-regex",
+  "crates/whittle-macros/",
   "--no-cfg-coverage",
   "--no-cfg-coverage-nightly",
   "--status-level",

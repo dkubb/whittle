@@ -32,3 +32,12 @@ pub use composition::{All, And, Any, ErrorMapper, MapErr, Not, Or, Xor};
 pub use rule::ArbitraryRule;
 pub use rule::{Refined, Rule};
 pub use transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
+/// Compile-time-validated constructor for [`primitive::Pattern`].
+///
+/// `pattern!(r"...")` expands to a `Pattern<RE>` rule type and rejects
+/// a malformed regex as a compile error. See the macro's own docs in
+/// `whittle-macros`, and the worked admit/reject + compile-fail
+/// examples on the `whittle` facade's re-export (the macro resolves the
+/// facade crate path, so its doctests run against `whittle::pattern!`).
+#[cfg(feature = "regex")]
+pub use whittle_macros::pattern;

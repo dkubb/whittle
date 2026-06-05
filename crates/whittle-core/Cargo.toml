@@ -14,7 +14,7 @@ chrono   = ["dep:chrono"]
 decimal  = ["dep:rust_decimal"]
 hex      = []
 proptest = ["dep:proptest"]
-regex    = ["dep:regex"]
+regex    = ["dep:regex", "dep:whittle-macros"]
 serde    = ["dep:serde"]
 unicode  = ["dep:unicode-general-category"]
 
@@ -25,6 +25,7 @@ regex                    = { workspace = true, optional = true }
 rust_decimal             = { workspace = true, optional = true }
 serde                    = { workspace = true, optional = true }
 unicode-general-category = { workspace = true, optional = true }
+whittle-macros           = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest   = { workspace = true }

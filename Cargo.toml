@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members  = ["crates/whittle-core"]
+members  = ["crates/whittle-core", "crates/whittle-macros"]
 
 [workspace.package]
 edition      = "2024"
@@ -93,14 +93,19 @@ unescaped_backticks      = "deny"                            # No unescaped back
 
 [workspace.dependencies]
 chrono                   = { version = "0.4", default-features = false }
+proc-macro-crate         = "3"
+proc-macro2              = "1"
 proptest                 = { version = "1", default-features = false, features = ["std"] }
+quote                    = "1"
 regex                    = { version = "1" }
 rust_decimal             = { version = "1", default-features = false }
 serde                    = { version = "1", default-features = false }
 serde_json               = "1"
 serde_test               = "1"
+syn                      = { version = "2", features = ["full"] }
 thiserror                = "2"
 unicode-general-category = { version = "1.1", default-features = false }
+whittle-macros           = { version = "0.0.0", path = "crates/whittle-macros" }
 
 [package]
 name        = "whittle"
@@ -153,3 +158,8 @@ required-features = ["proptest", "hex"]
 name             = "serde-roundtrip"
 path             = "tests/serde-roundtrip.rs"
 required-features = ["serde"]
+
+[[test]]
+name             = "pattern-macro"
+path             = "tests/pattern-macro.rs"
+required-features = ["regex"]
