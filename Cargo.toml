@@ -46,6 +46,8 @@ restriction = { level = "deny", priority = -1 }                  # Ultra-strict 
 # Allow specific lints back from restriction (with reasons)
 expect_used                     = "allow" # Allow expect() for better error messages and reasoning
 implicit_return                 = "allow" # Allow implicit return
+inline_modules                  = "allow" # Inline `mod sealed`/`mod tests` keep a rule and its tests in one file — the project's convention
+inline_trait_bounds             = "allow" # `Rule<T>: Sized + 'static where T: 'static` states the bound inline; splitting it into a where-clause adds no clarity
 min_ident_chars                 = "allow" # Allow short identifiers (e.g. `T`, `R`, `A`, `B`)
 multiple_crate_versions         = "allow" # Allow multiple versions of the same crate
 pub_with_shorthand              = "allow" # Allow pub with shorthand syntax
@@ -92,6 +94,7 @@ unescaped_backticks      = "deny"                            # No unescaped back
 [workspace.dependencies]
 chrono                   = { version = "0.4", default-features = false }
 proptest                 = { version = "1", default-features = false, features = ["std"] }
+regex                    = { version = "1" }
 rust_decimal             = { version = "1", default-features = false }
 serde                    = { version = "1", default-features = false }
 serde_json               = "1"
@@ -124,6 +127,7 @@ chrono   = ["whittle-core/chrono"]
 decimal  = ["whittle-core/decimal"]
 hex      = ["whittle-core/hex"]
 proptest = ["whittle-core/proptest"]
+regex    = ["whittle-core/regex"]
 serde    = ["whittle-core/serde"]
 unicode  = ["whittle-core/unicode"]
 

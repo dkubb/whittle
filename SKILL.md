@@ -225,6 +225,32 @@ Path (`crates/whittle-core/src/primitive/path.rs`, `Rule<String>`, returns
   `PathError::ParentTraversal { index }`,
   `PathError::EmptySegment { index }`.
 
+Pattern (`crates/whittle-core/src/primitive/pattern.rs`, `Rule<String>`,
+returns `PatternError`; behind the `regex` Cargo feature):
+
+- `Pattern<const RE: &'static str>` — admits a `String` only when the
+  regex `RE` matches the **whole** input (the rule enforces a full-span
+  match, so anchors are optional). The pattern rides in the type as a
+  `&'static str` const generic. Single error variant:
+  `PatternError::NoMatch` (opaque — it carries neither the pattern nor
+  the input). Prefer the `pattern!(r"...")` macro over a hand-written
+  `Pattern<"...">`: the macro validates the regex at compile time,
+  whereas a bare `Pattern<RE>` with a malformed `RE` panics on first
+  construction.
+
+  When to reach for it: `Pattern` is the **escape hatch for positional
+  grammars** — shapes like "uppercase initial, then dash-separated
+  alphabetic runs" (`r"^(?:[A-Z])(?:-?[A-Za-z]+)*$"`) that the
+  composable character-class rules (`EachChar`, `FirstChar`,
+  `CharEither`, `CharExcept`, ...) cannot express ergonomically.
+  Reach for the character-class rules first: they compose, give
+  character-precise errors, and keep the crate `#![no_std]` with zero
+  dependencies. The costs of `Pattern` are real: it requires the
+  `regex` feature, which pulls in `std`, the `regex` crate, and the
+  nightly `adt_const_params` / `unsized_const_params` const-generic
+  features; its `NoMatch` error is opaque; and the regex is compiled
+  (and cached) at runtime on first use rather than at compile time.
+
 Date (`crates/whittle-core/src/primitive/date.rs`,
 `Rule<chrono::NaiveDate>`, return `DateError`; behind the `chrono`
 Cargo feature):
@@ -538,8 +564,17 @@ Workspace root `Cargo.toml` lists workspace-level features
   feature).
 - `serde` — enables `Serialize`/`Deserialize` impls on `Refined<T, R>`.
 - `proptest` — enables `Arbitrary` impl on `Refined<T, R>`.
+- `regex` — enables `Pattern<const RE: &'static str>` and the
+  `pattern!` macro. Unlike every other feature, this one pulls in
+  `std` (the regex compile cache needs `OnceLock`/`Mutex`) and turns
+  on the nightly `adt_const_params` / `unsized_const_params`
+  const-generic features so a `&'static str` can be a const generic.
+  Pulls in the `regex` crate (and `whittle-macros` for `pattern!`).
+  Reach for it only for positional grammars the character-class rules
+  cannot express; see the `Pattern` entry in the Primitive Catalog.
 
-`default = []`. The crate is `#![no_std]` with `extern crate alloc`. All
+`default = []`. The crate is `#![no_std]` with `extern crate alloc`
+(plus `extern crate std` only under the `regex` feature). All
 features are additive.
 
 ## Anti-patterns

@@ -10,6 +10,8 @@ pub mod decimal;
 pub mod float;
 pub mod numeric;
 pub mod path;
+#[cfg(feature = "regex")]
+pub mod pattern;
 pub mod string;
 
 pub use collection::{
@@ -38,6 +40,8 @@ pub use numeric::{
     NumericError, Positive, Within,
 };
 pub use path::{PathError, RelativePath};
+#[cfg(feature = "regex")]
+pub use pattern::{Pattern, PatternError};
 #[cfg(feature = "proptest")]
 pub use string::ArbitraryChar;
 pub use string::{

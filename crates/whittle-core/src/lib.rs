@@ -4,8 +4,21 @@
 //! repository root for the specification this crate implements.
 
 #![no_std]
+#![cfg_attr(feature = "regex", feature(adt_const_params, unsized_const_params))]
+#![cfg_attr(
+    feature = "regex",
+    expect(
+        incomplete_features,
+        reason = "&'static str const generics carry the regex pattern in the type"
+    )
+)]
 
 extern crate alloc;
+// The `regex` rule needs the regex crate and a keyed `OnceLock` cache,
+// both of which require `std`. The kernel stays `#![no_std]` by default
+// and pulls `std` in ONLY when the `regex` feature is enabled.
+#[cfg(feature = "regex")]
+extern crate std;
 
 pub mod composition;
 #[macro_use]
