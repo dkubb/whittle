@@ -34,6 +34,40 @@ use crate::rule::{Refined, Rule};
 /// ```
 pub struct LenItems<const MIN: usize, const MAX: usize>;
 
+/// Marker: rules over `Vec<_>` whose admissibility depends only on
+/// the vector's *length*, never on the elements themselves.
+///
+/// Unlocks the infallible [`Refined::map_items`]: an element-wise
+/// map yields exactly one output per input, so it cannot change the
+/// vector's length — and a length-only rule therefore cannot be
+/// invalidated by it. Follows the same capability-marker pattern as
+/// [`crate::transform::StableUnderTrim`]; see that trait's docs for
+/// the four-step audit recipe.
+///
+/// # Implementor obligation
+///
+/// Implement this marker only when BOTH hold for the rule `R`:
+///
+/// 1. For every element type `T` with `R: Rule<Vec<T>>`, the
+///    `refine` impl admits or rejects solely on `Vec::len` — it
+///    never inspects, compares, or depends on the elements.
+/// 2. The `refine` impl is a pure predicate: it returns the input
+///    vector unchanged on success (no canonicalisation). `map_items`
+///    bypasses `refine` entirely, so a canonicalising impl would let
+///    a non-canonical carrier escape.
+///
+/// As with the `StableUnder*` markers, the obligation must hold for
+/// EVERY admissible vector and every map, not only for the shapes a
+/// particular caller produces. For composed rules the marker
+/// propagates: `And<A, B>` / `Or<A, B>` are stable under element
+/// maps iff both operands are (the kernel provides those impls).
+pub trait StableUnderElementMap {}
+
+/// SOUNDNESS: `LenItems::refine` reads only `Vec::len` and returns
+/// the input unchanged — both obligations hold for every element
+/// type and every length bound.
+impl<const MIN: usize, const MAX: usize> StableUnderElementMap for LenItems<MIN, MAX> {}
+
 /// Every item in the collection must satisfy the inner rule `R`.
 ///
 /// # Examples
@@ -427,6 +461,60 @@ impl<const MIN: usize, const MAX: usize> LenItems<MIN, MAX> {
     /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
     /// via `const { Self::VALID }`.
     const VALID: () = assert!(MIN <= MAX, "LenItems requires MIN <= MAX");
+}
+
+impl<T, R> Refined<Vec<T>, R>
+where
+    T: 'static,
+{
+    /// Map each element through `f`, keeping the rule's proof
+    /// without re-running `refine`.
+    ///
+    /// Available only for rules marked [`StableUnderElementMap`]
+    /// (length-only rules such as [`LenItems`]). For arbitrary rule
+    /// pairs — or element maps that must re-establish a per-element
+    /// invariant — use the re-validating [`Refined::try_map`]
+    /// instead, which routes through `try_new`.
+    ///
+    /// # Soundness
+    ///
+    /// The existence of `self` proves the input vector was admissible
+    /// under `R`. `Iterator::map` over `into_iter` yields exactly one
+    /// output per input, so the mapped vector's length equals the
+    /// input's. `R: StableUnderElementMap` obligates `R`'s
+    /// admissibility (for every element type) to depend only on that
+    /// unchanged length and its `refine` to be a pure predicate, so
+    /// the mapped vector is admissible — and already canonical —
+    /// without re-running `refine`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let files: Refined<Vec<i32>, LenItems<1, 3>> =
+    ///     Refined::try_new(vec![10, 20]).unwrap();
+    ///
+    /// // Infallible: the length proof transfers to the mapped
+    /// // vector — no `Result`, no re-validation.
+    /// let paths: Refined<Vec<String>, LenItems<1, 3>> =
+    ///     files.map_items(|n| n.to_string());
+    /// assert_eq!(paths.as_inner(), &["10".to_string(), "20".to_string()]);
+    /// ```
+    #[must_use]
+    pub fn map_items<U, F>(self, f: F) -> Refined<Vec<U>, R>
+    where
+        U: 'static,
+        R: Rule<Vec<T>> + Rule<Vec<U>> + StableUnderElementMap,
+        F: FnMut(T) -> U,
+    {
+        let mapped: Vec<U> = self.into_inner().into_iter().map(f).collect();
+        // SOUNDNESS: `map` preserves length and `R:
+        // StableUnderElementMap` certifies `R` admits on length
+        // alone, so the construction-time proof carries over.
+        Refined::from_inner(mapped)
+    }
 }
 
 impl<T, const MAX: usize> Refined<Vec<T>, LenItems<1, MAX>> {
@@ -825,6 +913,26 @@ mod tests {
     // time via `const { assert!(MIN <= MAX) }`; the previous
     // runtime test that exercised that branch is no longer needed
     // because the offending monomorphization is unrepresentable.
+
+    // ─── map_items (StableUnderElementMap). ──────────────────────
+
+    #[test]
+    fn map_items_transfers_length_proof_across_element_types() {
+        let files: Refined<Vec<i32>, LenItems<1, 3>> = Refined::try_new(vec![10, 20]).unwrap();
+        let labels: Refined<Vec<alloc::string::String>, LenItems<1, 3>> =
+            files.map_items(|n| n.to_string());
+        assert_eq!(labels.as_inner(), &["10".to_string(), "20".to_string()],);
+    }
+
+    #[test]
+    fn map_items_through_and_composition() {
+        // `And<A, B>: StableUnderElementMap` when both operands are
+        // — the composition marker impl is exercised here.
+        let r: Refined<Vec<i32>, crate::composition::And<LenItems<1, 5>, LenItems<0, 9>>> =
+            Refined::try_new(vec![1, 2, 3]).unwrap();
+        let doubled = r.map_items(|n| i64::from(n) * 2);
+        assert_eq!(doubled.as_inner(), &[2_i64, 4, 6]);
+    }
 
     #[test]
     fn all_items_accepts_uniform_inner() {
@@ -1318,6 +1426,22 @@ mod tests {
             r in proptest::arbitrary::any::<Refined<Vec<i32>, LenItems<1, 5>>>()
         ) {
             proptest::prop_assert!((1..=5).contains(&r.as_inner().len()));
+        }
+
+        /// `map_items` soundness audit: for every admissible source
+        /// vector, the mapped vector re-validates under the same
+        /// length-only rule — the proof `map_items` transfers
+        /// without re-running `refine` is one `refine` would
+        /// re-establish.
+        #[test]
+        fn map_items_output_revalidates_under_rule(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, LenItems<1, 5>>>()
+        ) {
+            let mapped = r.map_items(i64::from);
+            let raw = mapped.into_inner();
+            let revalidated =
+                <LenItems<1, 5> as crate::Rule<Vec<i64>>>::refine(raw);
+            proptest::prop_assert!(revalidated.is_ok());
         }
 
         #[test]

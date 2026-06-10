@@ -183,6 +183,62 @@ impl<T, R> Refined<T, R> {
     pub fn into_inner(self) -> T {
         self.inner
     }
+
+    /// Map the inner value and re-establish a (possibly different)
+    /// rule for the result.
+    ///
+    /// This is sugar over `into_inner` → transform → `try_new`: the
+    /// existing proof is erased, `f` rebuilds the carrier, and the
+    /// target rule `S` re-runs its narrowing morphism on the result.
+    /// Because every output routes through `try_new`, the operation
+    /// carries no soundness debt — there is no path that produces a
+    /// `Refined<U, S>` without `S::refine` accepting the mapped
+    /// value. For length-only target rules the re-validation is a
+    /// length compare; for per-element rules it is O(n).
+    ///
+    /// For length-preserving element-wise maps under a length-only
+    /// rule, the infallible `map_items` (on
+    /// `Refined<Vec<T>, R>` where `R: StableUnderElementMap`)
+    /// avoids the re-validation entirely.
+    ///
+    /// # Errors
+    ///
+    /// Forwards the target rule's `S::Error` when `S::refine`
+    /// rejects the mapped value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::{CollectionError, LenItems};
+    ///
+    /// let files: Refined<Vec<i32>, LenItems<1, 3>> =
+    ///     Refined::try_new(vec![10, 20]).unwrap();
+    ///
+    /// // Admit: the mapped vector still has 2 items, which the
+    /// // target rule (here the same `LenItems<1, 3>`) accepts.
+    /// let labels: Refined<Vec<String>, LenItems<1, 3>> = files
+    ///     .clone()
+    ///     .try_map(|v| v.into_iter().map(|n| n.to_string()).collect())
+    ///     .unwrap();
+    /// assert_eq!(labels.as_inner(), &["10".to_string(), "20".to_string()]);
+    ///
+    /// // Reject: the map's output (2 items) violates the *target*
+    /// // rule `LenItems<5, 9>` — the typed error surfaces.
+    /// let err = files
+    ///     .try_map::<Vec<i32>, LenItems<5, 9>, _>(|v| v)
+    ///     .unwrap_err();
+    /// assert_eq!(err, CollectionError::LenOutOfRange { actual: 2 });
+    /// ```
+    #[inline]
+    pub fn try_map<U, S, F>(self, f: F) -> Result<Refined<U, S>, S::Error>
+    where
+        U: 'static,
+        S: Rule<U>,
+        F: FnOnce(T) -> U,
+    {
+        Refined::try_new(f(self.inner))
+    }
 }
 
 // ─── Pass-through impls. Implemented manually rather than via
@@ -507,6 +563,29 @@ mod tests {
     }
 
     #[test]
+    fn try_map_admits_when_target_rule_accepts() {
+        let r: Refined<i32, NonNeg> = Refined::try_new(7).unwrap();
+        let mapped: Refined<i32, NonNeg> = r.try_map(|x| x + 1).unwrap();
+        assert_eq!(*mapped.as_inner(), 8);
+    }
+
+    #[test]
+    fn try_map_rejects_when_target_rule_rejects() {
+        let r: Refined<i32, NonNeg> = Refined::try_new(7).unwrap();
+        let err = r.try_map::<i32, NonNeg, _>(|x| -x).unwrap_err();
+        assert_eq!(err, Negative);
+    }
+
+    #[test]
+    fn try_map_crosses_rule_pairs() {
+        // The target rule is independent of the source rule: a value
+        // inadmissible under `NonNeg` is admissible under `Always`.
+        let r: Refined<i32, NonNeg> = Refined::try_new(7).unwrap();
+        let mapped: Refined<i32, Always> = r.try_map(|x| -x).unwrap();
+        assert_eq!(*mapped.as_inner(), -7);
+    }
+
+    #[test]
     fn pass_through_clone_and_eq() {
         // Use String here so Clone is meaningful (i32 is Copy and
         // clippy would otherwise suggest dropping the clone).
@@ -599,6 +678,27 @@ mod tests {
         #[test]
         fn try_new_rejects_all_negative(x in i32::MIN..0_i32) {
             let result: Result<Refined<i32, NonNeg>, _> = Refined::try_new(x);
+            proptest::prop_assert_eq!(result.unwrap_err(), Negative);
+        }
+
+        /// `try_map` happy path: the identity map keeps the value
+        /// inside `NonNeg`'s admissible region, so re-validation
+        /// through `try_new` accepts every sample.
+        #[test]
+        fn try_map_identity_round_trip(x in 0_i32..=i32::MAX) {
+            let r: Refined<i32, NonNeg> = Refined::try_new(x).unwrap();
+            let mapped: Refined<i32, NonNeg> = r.try_map(|v| v).unwrap();
+            proptest::prop_assert_eq!(*mapped.as_inner(), x);
+        }
+
+        /// `try_map` rejection path: the valid grammar feeds the
+        /// source; the map fabricates an output outside `NonNeg`'s
+        /// admissible region, so the target rule's typed error
+        /// surfaces for every sample.
+        #[test]
+        fn try_map_rejects_inadmissible_map_output(x in 0_i32..=i32::MAX) {
+            let r: Refined<i32, NonNeg> = Refined::try_new(x).unwrap();
+            let result: Result<Refined<i32, NonNeg>, _> = r.try_map(|_| -1);
             proptest::prop_assert_eq!(result.unwrap_err(), Negative);
         }
 

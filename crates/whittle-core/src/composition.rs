@@ -25,6 +25,7 @@
 
 use core::marker::PhantomData;
 
+use crate::primitive::collection::StableUnderElementMap;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
@@ -510,6 +511,20 @@ impl<A, B> StableUnderAsciiUppercase for Or<A, B>
 where
     A: StableUnderAsciiUppercase,
     B: StableUnderAsciiUppercase,
+{
+}
+
+impl<A, B> StableUnderElementMap for And<A, B>
+where
+    A: StableUnderElementMap,
+    B: StableUnderElementMap,
+{
+}
+
+impl<A, B> StableUnderElementMap for Or<A, B>
+where
+    A: StableUnderElementMap,
+    B: StableUnderElementMap,
 {
 }
 

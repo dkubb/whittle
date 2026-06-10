@@ -28,6 +28,7 @@ mod rule;
 pub mod transform;
 
 pub use composition::{All, And, Any, ErrorMapper, MapErr, Not, Or, Xor};
+pub use primitive::StableUnderElementMap;
 #[cfg(feature = "proptest")]
 pub use rule::ArbitraryRule;
 pub use rule::{Refined, Rule};
