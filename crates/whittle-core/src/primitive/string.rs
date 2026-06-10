@@ -1561,21 +1561,44 @@ fn collect_chars(chars: alloc::vec::Vec<char>) -> String {
     chars.into_iter().collect()
 }
 
+/// Length-edge-biased string strategy shared by `LenChars` and
+/// `LenBytes`: lengths `MIN` and `MAX` at weight 1 each, the full
+/// inclusive length range at weight 8 (R-T3; mirrors the float
+/// closed-range precedent). Only the LENGTH is biased — content
+/// comes from `element` unchanged, so every emitted string remains
+/// admissible.
+#[cfg(feature = "proptest")]
+fn len_edge_biased_string<S>(
+    element: S,
+    min: usize,
+    max: usize,
+) -> proptest::strategy::BoxedStrategy<String>
+where
+    S: proptest::strategy::Strategy<Value = char> + Clone + 'static,
+{
+    use proptest::strategy::Strategy as _;
+    proptest::prop_oneof![
+        1 => proptest::collection::vec(element.clone(), min..=min),
+        1 => proptest::collection::vec(element.clone(), max..=max),
+        8 => proptest::collection::vec(element, min..=max),
+    ]
+    .prop_map(collect_chars)
+    .boxed()
+}
+
 #[cfg(feature = "proptest")]
 impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenChars<MIN, MAX> {
     type Strategy = proptest::strategy::BoxedStrategy<String>;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        use proptest::strategy::Strategy as _;
         const { Self::VALID };
         // `proptest::char::any()` emits any Unicode scalar value
         // (no surrogate code points). `char.count() == vec.len()`
         // for the generated `Vec<char>`, so the resulting `String`
-        // has exactly the requested scalar count.
-        proptest::collection::vec(proptest::char::any(), MIN..=MAX)
-            .prop_map(collect_chars)
-            .boxed()
+        // has exactly the requested scalar count. Lengths are
+        // edge-biased toward MIN and MAX.
+        len_edge_biased_string(proptest::char::any(), MIN, MAX)
     }
 }
 
@@ -1585,14 +1608,12 @@ impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenBytes<MIN,
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        use proptest::strategy::Strategy as _;
         const { Self::VALID };
         // ASCII-only chars: every char is exactly one UTF-8 byte,
         // so the resulting `String`'s byte length equals the
-        // `Vec<char>` length.
-        proptest::collection::vec(proptest::char::range('\u{20}', '\u{7E}'), MIN..=MAX)
-            .prop_map(collect_chars)
-            .boxed()
+        // `Vec<char>` length. Lengths are edge-biased toward MIN
+        // and MAX.
+        len_edge_biased_string(proptest::char::range('\u{20}', '\u{7E}'), MIN, MAX)
     }
 }
 
@@ -2823,5 +2844,53 @@ mod tests {
                 r.as_inner().chars().all(<super::PrintableMultiline as CharPredicate>::test),
             );
         }
+    }
+
+    /// Draw 256 deterministic samples from `R`'s strategy and
+    /// return which of the two boundary lengths appeared, measured
+    /// by `measure`. Shared by the R-T3 edge-bias tests below; the
+    /// deterministic runner means the assertions can never flake on
+    /// an unlucky seed.
+    #[cfg(feature = "proptest")]
+    fn saw_boundary_lengths<R>(
+        measure: fn(&String) -> usize,
+        min: usize,
+        max: usize,
+    ) -> (bool, bool)
+    where
+        R: crate::rule::ArbitraryRule<String>,
+    {
+        use proptest::strategy::{Strategy as _, ValueTree as _};
+        let strategy = R::arbitrary_strategy();
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let mut saw_min = false;
+        let mut saw_max = false;
+        for _ in 0_u32..256 {
+            let value = strategy.new_tree(&mut runner).unwrap().current();
+            let len = measure(&value);
+            saw_min |= len == min;
+            saw_max |= len == max;
+        }
+        (saw_min, saw_max)
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn arbitrary_len_chars_emits_both_boundary_lengths() {
+        // R-T3 edge bias: lengths MIN and MAX each carry weight 1
+        // against weight 8 for the full range, so a 256-draw sample
+        // must contain both boundary lengths.
+        let (saw_min, saw_max) =
+            saw_boundary_lengths::<LenChars<2, 8>>(|s| s.chars().count(), 2, 8);
+        assert!(saw_min, "edge-biased LenChars must emit MIN-length strings");
+        assert!(saw_max, "edge-biased LenChars must emit MAX-length strings");
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn arbitrary_len_bytes_emits_both_boundary_lengths() {
+        let (saw_min, saw_max) = saw_boundary_lengths::<LenBytes<2, 8>>(String::len, 2, 8);
+        assert!(saw_min, "edge-biased LenBytes must emit MIN-length strings");
+        assert!(saw_max, "edge-biased LenBytes must emit MAX-length strings");
     }
 }

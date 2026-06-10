@@ -949,7 +949,17 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         const { Self::VALID };
-        proptest::collection::vec(proptest::arbitrary::any::<T>(), MIN..=MAX).boxed()
+        // R-T3 edge bias: item counts MIN and MAX at weight 1 each,
+        // the full inclusive length range at weight 8 (the float
+        // closed-range precedent). Only the LENGTH is biased —
+        // elements come from `T`'s `Arbitrary` unchanged, so every
+        // emitted vector remains admissible.
+        proptest::prop_oneof![
+            1 => proptest::collection::vec(proptest::arbitrary::any::<T>(), MIN..=MIN),
+            1 => proptest::collection::vec(proptest::arbitrary::any::<T>(), MAX..=MAX),
+            8 => proptest::collection::vec(proptest::arbitrary::any::<T>(), MIN..=MAX),
+        ]
+        .boxed()
     }
 }
 
@@ -1986,5 +1996,28 @@ mod tests {
     fn dedup_by_key_drops_duplicates_preserving_first_occurrence() {
         let deduped = super::dedup_by_key::<i32, IdentityKey<i32>>(vec![1_i32, 2, 1, 3, 2]);
         assert_eq!(deduped, vec![1, 2, 3]);
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn arbitrary_len_items_emits_both_boundary_lengths() {
+        // R-T3 edge bias: item counts MIN and MAX each carry weight
+        // 1 against weight 8 for the full range, so a 256-draw
+        // sample must contain both boundary lengths. Deterministic
+        // runner — the assertion can never flake on an unlucky
+        // seed.
+        use proptest::strategy::{Strategy as _, ValueTree as _};
+        let strategy =
+            <LenItems<1, 5> as crate::rule::ArbitraryRule<Vec<i32>>>::arbitrary_strategy();
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let mut saw_min = false;
+        let mut saw_max = false;
+        for _ in 0_u32..256 {
+            let value = strategy.new_tree(&mut runner).unwrap().current();
+            saw_min |= value.len() == 1;
+            saw_max |= value.len() == 5;
+        }
+        assert!(saw_min, "edge-biased LenItems must emit MIN-length vectors");
+        assert!(saw_max, "edge-biased LenItems must emit MAX-length vectors");
     }
 }

@@ -390,6 +390,17 @@ impl Numeric for isize {
 /// MAX>` and `Positive` use this trait to construct their
 /// `ArbitraryRule` strategies without rejection sampling.
 ///
+/// The returned strategy is **edge-biased**: the clamped endpoints
+/// are each emitted with weight 1 against weight 8 for the full
+/// inclusive range (the float closed-range precedent in
+/// `primitive/float.rs`). Uniform sampling almost never lands
+/// exactly on the bound of a wide range, so the off-by-one rule
+/// bugs that live at MIN/MAX would otherwise go unexercised. Every
+/// emitted value remains admissible — the bias only reweights the
+/// admissible region. All the bounded numeric rules (`Within`,
+/// `AtLeast`, `AtMost`, `GreaterThan`, `LessThan`) inherit the bias
+/// through this trait.
+///
 /// `Copy` is required so the strategy can yield values through a
 /// `fn(&T) -> bool` filter without `Clone`-ing.
 ///
@@ -415,10 +426,27 @@ pub trait ArbitraryNumeric: Numeric + Copy {
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy;
 }
 
+/// Edge-biased range strategy shared by every `ArbitraryNumeric`
+/// impl: each clamped endpoint at weight 1, the full inclusive
+/// range at weight 8 (R-T3; mirrors the float closed-range
+/// precedent). Degenerate `lo == hi` windows are fine — all three
+/// arms emit the same value.
+#[cfg(feature = "proptest")]
+macro_rules! edge_biased_range {
+    ($lo:expr, $hi:expr) => {{
+        proptest::prop_oneof![
+            1 => proptest::strategy::Just($lo),
+            1 => proptest::strategy::Just($hi),
+            8 => $lo..=$hi,
+        ]
+        .boxed()
+    }};
+}
+
 /// Generate `ArbitraryNumeric` impls for the supported integer
 /// types. Each impl clamps the requested `[min, max]` bounds to the
-/// type's own representable range before constructing a proptest
-/// range strategy.
+/// type's own representable range before constructing an
+/// edge-biased proptest range strategy.
 #[cfg(feature = "proptest")]
 macro_rules! impl_numeric_arbitrary {
     ($($ty:ty),+) => { $(
@@ -439,7 +467,7 @@ macro_rules! impl_numeric_arbitrary {
                 // here.
                 let lo = <$ty>::try_from(lo).unwrap_or(<$ty>::MIN);
                 let hi = <$ty>::try_from(hi).unwrap_or(<$ty>::MAX);
-                (lo..=hi).boxed()
+                edge_biased_range!(lo, hi)
             }
         }
     )+ };
@@ -458,7 +486,7 @@ impl ArbitraryNumeric for i128 {
     #[inline]
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
         use proptest::strategy::Strategy as _;
-        (min..=max).boxed()
+        edge_biased_range!(min, max)
     }
 }
 
@@ -481,7 +509,7 @@ impl ArbitraryNumeric for usize {
         // elsewhere).
         let lo = Self::try_from(lo).unwrap_or(0);
         let hi = Self::try_from(hi).unwrap_or(Self::MAX);
-        (lo..=hi).boxed()
+        edge_biased_range!(lo, hi)
     }
 }
 
@@ -498,7 +526,7 @@ impl ArbitraryNumeric for isize {
         let hi = if max > ty_max { ty_max } else { max };
         let lo = Self::try_from(lo).unwrap_or(Self::MIN);
         let hi = Self::try_from(hi).unwrap_or(Self::MAX);
-        (lo..=hi).boxed()
+        edge_biased_range!(lo, hi)
     }
 }
 
@@ -1523,6 +1551,27 @@ mod tests {
         ) {
             proptest::prop_assert!((-100..=100).contains(r.as_inner()));
         }
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn arbitrary_within_emits_both_endpoints() {
+        // R-T3 edge bias: each clamped endpoint carries weight 1
+        // against weight 8 for the interior, so a 256-draw sample
+        // must contain both bounds. Deterministic runner — the
+        // assertion can never flake on an unlucky seed.
+        use proptest::strategy::{Strategy as _, ValueTree as _};
+        let strategy = <Within<0, 100> as crate::rule::ArbitraryRule<i32>>::arbitrary_strategy();
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let mut saw_min = false;
+        let mut saw_max = false;
+        for _ in 0_u32..256 {
+            let value = strategy.new_tree(&mut runner).unwrap().current();
+            saw_min |= value == 0;
+            saw_max |= value == 100;
+        }
+        assert!(saw_min, "edge-biased Within must emit MIN");
+        assert!(saw_max, "edge-biased Within must emit MAX");
     }
 
     #[cfg(feature = "proptest")]
