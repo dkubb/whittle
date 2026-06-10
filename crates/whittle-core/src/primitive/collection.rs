@@ -486,6 +486,16 @@ impl<const MIN: usize, const MAX: usize> LenItems<MIN, MAX> {
     /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
     /// via `const { Self::VALID }`.
     const VALID: () = assert!(MIN <= MAX, "LenItems requires MIN <= MAX");
+
+    /// Compile-time gate for the total accessors (`first`, `last`,
+    /// `split_first`): `MIN >= 1` proves the vector is never empty.
+    /// Referenced via `const { Self::NON_EMPTY }`, so a `MIN == 0`
+    /// instantiation fails at monomorphisation — the same pattern as
+    /// `VALID` and `Within`'s `MIN <= MAX` gate.
+    const NON_EMPTY: () = assert!(
+        MIN >= 1,
+        "LenItems: total accessors require MIN >= 1 (non-empty proof)"
+    );
 }
 
 impl<T, const MIN: usize, const MAX: usize> Refined<Vec<T>, LenItems<MIN, MAX>> {
@@ -608,6 +618,139 @@ impl<T, const MIN: usize, const MAX: usize> Refined<Vec<T>, LenItems<MIN, MAX>> 
             Err(CapacityFull { rejected: batch })
         }
     }
+
+    /// Borrow the first item of a statically non-empty refined
+    /// vector.
+    ///
+    /// # Design
+    ///
+    /// Total accessors (`first`, `last`, `split_first`) exist for
+    /// every `LenItems<MIN, MAX>` with `MIN >= 1`: the rule rejects
+    /// shorter vectors at construction time, so the `None` branch
+    /// `Vec::first` / `Vec::last` expose for unrefined vectors is
+    /// unrepresentable here. The `MIN >= 1` gate is a
+    /// `const { assert!(...) }` that fires at monomorphisation when
+    /// an accessor is instantiated with `MIN == 0` — the same house
+    /// pattern as `LenItems`' `MIN <= MAX` and `Within`'s bound
+    /// check. The rejected alternative was a `NonEmptyItems` marker
+    /// trait (or a separate `NonEmpty` rule composed as
+    /// `And<NonEmpty, LenItems<..>>`) keying the accessors on a
+    /// trait bound: stable Rust cannot express `MIN >= 1` as a
+    /// `where` clause, so the marker would need per-`MIN` impls
+    /// (macro over concrete values), and the composed rule would
+    /// split one length invariant across two rules and change every
+    /// existing `LenItems<1, ..>` spelling downstream. The
+    /// const-assert keeps the single-rule spelling and turns misuse
+    /// into a compile error instead of a trait-resolution failure.
+    ///
+    /// # Soundness
+    ///
+    /// Total without a runtime check: `const { NON_EMPTY }` proves
+    /// `MIN >= 1` at compile time, and the existence of `self`
+    /// proves `len >= MIN` — so index `0` is always in bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<1, 3>>
+    ///     = Refined::try_new(vec![10, 20]).unwrap();
+    /// assert_eq!(*items.first(), 10);
+    /// ```
+    ///
+    /// Instantiating with `MIN == 0` (no non-empty proof) is a
+    /// compile-time error at monomorphisation:
+    ///
+    /// ```compile_fail
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<0, 3>>
+    ///     = Refined::try_new(vec![10]).unwrap();
+    /// // error[E0080]: total accessors require MIN >= 1
+    /// let head = items.first();
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn first(&self) -> &T {
+        const { LenItems::<MIN, MAX>::NON_EMPTY };
+        &self.as_inner()[0]
+    }
+
+    /// Borrow the last item of a statically non-empty refined
+    /// vector.
+    ///
+    /// # Soundness
+    ///
+    /// Same argument as [`Refined::first`]: `MIN >= 1` is proven at
+    /// compile time and `len >= MIN` at construction, so
+    /// `len - 1` cannot underflow and is always in bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<1, 3>>
+    ///     = Refined::try_new(vec![10, 20]).unwrap();
+    /// assert_eq!(*items.last(), 20);
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<0, 3>>
+    ///     = Refined::try_new(vec![10]).unwrap();
+    /// // error[E0080]: total accessors require MIN >= 1
+    /// let tail = items.last();
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn last(&self) -> &T {
+        const { LenItems::<MIN, MAX>::NON_EMPTY };
+        &self.as_inner()[self.as_inner().len() - 1]
+    }
+
+    /// Borrow the first item and the rest of a statically non-empty
+    /// refined vector.
+    ///
+    /// # Soundness
+    ///
+    /// Same argument as [`Refined::first`]: index `0` and the
+    /// `1..` slice are both in bounds because `len >= MIN >= 1`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<1, 3>>
+    ///     = Refined::try_new(vec![10, 20, 30]).unwrap();
+    /// let (head, rest) = items.split_first();
+    /// assert_eq!(*head, 10);
+    /// assert_eq!(rest, &[20, 30]);
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<0, 3>>
+    ///     = Refined::try_new(vec![10]).unwrap();
+    /// // error[E0080]: total accessors require MIN >= 1
+    /// let (head, rest) = items.split_first();
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn split_first(&self) -> (&T, &[T]) {
+        const { LenItems::<MIN, MAX>::NON_EMPTY };
+        (&self.as_inner()[0], &self.as_inner()[1..])
+    }
 }
 
 impl<T, R> Refined<Vec<T>, R>
@@ -661,31 +804,6 @@ where
         // StableUnderElementMap` certifies `R` admits on length
         // alone, so the construction-time proof carries over.
         Refined::from_inner(mapped)
-    }
-}
-
-impl<T, const MAX: usize> Refined<Vec<T>, LenItems<1, MAX>> {
-    /// Borrow the first item of a statically non-empty refined
-    /// vector.
-    ///
-    /// `LenItems<1, MAX>` rejects the empty vector at construction
-    /// time, so callers do not need to handle the `None` branch that
-    /// `Vec::first` exposes for unrefined vectors.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use whittle_core::Refined;
-    /// use whittle_core::primitive::LenItems;
-    ///
-    /// let items: Refined<Vec<i32>, LenItems<1, 3>>
-    ///     = Refined::try_new(vec![10, 20]).unwrap();
-    /// assert_eq!(*items.first(), 10);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn first(&self) -> &T {
-        &self.as_inner()[0]
     }
 }
 
@@ -1036,6 +1154,45 @@ mod tests {
         let items: Refined<Vec<i32>, LenItems<1, 5>> = Refined::try_new(vec![10, 20, 30]).unwrap();
         assert_eq!(*items.first(), 10);
     }
+
+    #[test]
+    fn len_items_non_empty_last_returns_tail_without_option() {
+        let items: Refined<Vec<i32>, LenItems<1, 5>> = Refined::try_new(vec![10, 20, 30]).unwrap();
+        assert_eq!(*items.last(), 30);
+    }
+
+    #[test]
+    fn len_items_non_empty_split_first_returns_head_and_rest() {
+        let items: Refined<Vec<i32>, LenItems<1, 5>> = Refined::try_new(vec![10, 20, 30]).unwrap();
+        let (head, rest) = items.split_first();
+        assert_eq!(*head, 10);
+        assert_eq!(rest, &[20, 30]);
+    }
+
+    #[test]
+    fn len_items_total_accessors_on_singleton() {
+        // Boundary: `last` and `split_first` on the shortest
+        // admissible vector.
+        let items: Refined<Vec<i32>, LenItems<1, 5>> = Refined::try_new(vec![42]).unwrap();
+        assert_eq!(*items.last(), 42);
+        let (head, rest) = items.split_first();
+        assert_eq!(*head, 42);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn len_items_total_accessors_admit_any_min_at_least_one() {
+        // The accessors are not restricted to `MIN == 1`: any
+        // `MIN >= 1` monomorphization passes the const gate.
+        let items: Refined<Vec<i32>, LenItems<2, 4>> = Refined::try_new(vec![7, 8]).unwrap();
+        assert_eq!(*items.first(), 7);
+        assert_eq!(*items.last(), 8);
+    }
+
+    // `first` / `last` / `split_first` on `LenItems<0, MAX>` is
+    // rejected at compile time via `const { NON_EMPTY }`; the
+    // `compile_fail` doctests on each accessor pin that behaviour,
+    // so no runtime test of the `MIN == 0` shape can exist.
 
     #[test]
     fn len_items_rejects_below_min() {
@@ -1646,6 +1803,18 @@ mod tests {
             r in proptest::arbitrary::any::<Refined<Vec<i32>, LenItems<1, 5>>>()
         ) {
             proptest::prop_assert!((1..=5).contains(&r.as_inner().len()));
+        }
+
+        /// Total accessors agree with the slice API's optional
+        /// counterparts on every admissible non-empty vector.
+        #[test]
+        fn total_accessors_agree_with_slice_api(
+            r in proptest::arbitrary::any::<Refined<Vec<i32>, LenItems<1, 5>>>()
+        ) {
+            let slice = r.as_inner().as_slice();
+            proptest::prop_assert_eq!(Some(r.first()), slice.first());
+            proptest::prop_assert_eq!(Some(r.last()), slice.last());
+            proptest::prop_assert_eq!(Some(r.split_first()), slice.split_first());
         }
 
         /// `try_push` happy path: the valid grammar emits vectors
