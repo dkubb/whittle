@@ -495,6 +495,7 @@ mod tests {
         //     construction (no `/`-prefix, no empty segments, no
         //     `..` segments, no Windows drive prefix).
 
+        #[cfg(feature = "proptest")]
         #[test]
         fn arbitrary_relative_path_is_admissible(
             r in proptest::arbitrary::any::<Refined<String, RelativePath>>()

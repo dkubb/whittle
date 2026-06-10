@@ -825,6 +825,7 @@ mod tests {
         assert_eq!(bad.unwrap_err(), FloatError::OutOfRange { value: 0.75_f64 },);
     }
 
+    #[cfg(feature = "proptest")]
     proptest::proptest! {
         // ─── Self-hosted Arbitrary on `Refined<f64, R>`. Float's
         //     default `Arbitrary` strategy includes NaN and the two
@@ -934,6 +935,7 @@ mod tests {
         assert_eq!(tree.current(), -1.0_f64);
     }
 
+    #[cfg(feature = "proptest")]
     proptest::proptest! {
         #[test]
         fn arbitrary_in_closed_range_admits_endpoints_and_interior(

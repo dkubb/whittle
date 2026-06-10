@@ -2613,12 +2613,15 @@ mod tests {
                 StringError::BadChar { offset },
             );
         }
+    }
 
-        // ─── `ArbitraryRule` impls. Each string rule's strategy
-        //     emits admissible-by-construction values; the carrier
-        //     is generated through `Refined`'s blanket Arbitrary
-        //     impl so each rule's strategy is exercised.
+    // ─── `ArbitraryRule` impls. Each string rule's strategy
+    //     emits admissible-by-construction values; the carrier
+    //     is generated through `Refined`'s blanket Arbitrary
+    //     impl so each rule's strategy is exercised.
 
+    #[cfg(feature = "proptest")]
+    proptest::proptest! {
         #[test]
         fn arbitrary_len_chars_in_range(
             r in proptest::arbitrary::any::<Refined<String, LenChars<2, 8>>>()
@@ -2828,10 +2831,13 @@ mod tests {
                 StringError::BadHexLength { actual },
             );
         }
+    }
 
-        // ─── `ArbitraryRule` for hex-fixed rules. Each
-        //     monomorphisation gets its own strategy invocation.
+    // ─── `ArbitraryRule` for hex-fixed rules. Each
+    //     monomorphisation gets its own strategy invocation.
 
+    #[cfg(all(feature = "hex", feature = "proptest"))]
+    proptest::proptest! {
         #[test]
         fn arbitrary_hex_fixed_lower_admissible(
             r in proptest::arbitrary::any::<Refined<String, super::HexFixedLower<4>>>()

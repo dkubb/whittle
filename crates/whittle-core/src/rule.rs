@@ -631,10 +631,12 @@ mod tests {
     // The downstream-facing one-liner: a custom rule keeps
     // deserializing by stamping the default parse-then-refine
     // `DeserializeRule` impl.
+    #[cfg(feature = "serde")]
     crate::deserialize_rule! {
         impl[] DeserializeRule<i32> for NonNeg
     }
 
+    #[cfg(feature = "proptest")]
     impl super::ArbitraryRule<i32> for NonNeg {
         type Strategy = proptest::strategy::BoxedStrategy<i32>;
         fn arbitrary_strategy() -> Self::Strategy {
@@ -651,13 +653,16 @@ mod tests {
     /// rejection path. The unconditional rejection keeps the rule's
     /// branch count minimal so the helper does not itself introduce
     /// uncovered regions.
+    #[cfg(feature = "proptest")]
     enum AlwaysRejects {}
+    #[cfg(feature = "proptest")]
     impl Rule<i32> for AlwaysRejects {
         type Error = Negative;
         fn refine(_raw: i32) -> Result<i32, Self::Error> {
             Err(Negative)
         }
     }
+    #[cfg(feature = "proptest")]
     impl super::ArbitraryRule<i32> for AlwaysRejects {
         type Strategy = proptest::strategy::BoxedStrategy<i32>;
         fn arbitrary_strategy() -> Self::Strategy {
@@ -859,6 +864,7 @@ mod tests {
         /// `Refined<i32, NonNeg>` strategy satisfies `NonNeg`.
         /// Replaces the prop_assume!-style filtering downstream
         /// crates would otherwise need.
+        #[cfg(feature = "proptest")]
         #[test]
         fn arbitrary_refined_always_admissible(
             r in proptest::arbitrary::any::<Refined<i32, NonNeg>>()
@@ -875,6 +881,7 @@ mod tests {
     /// Custom Serializer / Deserializer combo using
     /// `serde::de::value::I32Deserializer` from serde itself
     /// (no `serde_test` / `serde_json` workspace dep needed).
+    #[cfg(feature = "proptest")]
     #[test]
     #[should_panic(expected = "ArbitraryRule for")]
     fn arbitrary_panics_on_strategy_bug() {
@@ -891,44 +898,49 @@ mod tests {
         let _value: Refined<i32, AlwaysRejects> = strategy.new_tree(&mut runner).unwrap().current();
     }
 
-    #[test]
-    fn serde_serialize_forwards_to_inner() {
-        // `serde_test::Token::I32(42)` is the wire shape an
-        // i32 takes; if Refined's Serialize impl forwards to
-        // the inner value, the same token comes out.
-        let r: Refined<i32, NonNeg> = Refined::try_new(42).unwrap();
-        serde_test::assert_ser_tokens(&r, &[serde_test::Token::I32(42)]);
-    }
+    #[cfg(feature = "serde")]
+    mod serde_round_trip {
+        use super::{NonNeg, Refined};
 
-    #[test]
-    fn serde_deserialize_admits_admissible() {
-        // Deserializing `42` into Refined<i32, NonNeg> runs the
-        // rule and accepts because 42 >= 0.
-        let r: Refined<i32, NonNeg> = Refined::try_new(42).unwrap();
-        serde_test::assert_de_tokens(&r, &[serde_test::Token::I32(42)]);
-    }
+        #[test]
+        fn serde_serialize_forwards_to_inner() {
+            // `serde_test::Token::I32(42)` is the wire shape an
+            // i32 takes; if Refined's Serialize impl forwards to
+            // the inner value, the same token comes out.
+            let r: Refined<i32, NonNeg> = Refined::try_new(42).unwrap();
+            serde_test::assert_ser_tokens(&r, &[serde_test::Token::I32(42)]);
+        }
 
-    #[test]
-    fn serde_deserialize_rejects_inadmissible_through_rule() {
-        // Deserializing `-1` runs through `try_new`, which
-        // rejects via the rule's `Display`. serde_test verifies
-        // that the resulting error message embeds the rule's
-        // own Display (`"negative"` for this test rule).
-        serde_test::assert_de_tokens_error::<Refined<i32, NonNeg>>(
-            &[serde_test::Token::I32(-1)],
-            "negative",
-        );
-    }
+        #[test]
+        fn serde_deserialize_admits_admissible() {
+            // Deserializing `42` into Refined<i32, NonNeg> runs the
+            // rule and accepts because 42 >= 0.
+            let r: Refined<i32, NonNeg> = Refined::try_new(42).unwrap();
+            serde_test::assert_de_tokens(&r, &[serde_test::Token::I32(42)]);
+        }
 
-    #[test]
-    fn serde_deserialize_propagates_inner_decoder_failure() {
-        // Feed a `String` token into a `Refined<i32, _>` deserializer.
-        // `i32::deserialize` fails first, so the `?` short-circuit
-        // in `Refined::deserialize` propagates the underlying serde
-        // error — covering the early-return branch.
-        serde_test::assert_de_tokens_error::<Refined<i32, NonNeg>>(
-            &[serde_test::Token::Str("not an int")],
-            "invalid type: string \"not an int\", expected i32",
-        );
+        #[test]
+        fn serde_deserialize_rejects_inadmissible_through_rule() {
+            // Deserializing `-1` runs through `try_new`, which
+            // rejects via the rule's `Display`. serde_test verifies
+            // that the resulting error message embeds the rule's
+            // own Display (`"negative"` for this test rule).
+            serde_test::assert_de_tokens_error::<Refined<i32, NonNeg>>(
+                &[serde_test::Token::I32(-1)],
+                "negative",
+            );
+        }
+
+        #[test]
+        fn serde_deserialize_propagates_inner_decoder_failure() {
+            // Feed a `String` token into a `Refined<i32, _>` deserializer.
+            // `i32::deserialize` fails first, so the `?` short-circuit
+            // in `Refined::deserialize` propagates the underlying serde
+            // error — covering the early-return branch.
+            serde_test::assert_de_tokens_error::<Refined<i32, NonNeg>>(
+                &[serde_test::Token::Str("not an int")],
+                "invalid type: string \"not an int\", expected i32",
+            );
+        }
     }
 }

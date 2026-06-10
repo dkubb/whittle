@@ -333,10 +333,12 @@ where
 mod tests {
     use alloc::string::{String, ToString};
 
-    use super::{AsciiLowercase, AsciiUppercase, Trim};
+    use super::Trim;
     use crate::primitive::NonEmpty;
     use crate::rule::Refined;
 
+    #[cfg(feature = "hex")]
+    use super::{AsciiLowercase, AsciiUppercase};
     #[cfg(feature = "hex")]
     use crate::primitive::{HexFixedAny, HexFixedLower, StringError};
 

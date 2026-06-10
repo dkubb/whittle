@@ -265,6 +265,7 @@ mod tests {
         assert!(dyn_err.source().is_none());
     }
 
+    #[cfg(feature = "proptest")]
     proptest::proptest! {
         /// Every value generated for `Refined<String, Name>` satisfies
         /// the anchored pattern over its whole span. Covers

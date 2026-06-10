@@ -21,7 +21,9 @@
 //! +262_142-12-31]`; values outside that range are caught at compile
 //! time via `const { NaiveDate::from_num_days_from_ce_opt(...) }`.
 
-use chrono::{Datelike, NaiveDate};
+#[cfg(feature = "proptest")]
+use chrono::Datelike;
+use chrono::NaiveDate;
 
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;

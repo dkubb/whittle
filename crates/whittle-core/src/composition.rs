@@ -895,14 +895,11 @@ impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
 )]
 mod tests {
     use alloc::string::{String, ToString};
-    use alloc::vec;
-    use alloc::vec::Vec;
 
     use super::{All, And, Any, ErrorMapper, MapErr, Or, Xor};
     use crate::primitive::{
-        AsciiAlphanumeric, AtLeast, AtMost, Distinct, EachChar, EqualTo, GreaterThan, IdentChar,
-        IdentityKey, LenChars, LenItems, LessThan, NonZero, NumericError, Sorted, StringError,
-        Within,
+        AsciiAlphanumeric, AtLeast, AtMost, EachChar, EqualTo, GreaterThan, IdentChar, LenChars,
+        LessThan, NonZero, NumericError, StringError, Within,
     };
     use crate::rule::Refined;
 
@@ -1351,6 +1348,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "proptest")]
     proptest::proptest! {
         // ─── Self-hosted Arbitrary on composed rules. The kernel's
         //     `Refined<T, R>` Arbitrary impl maps the rule's
@@ -1616,172 +1614,184 @@ mod tests {
     //     remaining operands. Accept/reject set and error text are
     //     identical to the parse-then-refine path. ──────────────────
 
-    #[test]
-    fn serde_and_admits_through_forwarded_hook() {
-        type R = And<LenItems<1, 3>, Distinct<i32>>;
-        let refined: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
-        assert_eq!(refined.as_inner(), &[1, 2]);
-    }
+    #[cfg(feature = "serde")]
+    mod serde_forwarding {
+        use alloc::string::{String, ToString};
+        use alloc::vec;
+        use alloc::vec::Vec;
 
-    #[test]
-    fn serde_and_left_operand_streams_length_rejection() {
-        // The left `LenItems` hook rejects with the true total
-        // length — same text as `try_new` on the full payload.
-        type R = And<LenItems<1, 3>, Distinct<i32>>;
-        let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 3, 4, 5])
-            .unwrap_err()
-            .to_string();
-        let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4,5]")
-            .unwrap_err()
-            .to_string();
-        assert_eq!(direct, "length 5 not in admissible range");
-        assert!(
-            message.contains(&direct),
-            "serde error {message:?} must embed the rule error {direct:?}",
-        );
-    }
+        use super::CodeRule;
+        use crate::composition::{All, And};
+        use crate::primitive::{Distinct, IdentityKey, LenItems, Sorted};
+        use crate::rule::Refined;
 
-    #[test]
-    fn serde_and_right_operand_rejection_matches_try_new() {
-        // Element-rule failure after the streamed length bound:
-        // the right operand's typed error surfaces with the same
-        // text the construction path produces.
-        type R = And<LenItems<1, 3>, Distinct<i32>>;
-        let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 1])
-            .unwrap_err()
-            .to_string();
-        let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,1]")
-            .unwrap_err()
-            .to_string();
-        assert_eq!(direct, "duplicate key at index 2");
-        assert!(
-            message.contains(&direct),
-            "serde error {message:?} must embed the rule error {direct:?}",
-        );
-    }
-
-    /// Element type whose `Deserialize` impl counts
-    /// materializations; proves the `And` hook streams its left
-    /// `LenItems` operand. Equal values keep `Sorted` (non-strict)
-    /// admissible on the accept path.
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    struct CountedAnd;
-
-    static COUNTED_AND_MATERIALIZED: core::sync::atomic::AtomicUsize =
-        core::sync::atomic::AtomicUsize::new(0);
-
-    impl<'de> serde::Deserialize<'de> for CountedAnd {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            COUNTED_AND_MATERIALIZED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
+        #[test]
+        fn serde_and_admits_through_forwarded_hook() {
+            type R = And<LenItems<1, 3>, Distinct<i32>>;
+            let refined: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
+            assert_eq!(refined.as_inner(), &[1, 2]);
         }
-    }
 
-    #[test]
-    fn serde_and_streams_left_len_items_bound() {
-        // Early-abort proof through the `And` hook: 8 elements
-        // against MAX = 3 materialize at most 3 `CountedAnd`s, and
-        // the error still reports the true total length.
-        type R = And<LenItems<0, 3>, Sorted<CountedAnd, IdentityKey<CountedAnd>>>;
-        let result: Result<Refined<Vec<CountedAnd>, R>, _> =
-            serde_json::from_str("[0,1,2,3,4,5,6,7]");
-        let message = result.unwrap_err().to_string();
-        assert!(
-            message.contains("length 8 not in admissible range"),
-            "error must report the true total length: {message}",
-        );
-        let materialized = COUNTED_AND_MATERIALIZED.load(core::sync::atomic::Ordering::Relaxed);
-        assert!(
-            materialized <= 3,
-            "at most MAX elements may be materialized, got {materialized}",
-        );
-    }
+        #[test]
+        fn serde_and_left_operand_streams_length_rejection() {
+            // The left `LenItems` hook rejects with the true total
+            // length — same text as `try_new` on the full payload.
+            type R = And<LenItems<1, 3>, Distinct<i32>>;
+            let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 3, 4, 5])
+                .unwrap_err()
+                .to_string();
+            let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4,5]")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(direct, "length 5 not in admissible range");
+            assert!(
+                message.contains(&direct),
+                "serde error {message:?} must embed the rule error {direct:?}",
+            );
+        }
 
-    #[test]
-    fn serde_all_arity_2_admits_and_rejects_like_try_new() {
-        type R = All<(LenItems<1, 3>, Distinct<i32>)>;
-        let ok: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
-        assert_eq!(ok.as_inner(), &[1, 2]);
+        #[test]
+        fn serde_and_right_operand_rejection_matches_try_new() {
+            // Element-rule failure after the streamed length bound:
+            // the right operand's typed error surfaces with the same
+            // text the construction path produces.
+            type R = And<LenItems<1, 3>, Distinct<i32>>;
+            let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 1])
+                .unwrap_err()
+                .to_string();
+            let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,1]")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(direct, "duplicate key at index 2");
+            assert!(
+                message.contains(&direct),
+                "serde error {message:?} must embed the rule error {direct:?}",
+            );
+        }
 
-        let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 3, 4])
-            .unwrap_err()
-            .to_string();
-        let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4]")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains(&direct),
-            "serde error {message:?} must embed the rule error {direct:?}",
-        );
+        /// Element type whose `Deserialize` impl counts
+        /// materializations; proves the `And` hook streams its left
+        /// `LenItems` operand. Equal values keep `Sorted` (non-strict)
+        /// admissible on the accept path.
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        struct CountedAnd;
 
-        // Remaining-operand rejection through the same instantiation.
-        let duplicate = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,1]")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            duplicate.contains("duplicate key at index 1"),
-            "unexpected diagnostic: {duplicate}",
-        );
-    }
+        static COUNTED_AND_MATERIALIZED: core::sync::atomic::AtomicUsize =
+            core::sync::atomic::AtomicUsize::new(0);
 
-    #[test]
-    fn serde_all_arity_3_runs_remaining_operands_in_order() {
-        type R = All<(LenItems<1, 3>, Distinct<i32>, Sorted<i32, IdentityKey<i32>>)>;
-        let ok: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
-        assert_eq!(ok.as_inner(), &[1, 2]);
+        impl<'de> serde::Deserialize<'de> for CountedAnd {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                COUNTED_AND_MATERIALIZED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
+            }
+        }
 
-        // Second operand rejects first ([2, 2] is sorted but not
-        // distinct) — operand order is `refine`'s.
-        let duplicate = serde_json::from_str::<Refined<Vec<i32>, R>>("[2,2]")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            duplicate.contains("duplicate key at index 1"),
-            "unexpected diagnostic: {duplicate}",
-        );
+        #[test]
+        fn serde_and_streams_left_len_items_bound() {
+            // Early-abort proof through the `And` hook: 8 elements
+            // against MAX = 3 materialize at most 3 `CountedAnd`s, and
+            // the error still reports the true total length.
+            type R = And<LenItems<0, 3>, Sorted<CountedAnd, IdentityKey<CountedAnd>>>;
+            let result: Result<Refined<Vec<CountedAnd>, R>, _> =
+                serde_json::from_str("[0,1,2,3,4,5,6,7]");
+            let message = result.unwrap_err().to_string();
+            assert!(
+                message.contains("length 8 not in admissible range"),
+                "error must report the true total length: {message}",
+            );
+            let materialized = COUNTED_AND_MATERIALIZED.load(core::sync::atomic::Ordering::Relaxed);
+            assert!(
+                materialized <= 3,
+                "at most MAX elements may be materialized, got {materialized}",
+            );
+        }
 
-        // Third operand rejects ([2, 1] is distinct but unsorted).
-        let unsorted = serde_json::from_str::<Refined<Vec<i32>, R>>("[2,1]")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            unsorted.contains("element at index 1 breaks ascending order"),
-            "unexpected diagnostic: {unsorted}",
-        );
+        #[test]
+        fn serde_all_arity_2_admits_and_rejects_like_try_new() {
+            type R = All<(LenItems<1, 3>, Distinct<i32>)>;
+            let ok: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
+            assert_eq!(ok.as_inner(), &[1, 2]);
 
-        // First operand (streaming `LenItems`) rejects over-MAX.
-        let too_long = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4]")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            too_long.contains("length 4 not in admissible range"),
-            "unexpected diagnostic: {too_long}",
-        );
-    }
+            let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 3, 4])
+                .unwrap_err()
+                .to_string();
+            let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4]")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains(&direct),
+                "serde error {message:?} must embed the rule error {direct:?}",
+            );
 
-    #[test]
-    fn serde_map_err_default_path_keeps_error_mapping() {
-        // `MapErr` must NOT forward to `R`'s hook: the mapped
-        // diagnostics are load-bearing, so the default
-        // parse-then-refine path runs `M`'s mapping.
-        let message = serde_json::from_str::<Refined<String, CodeRule>>(r#""ab""#)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains("bad length"),
-            "mapped error must surface, got: {message}",
-        );
+            // Remaining-operand rejection through the same instantiation.
+            let duplicate = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,1]")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                duplicate.contains("duplicate key at index 1"),
+                "unexpected diagnostic: {duplicate}",
+            );
+        }
 
-        // Both mapped variants render through the default path.
-        let bad_char = serde_json::from_str::<Refined<String, CodeRule>>(r#""A-z""#)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            bad_char.contains("bad character"),
-            "mapped error must surface, got: {bad_char}",
-        );
+        #[test]
+        fn serde_all_arity_3_runs_remaining_operands_in_order() {
+            type R = All<(LenItems<1, 3>, Distinct<i32>, Sorted<i32, IdentityKey<i32>>)>;
+            let ok: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
+            assert_eq!(ok.as_inner(), &[1, 2]);
+
+            // Second operand rejects first ([2, 2] is sorted but not
+            // distinct) — operand order is `refine`'s.
+            let duplicate = serde_json::from_str::<Refined<Vec<i32>, R>>("[2,2]")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                duplicate.contains("duplicate key at index 1"),
+                "unexpected diagnostic: {duplicate}",
+            );
+
+            // Third operand rejects ([2, 1] is distinct but unsorted).
+            let unsorted = serde_json::from_str::<Refined<Vec<i32>, R>>("[2,1]")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                unsorted.contains("element at index 1 breaks ascending order"),
+                "unexpected diagnostic: {unsorted}",
+            );
+
+            // First operand (streaming `LenItems`) rejects over-MAX.
+            let too_long = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4]")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                too_long.contains("length 4 not in admissible range"),
+                "unexpected diagnostic: {too_long}",
+            );
+        }
+
+        #[test]
+        fn serde_map_err_default_path_keeps_error_mapping() {
+            // `MapErr` must NOT forward to `R`'s hook: the mapped
+            // diagnostics are load-bearing, so the default
+            // parse-then-refine path runs `M`'s mapping.
+            let message = serde_json::from_str::<Refined<String, CodeRule>>(r#""ab""#)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("bad length"),
+                "mapped error must surface, got: {message}",
+            );
+
+            // Both mapped variants render through the default path.
+            let bad_char = serde_json::from_str::<Refined<String, CodeRule>>(r#""A-z""#)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                bad_char.contains("bad character"),
+                "mapped error must surface, got: {bad_char}",
+            );
+        }
     }
 }

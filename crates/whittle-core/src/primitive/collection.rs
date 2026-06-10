@@ -1956,12 +1956,15 @@ mod tests {
                 CollectionError::NotSorted { index: 1 },
             );
         }
+    }
 
-        // ─── `ArbitraryRule` for every collection primitive. Each
-        //     rule's strategy emits admissible-by-construction
-        //     vectors; the carrier is generated through `Refined`'s
-        //     blanket `Arbitrary` impl.
+    // ─── `ArbitraryRule` for every collection primitive. Each
+    //     rule's strategy emits admissible-by-construction
+    //     vectors; the carrier is generated through `Refined`'s
+    //     blanket `Arbitrary` impl.
 
+    #[cfg(feature = "proptest")]
+    proptest::proptest! {
         #[test]
         fn arbitrary_len_items_in_range(
             r in proptest::arbitrary::any::<Refined<Vec<i32>, LenItems<1, 5>>>()
@@ -1980,7 +1983,9 @@ mod tests {
             proptest::prop_assert_eq!(Some(r.last()), slice.last());
             proptest::prop_assert_eq!(Some(r.split_first()), slice.split_first());
         }
+    }
 
+    proptest::proptest! {
         /// `try_push` happy path: the valid grammar emits vectors
         /// strictly below `MAX`, so every push commits, grows the
         /// length by one, and the result still re-validates.
@@ -2069,7 +2074,10 @@ mod tests {
             );
             proptest::prop_assert_eq!(buffer.as_inner(), &v);
         }
+    }
 
+    #[cfg(feature = "proptest")]
+    proptest::proptest! {
         /// `map_items` soundness audit: for every admissible source
         /// vector, the mapped vector re-validates under the same
         /// length-only rule — the proof `map_items` transfers
@@ -2182,187 +2190,198 @@ mod tests {
     //     fixtures: accept at both boundaries, reject one past
     //     each. ────────────────────────────────────────────────────
 
-    #[test]
-    fn serde_streaming_admits_at_min_boundary() {
-        let refined: Refined<Vec<i32>, LenItems<2, 4>> = serde_json::from_str("[1,2]").unwrap();
-        assert_eq!(refined.as_inner(), &[1, 2]);
-    }
+    #[cfg(feature = "serde")]
+    mod serde_streaming {
+        use alloc::string::ToString;
+        use alloc::vec;
+        use alloc::vec::Vec;
 
-    #[test]
-    fn serde_streaming_admits_at_max_boundary() {
-        let refined: Refined<Vec<i32>, LenItems<2, 4>> = serde_json::from_str("[1,2,3,4]").unwrap();
-        assert_eq!(refined.as_inner(), &[1, 2, 3, 4]);
-    }
+        use super::super::LenItems;
+        use crate::rule::Refined;
 
-    #[test]
-    fn serde_streaming_rejects_under_min_with_rule_error_text() {
-        // Reject one below MIN. The wire-level diagnostic embeds
-        // the SAME `Display` text `try_new` produces for the same
-        // payload (only the allocation profile may change).
-        let direct = Refined::<Vec<i32>, LenItems<2, 4>>::try_new(vec![1])
-            .unwrap_err()
-            .to_string();
-        let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>("[1]")
-            .unwrap_err()
-            .to_string();
-        assert_eq!(direct, "length 1 not in admissible range");
-        assert!(
-            message.contains(&direct),
-            "serde error {message:?} must embed the rule error {direct:?}",
-        );
-    }
-
-    #[test]
-    fn serde_streaming_rejects_over_max_with_true_total_length() {
-        // Reject one above MAX: the drained tail is counted, so the
-        // error reports the sequence's true total length — again
-        // identical to `try_new`'s text for the full payload.
-        let direct = Refined::<Vec<i32>, LenItems<2, 4>>::try_new(vec![1, 2, 3, 4, 5])
-            .unwrap_err()
-            .to_string();
-        let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>("[1,2,3,4,5]")
-            .unwrap_err()
-            .to_string();
-        assert_eq!(direct, "length 5 not in admissible range");
-        assert!(
-            message.contains(&direct),
-            "serde error {message:?} must embed the rule error {direct:?}",
-        );
-    }
-
-    /// Element type whose `Deserialize` impl counts how many times a
-    /// `T` was actually materialized. Proves the streaming visitor
-    /// never decodes elements past `MAX`.
-    #[derive(Debug)]
-    struct Counted;
-
-    static COUNTED_MATERIALIZED: core::sync::atomic::AtomicUsize =
-        core::sync::atomic::AtomicUsize::new(0);
-
-    impl<'de> serde::Deserialize<'de> for Counted {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            COUNTED_MATERIALIZED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
-        }
-    }
-
-    #[test]
-    fn serde_streaming_materializes_at_most_max_elements() {
-        // Early-abort proof: an 8-element payload against MAX = 3
-        // must decode at most 3 elements as `Counted` (the tail is
-        // drained as `IgnoredAny`) while the error still reports the
-        // true total length of 8.
-        let result: Result<Refined<Vec<Counted>, LenItems<0, 3>>, _> =
-            serde_json::from_str("[0,1,2,3,4,5,6,7]");
-        let message = result.unwrap_err().to_string();
-        assert!(
-            message.contains("length 8 not in admissible range"),
-            "error must report the true total length: {message}",
-        );
-        let materialized = COUNTED_MATERIALIZED.load(core::sync::atomic::Ordering::Relaxed);
-        assert!(
-            materialized <= 3,
-            "at most MAX elements may be materialized, got {materialized}",
-        );
-    }
-
-    #[test]
-    fn serde_streaming_clamps_forged_size_hint_preallocation() {
-        /// `SeqAccess` that yields two elements but forges a
-        /// `usize::MAX` size hint — the shape a hostile
-        /// deserializer would present.
-        struct ForgedHintSeq {
-            remaining: usize,
+        #[test]
+        fn serde_streaming_admits_at_min_boundary() {
+            let refined: Refined<Vec<i32>, LenItems<2, 4>> = serde_json::from_str("[1,2]").unwrap();
+            assert_eq!(refined.as_inner(), &[1, 2]);
         }
 
-        impl<'de> serde::de::SeqAccess<'de> for ForgedHintSeq {
-            type Error = serde::de::value::Error;
+        #[test]
+        fn serde_streaming_admits_at_max_boundary() {
+            let refined: Refined<Vec<i32>, LenItems<2, 4>> =
+                serde_json::from_str("[1,2,3,4]").unwrap();
+            assert_eq!(refined.as_inner(), &[1, 2, 3, 4]);
+        }
 
-            fn next_element_seed<S>(&mut self, seed: S) -> Result<Option<S::Value>, Self::Error>
+        #[test]
+        fn serde_streaming_rejects_under_min_with_rule_error_text() {
+            // Reject one below MIN. The wire-level diagnostic embeds
+            // the SAME `Display` text `try_new` produces for the same
+            // payload (only the allocation profile may change).
+            let direct = Refined::<Vec<i32>, LenItems<2, 4>>::try_new(vec![1])
+                .unwrap_err()
+                .to_string();
+            let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>("[1]")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(direct, "length 1 not in admissible range");
+            assert!(
+                message.contains(&direct),
+                "serde error {message:?} must embed the rule error {direct:?}",
+            );
+        }
+
+        #[test]
+        fn serde_streaming_rejects_over_max_with_true_total_length() {
+            // Reject one above MAX: the drained tail is counted, so the
+            // error reports the sequence's true total length — again
+            // identical to `try_new`'s text for the full payload.
+            let direct = Refined::<Vec<i32>, LenItems<2, 4>>::try_new(vec![1, 2, 3, 4, 5])
+                .unwrap_err()
+                .to_string();
+            let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>("[1,2,3,4,5]")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(direct, "length 5 not in admissible range");
+            assert!(
+                message.contains(&direct),
+                "serde error {message:?} must embed the rule error {direct:?}",
+            );
+        }
+
+        /// Element type whose `Deserialize` impl counts how many times a
+        /// `T` was actually materialized. Proves the streaming visitor
+        /// never decodes elements past `MAX`.
+        #[derive(Debug)]
+        struct Counted;
+
+        static COUNTED_MATERIALIZED: core::sync::atomic::AtomicUsize =
+            core::sync::atomic::AtomicUsize::new(0);
+
+        impl<'de> serde::Deserialize<'de> for Counted {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                S: serde::de::DeserializeSeed<'de>,
+                D: serde::Deserializer<'de>,
             {
-                if self.remaining == 0 {
-                    return Ok(None);
-                }
-                self.remaining -= 1;
-                seed.deserialize(serde::de::value::I32Deserializer::new(7))
-                    .map(Some)
-            }
-
-            fn size_hint(&self) -> Option<usize> {
-                // The hint is attacker-supplied data.
-                Some(usize::MAX)
+                COUNTED_MATERIALIZED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
             }
         }
 
-        let refined: Refined<Vec<i32>, LenItems<0, 4>> =
-            <LenItems<0, 4> as crate::DeserializeRule<'_, Vec<i32>>>::deserialize_refined(
-                serde::de::value::SeqAccessDeserializer::new(ForgedHintSeq { remaining: 2 }),
-            )
-            .unwrap();
-        assert_eq!(refined.as_inner(), &[7, 7]);
-        // Pre-allocation was clamped to MAX (4) instead of trusting
-        // the forged usize::MAX hint (which would have aborted the
-        // process on allocation).
-        let capacity = refined.as_inner().capacity();
-        assert!(
-            capacity < 1024,
-            "capacity {capacity} suggests the forged size hint drove the pre-allocation",
-        );
-    }
+        #[test]
+        fn serde_streaming_materializes_at_most_max_elements() {
+            // Early-abort proof: an 8-element payload against MAX = 3
+            // must decode at most 3 elements as `Counted` (the tail is
+            // drained as `IgnoredAny`) while the error still reports the
+            // true total length of 8.
+            let result: Result<Refined<Vec<Counted>, LenItems<0, 3>>, _> =
+                serde_json::from_str("[0,1,2,3,4,5,6,7]");
+            let message = result.unwrap_err().to_string();
+            assert!(
+                message.contains("length 8 not in admissible range"),
+                "error must report the true total length: {message}",
+            );
+            let materialized = COUNTED_MATERIALIZED.load(core::sync::atomic::Ordering::Relaxed);
+            assert!(
+                materialized <= 3,
+                "at most MAX elements may be materialized, got {materialized}",
+            );
+        }
 
-    #[test]
-    fn serde_streaming_rejects_non_sequence_wire_shape() {
-        // Wrong wire shape: the visitor's `expecting` mirrors
-        // `Vec<T>`'s, so the diagnostic matches the
-        // parse-then-refine path.
-        let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>("5")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains("invalid type: integer `5`, expected a sequence"),
-            "unexpected diagnostic: {message}",
-        );
-    }
+        #[test]
+        fn serde_streaming_clamps_forged_size_hint_preallocation() {
+            /// `SeqAccess` that yields two elements but forges a
+            /// `usize::MAX` size hint — the shape a hostile
+            /// deserializer would present.
+            struct ForgedHintSeq {
+                remaining: usize,
+            }
 
-    #[test]
-    fn serde_streaming_propagates_element_decode_failure() {
-        // An element inside the materialized window that fails
-        // `T::deserialize` surfaces the decoder's own error, same
-        // as the parse-then-refine path.
-        let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>(r#"[1,"x"]"#)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains("invalid type: string"),
-            "unexpected diagnostic: {message}",
-        );
-    }
+            impl<'de> serde::de::SeqAccess<'de> for ForgedHintSeq {
+                type Error = serde::de::value::Error;
 
-    #[test]
-    fn serde_streaming_propagates_decode_failure_in_drained_tail() {
-        // Malformed input after the MAX-th element still fails:
-        // `IgnoredAny` syntax-checks the drained tail even though
-        // it never materializes a `T`.
-        let result: Result<Refined<Vec<i32>, LenItems<2, 4>>, _> =
-            serde_json::from_str("[1,2,3,4,5");
-        result.unwrap_err();
-    }
+                fn next_element_seed<S>(&mut self, seed: S) -> Result<Option<S::Value>, Self::Error>
+                where
+                    S: serde::de::DeserializeSeed<'de>,
+                {
+                    if self.remaining == 0 {
+                        return Ok(None);
+                    }
+                    self.remaining -= 1;
+                    seed.deserialize(serde::de::value::I32Deserializer::new(7))
+                        .map(Some)
+                }
 
-    #[test]
-    fn serde_streaming_empty_max_zero_counts_whole_payload() {
-        // MAX = 0 enters the drain immediately: nothing is
-        // materialized and the error reports the full length.
-        let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<0, 0>>>("[1,2]")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains("length 2 not in admissible range"),
-            "unexpected diagnostic: {message}",
-        );
+                fn size_hint(&self) -> Option<usize> {
+                    // The hint is attacker-supplied data.
+                    Some(usize::MAX)
+                }
+            }
+
+            let refined: Refined<Vec<i32>, LenItems<0, 4>> =
+                <LenItems<0, 4> as crate::DeserializeRule<'_, Vec<i32>>>::deserialize_refined(
+                    serde::de::value::SeqAccessDeserializer::new(ForgedHintSeq { remaining: 2 }),
+                )
+                .unwrap();
+            assert_eq!(refined.as_inner(), &[7, 7]);
+            // Pre-allocation was clamped to MAX (4) instead of trusting
+            // the forged usize::MAX hint (which would have aborted the
+            // process on allocation).
+            let capacity = refined.as_inner().capacity();
+            assert!(
+                capacity < 1024,
+                "capacity {capacity} suggests the forged size hint drove the pre-allocation",
+            );
+        }
+
+        #[test]
+        fn serde_streaming_rejects_non_sequence_wire_shape() {
+            // Wrong wire shape: the visitor's `expecting` mirrors
+            // `Vec<T>`'s, so the diagnostic matches the
+            // parse-then-refine path.
+            let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>("5")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("invalid type: integer `5`, expected a sequence"),
+                "unexpected diagnostic: {message}",
+            );
+        }
+
+        #[test]
+        fn serde_streaming_propagates_element_decode_failure() {
+            // An element inside the materialized window that fails
+            // `T::deserialize` surfaces the decoder's own error, same
+            // as the parse-then-refine path.
+            let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<2, 4>>>(r#"[1,"x"]"#)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("invalid type: string"),
+                "unexpected diagnostic: {message}",
+            );
+        }
+
+        #[test]
+        fn serde_streaming_propagates_decode_failure_in_drained_tail() {
+            // Malformed input after the MAX-th element still fails:
+            // `IgnoredAny` syntax-checks the drained tail even though
+            // it never materializes a `T`.
+            let result: Result<Refined<Vec<i32>, LenItems<2, 4>>, _> =
+                serde_json::from_str("[1,2,3,4,5");
+            result.unwrap_err();
+        }
+
+        #[test]
+        fn serde_streaming_empty_max_zero_counts_whole_payload() {
+            // MAX = 0 enters the drain immediately: nothing is
+            // materialized and the error reports the full length.
+            let message = serde_json::from_str::<Refined<Vec<i32>, LenItems<0, 0>>>("[1,2]")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("length 2 not in admissible range"),
+                "unexpected diagnostic: {message}",
+            );
+        }
     }
 }
