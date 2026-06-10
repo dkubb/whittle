@@ -15,8 +15,8 @@ pub mod pattern;
 pub mod string;
 
 pub use collection::{
-    AllItems, AnyOf, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf, Predicate,
-    Sorted, StableUnderElementMap, UniqueByKey,
+    AllItems, AnyOf, CapacityFull, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf,
+    Predicate, Sorted, StableUnderElementMap, UniqueByKey,
 };
 #[cfg(all(feature = "chrono", feature = "proptest"))]
 pub use date::ArbitraryDate;

@@ -162,6 +162,27 @@ impl<T, R> Refined<T, R> {
         &self.inner
     }
 
+    /// Crate-internal mutable borrow of the inner value.
+    ///
+    /// NOT public: IDEA.md §5.2 forbids public accessors that return
+    /// a mutable reference, because an unconstrained `&mut T` would
+    /// let callers invalidate the construction-time proof. This
+    /// crate-internal escape hatch exists solely for checked
+    /// mutation methods (e.g. `try_push` on `LenItems`-ruled
+    /// vectors) that verify the rule's invariant *before* committing
+    /// the mutation.
+    ///
+    /// # Soundness obligation
+    ///
+    /// Every caller MUST guarantee the rule's invariant holds again
+    /// by the time the borrow ends, and MUST document the argument
+    /// at the call site (the same per-site discipline as
+    /// `from_inner`).
+    #[inline]
+    pub(crate) const fn as_inner_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+
     /// Consume the carrier and return the inner value.
     ///
     /// `into_inner` is proof-erasing: the caller takes ownership of

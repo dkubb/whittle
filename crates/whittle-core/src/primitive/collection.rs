@@ -456,11 +456,158 @@ where
     }
 }
 
+/// Typed overflow rejection for checked mutation of `LenItems`-ruled
+/// collections.
+///
+/// Carries the rejected payload back to the caller — the single item
+/// for [`Refined::try_push`] (`CapacityFull<T>`), the whole
+/// all-or-nothing batch for [`Refined::try_extend`]
+/// (`CapacityFull<Vec<T>>`). The collection is untouched on the
+/// `Err` path, so callers keep both the collection and the payload
+/// and can implement eviction or reporting on top.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapacityFull<T> {
+    /// The rejected item(s); ownership returns to the caller.
+    pub rejected: T,
+}
+
+impl<T> core::fmt::Display for CapacityFull<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The payload is deliberately not printed: `T` need not be
+        // `Display`, and the typed field already hands it back.
+        f.write_str("collection is at capacity; rejected input returned to caller")
+    }
+}
+
+impl<T> core::error::Error for CapacityFull<T> where T: core::fmt::Debug {}
+
 impl<const MIN: usize, const MAX: usize> LenItems<MIN, MAX> {
     /// Single source of the bound invariant: `MIN <= MAX`. Referenced
     /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
     /// via `const { Self::VALID }`.
     const VALID: () = assert!(MIN <= MAX, "LenItems requires MIN <= MAX");
+}
+
+impl<T, const MIN: usize, const MAX: usize> Refined<Vec<T>, LenItems<MIN, MAX>> {
+    /// Append `item`, keeping the length proof, or hand it back when
+    /// the collection is at `MAX` capacity.
+    ///
+    /// On `Err` the collection is untouched and still usable, and
+    /// the rejected item rides back inside [`CapacityFull`], so
+    /// callers can branch on a typed overflow outcome (eviction,
+    /// reporting, back-pressure) without losing either side.
+    ///
+    /// # Soundness
+    ///
+    /// The mutation commits without re-running `refine` because both
+    /// bounds are re-established by construction:
+    ///
+    /// - `MIN`: the existence of `self` proves `len >= MIN`, and a
+    ///   push can only grow the length, so the lower bound cannot be
+    ///   violated.
+    /// - `MAX`: the push commits only on the `len < MAX` branch, so
+    ///   the new length is at most `MAX`.
+    ///
+    /// `LenItems` admits on length alone and never canonicalises,
+    /// so no other invariant exists to re-check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CapacityFull`] carrying `item` back when the
+    /// collection already holds `MAX` items.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::{CapacityFull, LenItems};
+    ///
+    /// let mut buffer: Refined<Vec<i32>, LenItems<1, 2>> =
+    ///     Refined::try_new(vec![10]).unwrap();
+    ///
+    /// // Admit: capacity remains, the proof is maintained.
+    /// assert_eq!(buffer.try_push(20), Ok(()));
+    /// assert_eq!(buffer.as_inner(), &[10, 20]);
+    ///
+    /// // Reject: at capacity the item comes back typed, and the
+    /// // collection is untouched.
+    /// assert_eq!(buffer.try_push(30), Err(CapacityFull { rejected: 30 }));
+    /// assert_eq!(buffer.as_inner(), &[10, 20]);
+    /// ```
+    #[inline]
+    pub fn try_push(&mut self, item: T) -> Result<(), CapacityFull<T>> {
+        const { LenItems::<MIN, MAX>::VALID };
+        if self.as_inner().len() < MAX {
+            // SOUNDNESS: `len < MAX` was just checked, so the new
+            // length is `<= MAX`; growth cannot violate `MIN`.
+            self.as_inner_mut().push(item);
+            Ok(())
+        } else {
+            Err(CapacityFull { rejected: item })
+        }
+    }
+
+    /// Append every item in `items`, all-or-nothing: when the whole
+    /// batch fits under `MAX` the proof is maintained; otherwise
+    /// nothing is appended and the collected batch rides back.
+    ///
+    /// # Soundness
+    ///
+    /// Same argument as [`Refined::try_push`]: extension only grows
+    /// the length (so `MIN` holds by construction proof), and the
+    /// batch commits only when `batch.len()` fits in the remaining
+    /// `MAX - len` capacity, so the new length is at most `MAX`.
+    /// The subtraction cannot underflow because the construction
+    /// proof guarantees `len <= MAX`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CapacityFull`] carrying the entire collected batch
+    /// back when appending it would exceed `MAX`. The collection is
+    /// untouched — no prefix is committed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::{CapacityFull, LenItems};
+    ///
+    /// let mut paths: Refined<Vec<i32>, LenItems<1, 4>> =
+    ///     Refined::try_new(vec![1]).unwrap();
+    ///
+    /// // Admit: the whole batch fits.
+    /// assert_eq!(paths.try_extend([2, 3]), Ok(()));
+    /// assert_eq!(paths.as_inner(), &[1, 2, 3]);
+    ///
+    /// // Reject all-or-nothing: a 2-item batch does not fit in the
+    /// // 1 remaining slot, so nothing is appended and the whole
+    /// // batch comes back.
+    /// assert_eq!(
+    ///     paths.try_extend([4, 5]),
+    ///     Err(CapacityFull { rejected: vec![4, 5] }),
+    /// );
+    /// assert_eq!(paths.as_inner(), &[1, 2, 3]);
+    /// ```
+    #[inline]
+    pub fn try_extend<I>(&mut self, items: I) -> Result<(), CapacityFull<Vec<T>>>
+    where
+        I: IntoIterator<Item = T>,
+    {
+        const { LenItems::<MIN, MAX>::VALID };
+        let batch: Vec<T> = items.into_iter().collect();
+        // SOUNDNESS: the construction proof guarantees
+        // `len <= MAX`, so `MAX - len` cannot underflow.
+        let remaining = MAX - self.as_inner().len();
+        if batch.len() <= remaining {
+            // SOUNDNESS: the batch fits in the remaining capacity,
+            // so the new length is `<= MAX`; growth cannot violate
+            // `MIN`.
+            self.as_inner_mut().extend(batch);
+            Ok(())
+        } else {
+            Err(CapacityFull { rejected: batch })
+        }
+    }
 }
 
 impl<T, R> Refined<Vec<T>, R>
@@ -913,6 +1060,79 @@ mod tests {
     // time via `const { assert!(MIN <= MAX) }`; the previous
     // runtime test that exercised that branch is no longer needed
     // because the offending monomorphization is unrepresentable.
+
+    // ─── try_push / try_extend (checked mutation). ───────────────
+
+    #[test]
+    fn try_push_appends_below_capacity() {
+        let mut buffer: Refined<Vec<i32>, LenItems<1, 3>> = Refined::try_new(vec![10]).unwrap();
+        assert_eq!(buffer.try_push(20), Ok(()));
+        assert_eq!(buffer.as_inner(), &[10, 20]);
+    }
+
+    #[test]
+    fn try_push_at_capacity_returns_item_and_leaves_collection_usable() {
+        let mut buffer: Refined<Vec<i32>, LenItems<1, 2>> = Refined::try_new(vec![10, 20]).unwrap();
+        assert_eq!(
+            buffer.try_push(30),
+            Err(super::CapacityFull { rejected: 30 }),
+        );
+        // The Err path left the collection untouched and usable.
+        assert_eq!(buffer.as_inner(), &[10, 20]);
+        assert_eq!(
+            buffer.try_push(40),
+            Err(super::CapacityFull { rejected: 40 }),
+        );
+    }
+
+    #[test]
+    fn try_extend_appends_when_whole_batch_fits() {
+        let mut buffer: Refined<Vec<i32>, LenItems<1, 4>> = Refined::try_new(vec![1]).unwrap();
+        assert_eq!(buffer.try_extend([2, 3]), Ok(()));
+        assert_eq!(buffer.as_inner(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn try_extend_exact_fit_fills_to_max() {
+        // Boundary: batch length equals the remaining capacity.
+        let mut buffer: Refined<Vec<i32>, LenItems<1, 4>> = Refined::try_new(vec![1, 2]).unwrap();
+        assert_eq!(buffer.try_extend([3, 4]), Ok(()));
+        assert_eq!(buffer.as_inner(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn try_extend_empty_batch_is_ok_even_at_capacity() {
+        // Boundary: zero remaining capacity admits the empty batch.
+        let mut buffer: Refined<Vec<i32>, LenItems<1, 2>> = Refined::try_new(vec![1, 2]).unwrap();
+        assert_eq!(buffer.try_extend([]), Ok(()));
+        assert_eq!(buffer.as_inner(), &[1, 2]);
+    }
+
+    #[test]
+    fn try_extend_rejects_whole_batch_on_overflow() {
+        let mut buffer: Refined<Vec<i32>, LenItems<1, 3>> = Refined::try_new(vec![1, 2]).unwrap();
+        // All-or-nothing: 2 items do not fit in the 1 remaining
+        // slot; nothing is committed, the whole batch comes back.
+        assert_eq!(
+            buffer.try_extend([3, 4]),
+            Err(super::CapacityFull {
+                rejected: vec![3, 4],
+            }),
+        );
+        assert_eq!(buffer.as_inner(), &[1, 2]);
+    }
+
+    #[test]
+    fn capacity_full_display_and_error_surface() {
+        let err = super::CapacityFull { rejected: 7_i32 };
+        assert_eq!(
+            err.to_string(),
+            "collection is at capacity; rejected input returned to caller",
+        );
+        // No inner error to chain.
+        let dyn_err: &dyn core::error::Error = &err;
+        assert!(dyn_err.source().is_none());
+    }
 
     // ─── map_items (StableUnderElementMap). ──────────────────────
 
@@ -1426,6 +1646,95 @@ mod tests {
             r in proptest::arbitrary::any::<Refined<Vec<i32>, LenItems<1, 5>>>()
         ) {
             proptest::prop_assert!((1..=5).contains(&r.as_inner().len()));
+        }
+
+        /// `try_push` happy path: the valid grammar emits vectors
+        /// strictly below `MAX`, so every push commits, grows the
+        /// length by one, and the result still re-validates.
+        #[test]
+        fn try_push_below_capacity_always_commits(
+            v in proptest::collection::vec(
+                proptest::arbitrary::any::<i32>(),
+                1_usize..=4_usize,
+            ),
+            item in proptest::arbitrary::any::<i32>(),
+        ) {
+            let len = v.len();
+            let mut buffer: Refined<Vec<i32>, LenItems<1, 5>>
+                = Refined::try_new(v).unwrap();
+            proptest::prop_assert_eq!(buffer.try_push(item), Ok(()));
+            proptest::prop_assert_eq!(buffer.as_inner().len(), len + 1);
+            let revalidated =
+                <LenItems<1, 5> as crate::Rule<Vec<i32>>>::refine(buffer.into_inner());
+            proptest::prop_assert!(revalidated.is_ok());
+        }
+
+        /// `try_push` rejection path: the invalid grammar emits
+        /// vectors at exactly `MAX`, so every push is rejected with
+        /// the item handed back and the collection untouched.
+        #[test]
+        fn try_push_at_capacity_always_rejects(
+            v in proptest::collection::vec(
+                proptest::arbitrary::any::<i32>(),
+                5_usize..=5_usize,
+            ),
+            item in proptest::arbitrary::any::<i32>(),
+        ) {
+            let mut buffer: Refined<Vec<i32>, LenItems<1, 5>>
+                = Refined::try_new(v.clone()).unwrap();
+            proptest::prop_assert_eq!(
+                buffer.try_push(item),
+                Err(super::CapacityFull { rejected: item }),
+            );
+            proptest::prop_assert_eq!(buffer.as_inner(), &v);
+        }
+
+        /// `try_extend` happy path: batches sized within the
+        /// remaining capacity always commit atomically.
+        #[test]
+        fn try_extend_within_remaining_capacity_commits(
+            v in proptest::collection::vec(
+                proptest::arbitrary::any::<i32>(),
+                1_usize..=3_usize,
+            ),
+            batch in proptest::collection::vec(
+                proptest::arbitrary::any::<i32>(),
+                0_usize..=2_usize,
+            ),
+        ) {
+            let len = v.len();
+            let mut buffer: Refined<Vec<i32>, LenItems<1, 5>>
+                = Refined::try_new(v).unwrap();
+            proptest::prop_assert_eq!(buffer.try_extend(batch.clone()), Ok(()));
+            proptest::prop_assert_eq!(buffer.as_inner().len(), len + batch.len());
+        }
+
+        /// `try_extend` rejection path: batches strictly larger than
+        /// the remaining capacity are rejected whole, with the
+        /// collection untouched.
+        #[test]
+        fn try_extend_over_remaining_capacity_rejects_whole_batch(
+            v in proptest::collection::vec(
+                proptest::arbitrary::any::<i32>(),
+                1_usize..=5_usize,
+            ),
+            extra in proptest::collection::vec(
+                proptest::arbitrary::any::<i32>(),
+                0_usize..=3_usize,
+            ),
+        ) {
+            // Fabricate a batch one item longer than the remaining
+            // capacity, so rejection is guaranteed by construction.
+            let remaining = 5 - v.len();
+            let mut batch = extra;
+            batch.resize(remaining + 1, 0_i32);
+            let mut buffer: Refined<Vec<i32>, LenItems<1, 5>>
+                = Refined::try_new(v.clone()).unwrap();
+            proptest::prop_assert_eq!(
+                buffer.try_extend(batch.clone()),
+                Err(super::CapacityFull { rejected: batch }),
+            );
+            proptest::prop_assert_eq!(buffer.as_inner(), &v);
         }
 
         /// `map_items` soundness audit: for every admissible source
