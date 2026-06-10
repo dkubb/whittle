@@ -467,14 +467,53 @@ impl_any_for_arity!(
     8; R1 => e1, R2 => e2, R3 => e3, R4 => e4, R5 => e5, R6 => e6, R7 => e7, R8 => e8
 );
 
-// ─── Serde `DeserializeRule` impls. Every composition operator
-//      takes the default parse-then-refine path in this commit;
-//      streaming forwarding for `And` / `All` lands separately. ────
+// ─── Serde `DeserializeRule` impls. ───────────────────────────────
+//
+// `And<A, B>` and `All<(R1, ...)>` forward to their FIRST operand's
+// hook and then run the remaining operands' `refine` on the decoded
+// value. A size-bounding first operand (`LenItems` on the left of
+// the conjunction) therefore streams its bound for the whole
+// composition, while operand order and error semantics stay exactly
+// `refine`'s: first operand's rejection first, then each remaining
+// operand's, all rendered through `serde::de::Error::custom`.
+//
+// `Or` / `Any` cannot forward: when the first operand rejects, the
+// alternatives must re-run against the ORIGINAL wire input, and a
+// `Deserializer` is consumed by the first attempt — retrying would
+// require buffering the raw input, which is the allocation this
+// feature exists to avoid. They take the default parse-then-refine
+// path. `Not` / `Xor` reject based on an operand *accepting*, so
+// there is no per-operand streaming to forward either; default path.
+//
+// `MapErr<R, M>` deliberately takes the default path instead of
+// forwarding to `R`'s hook: forwarding would surface `R`'s raw
+// error and silently bypass `M`'s mapping, and the mapped
+// diagnostics are load-bearing for domain types.
 
 #[cfg(feature = "serde")]
-crate::deserialize_rule! {
-    impl[T, E, A, B] DeserializeRule<T> for And<A, B>
-    where [T: 'static, E: 'static, A: Rule<T, Error = E>, B: Rule<T, Error = E>]
+impl<'de, T, E, A, B> crate::DeserializeRule<'de, T> for And<A, B>
+where
+    T: 'static,
+    E: 'static + core::fmt::Display,
+    A: crate::DeserializeRule<'de, T> + Rule<T, Error = E>,
+    B: Rule<T, Error = E>,
+{
+    fn deserialize_refined<D>(deserializer: D) -> Result<crate::Refined<T, Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let left = A::deserialize_refined(deserializer)?;
+        let value = B::refine(left.into_inner()).map_err(serde::de::Error::custom)?;
+        // SOUNDNESS (IDEA §5.1): `And::refine` is `B(A(x))`. `A`'s
+        // hook produced a value admissible under `A` (its own
+        // soundness obligation), and `B::refine` just accepted and
+        // possibly canonicalised it — so `value` is exactly what
+        // `And::refine` would have returned for the same raw input,
+        // and re-running it through `try_new` would re-evaluate the
+        // same predicates on an admissible value (idempotency
+        // obligation, IDEA §5.14).
+        Ok(crate::Refined::from_inner(value))
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -510,10 +549,33 @@ crate::deserialize_rule! {
 
 #[cfg(feature = "serde")]
 macro_rules! impl_all_deserialize_for_arity {
-    ($($Ri:ident),+ $(,)?) => {
-        crate::deserialize_rule! {
-            impl[T, E, $($Ri),+] DeserializeRule<T> for All<($($Ri,)+)>
-            where [T: 'static, E: 'static, $($Ri: Rule<T, Error = E>,)+]
+    ($First:ident $(, $Rest:ident)+ $(,)?) => {
+        impl<'de, T, E, $First, $($Rest),+> crate::DeserializeRule<'de, T>
+            for All<($First, $($Rest,)+)>
+        where
+            T: 'static,
+            E: 'static + core::fmt::Display,
+            $First: crate::DeserializeRule<'de, T> + Rule<T, Error = E>,
+            $($Rest: Rule<T, Error = E>,)+
+        {
+            fn deserialize_refined<D>(
+                deserializer: D,
+            ) -> ::core::result::Result<crate::Refined<T, Self>, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let raw = $First::deserialize_refined(deserializer)?.into_inner();
+                $(let raw = $Rest::refine(raw).map_err(serde::de::Error::custom)?;)+
+                // SOUNDNESS (IDEA §5.1): same argument as
+                // `And<A, B>`'s hook — the first operand's hook
+                // discharged its own admissibility obligation and
+                // every remaining operand's `refine` ran in
+                // `All::refine`'s exact order on the previous
+                // operand's output, so `raw` equals what
+                // `All::refine` would have returned for the same
+                // wire input.
+                Ok(crate::Refined::from_inner(raw))
+            }
         }
     };
 }
@@ -833,11 +895,14 @@ impl_any_arbitrary_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
 )]
 mod tests {
     use alloc::string::{String, ToString};
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     use super::{All, And, Any, ErrorMapper, MapErr, Or, Xor};
     use crate::primitive::{
-        AsciiAlphanumeric, AtLeast, AtMost, EachChar, EqualTo, GreaterThan, IdentChar, LenChars,
-        LessThan, NonZero, NumericError, StringError, Within,
+        AsciiAlphanumeric, AtLeast, AtMost, Distinct, EachChar, EqualTo, GreaterThan, IdentChar,
+        IdentityKey, LenChars, LenItems, LessThan, NonZero, NumericError, Sorted, StringError,
+        Within,
     };
     use crate::rule::Refined;
 
@@ -861,6 +926,15 @@ mod tests {
     enum CodeError {
         BadLength,
         BadCharacter,
+    }
+
+    impl core::fmt::Display for CodeError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match *self {
+                Self::BadLength => f.write_str("bad length"),
+                Self::BadCharacter => f.write_str("bad character"),
+            }
+        }
     }
 
     enum CodeErrorMapper {}
@@ -1535,5 +1609,179 @@ mod tests {
         ) {
             proptest::prop_assert!([1, 2, 3, 4, 5, 6, 7, 8].contains(r.as_inner()));
         }
+    }
+
+    // ─── Serde: `And` / `All` forward to the first operand's hook
+    //     (streaming when it is `LenItems`), then refine through the
+    //     remaining operands. Accept/reject set and error text are
+    //     identical to the parse-then-refine path. ──────────────────
+
+    #[test]
+    fn serde_and_admits_through_forwarded_hook() {
+        type R = And<LenItems<1, 3>, Distinct<i32>>;
+        let refined: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
+        assert_eq!(refined.as_inner(), &[1, 2]);
+    }
+
+    #[test]
+    fn serde_and_left_operand_streams_length_rejection() {
+        // The left `LenItems` hook rejects with the true total
+        // length — same text as `try_new` on the full payload.
+        type R = And<LenItems<1, 3>, Distinct<i32>>;
+        let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 3, 4, 5])
+            .unwrap_err()
+            .to_string();
+        let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4,5]")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(direct, "length 5 not in admissible range");
+        assert!(
+            message.contains(&direct),
+            "serde error {message:?} must embed the rule error {direct:?}",
+        );
+    }
+
+    #[test]
+    fn serde_and_right_operand_rejection_matches_try_new() {
+        // Element-rule failure after the streamed length bound:
+        // the right operand's typed error surfaces with the same
+        // text the construction path produces.
+        type R = And<LenItems<1, 3>, Distinct<i32>>;
+        let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 1])
+            .unwrap_err()
+            .to_string();
+        let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,1]")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(direct, "duplicate key at index 2");
+        assert!(
+            message.contains(&direct),
+            "serde error {message:?} must embed the rule error {direct:?}",
+        );
+    }
+
+    /// Element type whose `Deserialize` impl counts
+    /// materializations; proves the `And` hook streams its left
+    /// `LenItems` operand. Equal values keep `Sorted` (non-strict)
+    /// admissible on the accept path.
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    struct CountedAnd;
+
+    static COUNTED_AND_MATERIALIZED: core::sync::atomic::AtomicUsize =
+        core::sync::atomic::AtomicUsize::new(0);
+
+    impl<'de> serde::Deserialize<'de> for CountedAnd {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            COUNTED_AND_MATERIALIZED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            serde::de::IgnoredAny::deserialize(deserializer).map(|_ignored| Self)
+        }
+    }
+
+    #[test]
+    fn serde_and_streams_left_len_items_bound() {
+        // Early-abort proof through the `And` hook: 8 elements
+        // against MAX = 3 materialize at most 3 `CountedAnd`s, and
+        // the error still reports the true total length.
+        type R = And<LenItems<0, 3>, Sorted<CountedAnd, IdentityKey<CountedAnd>>>;
+        let result: Result<Refined<Vec<CountedAnd>, R>, _> =
+            serde_json::from_str("[0,1,2,3,4,5,6,7]");
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("length 8 not in admissible range"),
+            "error must report the true total length: {message}",
+        );
+        let materialized = COUNTED_AND_MATERIALIZED.load(core::sync::atomic::Ordering::Relaxed);
+        assert!(
+            materialized <= 3,
+            "at most MAX elements may be materialized, got {materialized}",
+        );
+    }
+
+    #[test]
+    fn serde_all_arity_2_admits_and_rejects_like_try_new() {
+        type R = All<(LenItems<1, 3>, Distinct<i32>)>;
+        let ok: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
+        assert_eq!(ok.as_inner(), &[1, 2]);
+
+        let direct = Refined::<Vec<i32>, R>::try_new(vec![1, 2, 3, 4])
+            .unwrap_err()
+            .to_string();
+        let message = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains(&direct),
+            "serde error {message:?} must embed the rule error {direct:?}",
+        );
+
+        // Remaining-operand rejection through the same instantiation.
+        let duplicate = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,1]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            duplicate.contains("duplicate key at index 1"),
+            "unexpected diagnostic: {duplicate}",
+        );
+    }
+
+    #[test]
+    fn serde_all_arity_3_runs_remaining_operands_in_order() {
+        type R = All<(LenItems<1, 3>, Distinct<i32>, Sorted<i32, IdentityKey<i32>>)>;
+        let ok: Refined<Vec<i32>, R> = serde_json::from_str("[1,2]").unwrap();
+        assert_eq!(ok.as_inner(), &[1, 2]);
+
+        // Second operand rejects first ([2, 2] is sorted but not
+        // distinct) — operand order is `refine`'s.
+        let duplicate = serde_json::from_str::<Refined<Vec<i32>, R>>("[2,2]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            duplicate.contains("duplicate key at index 1"),
+            "unexpected diagnostic: {duplicate}",
+        );
+
+        // Third operand rejects ([2, 1] is distinct but unsorted).
+        let unsorted = serde_json::from_str::<Refined<Vec<i32>, R>>("[2,1]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unsorted.contains("element at index 1 breaks ascending order"),
+            "unexpected diagnostic: {unsorted}",
+        );
+
+        // First operand (streaming `LenItems`) rejects over-MAX.
+        let too_long = serde_json::from_str::<Refined<Vec<i32>, R>>("[1,2,3,4]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            too_long.contains("length 4 not in admissible range"),
+            "unexpected diagnostic: {too_long}",
+        );
+    }
+
+    #[test]
+    fn serde_map_err_default_path_keeps_error_mapping() {
+        // `MapErr` must NOT forward to `R`'s hook: the mapped
+        // diagnostics are load-bearing, so the default
+        // parse-then-refine path runs `M`'s mapping.
+        let message = serde_json::from_str::<Refined<String, CodeRule>>(r#""ab""#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("bad length"),
+            "mapped error must surface, got: {message}",
+        );
+
+        // Both mapped variants render through the default path.
+        let bad_char = serde_json::from_str::<Refined<String, CodeRule>>(r#""A-z""#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            bad_char.contains("bad character"),
+            "mapped error must surface, got: {bad_char}",
+        );
     }
 }
