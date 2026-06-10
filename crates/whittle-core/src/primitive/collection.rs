@@ -514,6 +514,15 @@ impl<const MIN: usize, const MAX: usize> LenItems<MIN, MAX> {
         MIN >= 1,
         "LenItems: total accessors require MIN >= 1 (non-empty proof)"
     );
+
+    /// Single determinant for the admissibility predicate
+    /// `MIN <= len <= MAX`; used by both `Rule::refine` and the
+    /// streaming deserialize visitor so the two paths cannot drift.
+    /// Explicit comparisons because `RangeInclusive::contains` is
+    /// not `const`.
+    const fn admits(len: usize) -> bool {
+        MIN <= len && len <= MAX
+    }
 }
 
 impl<T, const MIN: usize, const MAX: usize> Refined<Vec<T>, LenItems<MIN, MAX>> {
@@ -835,7 +844,7 @@ where
     fn refine(raw: Vec<T>) -> Result<Vec<T>, Self::Error> {
         const { Self::VALID };
         let actual = raw.len();
-        if !(MIN..=MAX).contains(&actual) {
+        if !Self::admits(actual) {
             return Err(CollectionError::LenOutOfRange { actual });
         }
         Ok(raw)
@@ -1009,7 +1018,7 @@ where
             }
         }
 
-        if !(MIN..=MAX).contains(&actual) {
+        if !LenItems::<MIN, MAX>::admits(actual) {
             // Same rejection the parse-then-refine path produces:
             // `LenItems::refine`'s `CollectionError` rendered
             // through `serde::de::Error::custom`.
