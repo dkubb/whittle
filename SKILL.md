@@ -409,12 +409,47 @@ input should be preserved verbatim, use the validation-only rule directly.
 
 ### Serde integration
 
-`Refined<T, R>::deserialize` deserialises `T` first and then routes the
-raw value through `Refined::try_new`. The rule's `Error` must implement
-`Display`; rejections surface as `serde::de::Error::custom(rule_error)`.
-This means: there is no admissible code path that produces a `Refined`
-without running the rule. Bad JSON is rejected with the rule's own
-message; good JSON produces a refined value.
+`Refined<T, R>: Deserialize` delegates to a per-rule hook,
+`DeserializeRule<'de, T>`. Most rules use the default parse-then-refine
+path (`parse_then_refine`): deserialise `T`, then route through
+`Refined::try_new`. The rule's `Error` must implement `Display`;
+rejections surface as `serde::de::Error::custom(rule_error)`. Either
+way there is no admissible code path that produces a `Refined` without
+the rule's admissibility predicate holding. Bad JSON is rejected with
+the rule's own message; good JSON produces a refined value.
+
+**Custom rules need a one-liner** to keep deserialising (the blanket
+no longer covers every `Rule<T>` automatically):
+
+```rust
+whittle::deserialize_rule! {
+    impl[] DeserializeRule<String> for MyRule
+}
+```
+
+`impl[...]` carries the rule's generics; `where [...]` carries extra
+bounds. Hand-written `Deserialize` impls on newtypes (tuple carriers
+and the like) are unaffected.
+
+**Length-bounded collections stream their bound by default.**
+`Refined<Vec<T>, LenItems<MIN, MAX>>` enforces `MAX` *while* the
+sequence decodes: pre-allocation is clamped to `min(size_hint, MAX)`,
+at most `MAX` elements are materialized, and an over-long payload is
+drained (`IgnoredAny`, counted but never decoded as `T`) so the error
+still reports the true total length at O(MAX) memory. Accept/reject
+set and error text match `try_new` exactly — only the allocation
+profile differs. The type layer bounds element materialization itself;
+a transport-level byte cap is a separate layer doing its own job.
+`And` / `All` forward to their FIRST operand's hook, so put `LenItems`
+on the left of a collection conjunction to stream the whole
+composition. Scope limits: `Or` / `Any` would need to retry against
+buffered raw input, so they (and `Not` / `Xor`) take the default path;
+`MapErr` takes the default path so its error mapping keeps running;
+serde delivers strings whole, so `LenChars` / `LenBytes` cannot abort
+mid-decode at this layer. One streaming corner: elements past `MAX`
+are syntax-checked, not decoded as `T`, so an over-long payload with
+a bad tail element reports the length error rather than the decode
+error (rejected either way).
 
 `Refined<T, R>::serialize` forwards to `T` — refined values look identical
 on the wire to their underlying primitive.
@@ -423,7 +458,7 @@ on the wire to their underlying primitive.
 does not expose field-level callbacks to outer adapters, so `Refined<T, R>`
 cannot enforce `deny_unknown_fields` from outside. Put the attribute on
 the inner `T` struct; see the doc comment on `Refined`'s `Deserialize`
-impl in `crates/whittle-core/src/rule.rs:262`.
+impl in `crates/whittle-core/src/rule.rs`.
 
 For hand-written newtypes around `Refined`, derive `serde::Deserialize`
 on the newtype to forward to `Refined<T, R>::deserialize`. The
