@@ -20,6 +20,9 @@
 //! | `AtMost<B>` | `AtMost<D>` | `B <= D` |
 //! | `GreaterThan<A>` | `GreaterThan<C>` | `C <= A` |
 //! | `LessThan<B>` | `LessThan<D>` | `B <= D` |
+//! | `LenChars<A, B>` | `LenChars<C, D>` | `C <= A && B <= D` |
+//! | `LenBytes<A, B>` | `LenBytes<C, D>` | `C <= A && B <= D` |
+//! | `LenItems<A, B>` | `LenItems<C, D>` | `C <= A && B <= D` |
 //!
 //! Each side condition is checked at compile time through the
 //! impl's [`Implies::VALID`] const: a `weaken` call whose
@@ -30,7 +33,7 @@
 //! # Contract discharge for the library edges
 //!
 //! IDEA §5.7 obliges every implication impl to establish three
-//! properties. For all seven edges above:
+//! properties. For all ten edges above:
 //!
 //! 1. **Admissibility containment** — the side condition in the
 //!    table is exactly interval containment of the stronger rule's
@@ -38,8 +41,9 @@
 //! 2. **Canonical-form compatibility** — every listed rule is a pure
 //!    predicate: `refine` returns the input unchanged on admissible
 //!    values (the numeric rules round-trip losslessly through `i128`,
-//!    which is the identity for every `Numeric` carrier). No rule
-//!    canonicalises, so the property holds trivially.
+//!    which is the identity for every `Numeric` carrier; the length
+//!    rules return `raw` as-is). No rule canonicalises, so the
+//!    property holds trivially.
 //! 3. **No re-run dependence** — the listed rules' only observable
 //!    behaviour is accept/reject at construction; nothing downstream
 //!    depends on re-running the weaker rule's narrowing morphism.
@@ -78,7 +82,9 @@
 //! (OPTIONAL per §5.7): if `A: Implies<B>` and `B: Implies<C>` hold,
 //! `A: Implies<C>` must be declared explicitly.
 
-use crate::primitive::{AtLeast, AtMost, GreaterThan, LessThan, Within};
+use crate::primitive::{
+    AtLeast, AtMost, GreaterThan, LenBytes, LenChars, LenItems, LessThan, Within,
+};
 use crate::rule::{Refined, Rule};
 
 /// Marker trait: `Self` is logically stronger than `W`
@@ -312,6 +318,51 @@ impl<const B: i128, const D: i128> Implies<LessThan<D>> for LessThan<B> {
     );
 }
 
+// ─── Length narrowing (IDEA §5.7 documented common case). ─────────
+//
+// The three length rules admit on length alone and return the input
+// unchanged, so contract properties 2 and 3 are discharged
+// module-wide (see the module docs); each impl documents property 1.
+
+/// Property 1: a char count in `[A, B]` lies in `[C, D]` iff
+/// `C <= A && B <= D`.
+impl<const A: usize, const B: usize, const C: usize, const D: usize> Implies<LenChars<C, D>>
+    for LenChars<A, B>
+{
+    /// Containment of the source char-count range in the target
+    /// char-count range.
+    const VALID: () = assert!(
+        C <= A && B <= D,
+        "LenChars widening requires the target range to contain the source range",
+    );
+}
+
+/// Property 1: a byte length in `[A, B]` lies in `[C, D]` iff
+/// `C <= A && B <= D`.
+impl<const A: usize, const B: usize, const C: usize, const D: usize> Implies<LenBytes<C, D>>
+    for LenBytes<A, B>
+{
+    /// Containment of the source byte-length range in the target
+    /// byte-length range.
+    const VALID: () = assert!(
+        C <= A && B <= D,
+        "LenBytes widening requires the target range to contain the source range",
+    );
+}
+
+/// Property 1: an item count in `[A, B]` lies in `[C, D]` iff
+/// `C <= A && B <= D`.
+impl<const A: usize, const B: usize, const C: usize, const D: usize> Implies<LenItems<C, D>>
+    for LenItems<A, B>
+{
+    /// Containment of the source item-count range in the target
+    /// item-count range.
+    const VALID: () = assert!(
+        C <= A && B <= D,
+        "LenItems widening requires the target range to contain the source range",
+    );
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
@@ -320,7 +371,11 @@ impl<const B: i128, const D: i128> Implies<LessThan<D>> for LessThan<B> {
 )]
 mod tests {
     use crate::Refined;
-    use crate::primitive::{AtLeast, AtMost, GreaterThan, LessThan, Within};
+    use crate::primitive::{
+        AtLeast, AtMost, GreaterThan, LenBytes, LenChars, LenItems, LessThan, Within,
+    };
+    use alloc::string::{String, ToString as _};
+    use alloc::vec;
 
     // ─── Value preservation, one test per library edge. Each
     //      family impl is exercised under at least two distinct
@@ -443,6 +498,50 @@ mod tests {
         assert_eq!(*wide.as_inner(), -1);
     }
 
+    #[test]
+    fn weaken_len_chars_to_containing_len_chars_preserves_value() {
+        let tight: Refined<String, LenChars<1, 5>> = Refined::try_new("héllo".to_string()).unwrap();
+        let wide: Refined<String, LenChars<0, 10>> = tight.weaken();
+        assert_eq!(wide.as_inner(), "héllo");
+    }
+
+    #[test]
+    fn weaken_len_chars_to_len_chars_second_instantiation() {
+        let tight: Refined<String, LenChars<2, 2>> = Refined::try_new("ab".to_string()).unwrap();
+        let wide: Refined<String, LenChars<1, 3>> = tight.weaken();
+        assert_eq!(wide.as_inner(), "ab");
+    }
+
+    #[test]
+    fn weaken_len_bytes_to_containing_len_bytes_preserves_value() {
+        let tight: Refined<String, LenBytes<1, 5>> = Refined::try_new("hello".to_string()).unwrap();
+        let wide: Refined<String, LenBytes<0, 10>> = tight.weaken();
+        assert_eq!(wide.as_inner(), "hello");
+    }
+
+    #[test]
+    fn weaken_len_bytes_to_len_bytes_second_instantiation() {
+        let tight: Refined<String, LenBytes<3, 4>> = Refined::try_new("abcd".to_string()).unwrap();
+        let wide: Refined<String, LenBytes<3, 8>> = tight.weaken();
+        assert_eq!(wide.as_inner(), "abcd");
+    }
+
+    #[test]
+    fn weaken_len_items_to_containing_len_items_preserves_value() {
+        let tight: Refined<alloc::vec::Vec<i32>, LenItems<1, 3>> =
+            Refined::try_new(vec![10, 20]).unwrap();
+        let wide: Refined<alloc::vec::Vec<i32>, LenItems<0, 10>> = tight.weaken();
+        assert_eq!(wide.as_inner(), &[10, 20]);
+    }
+
+    #[test]
+    fn weaken_len_items_to_len_items_second_instantiation() {
+        let tight: Refined<alloc::vec::Vec<u8>, LenItems<2, 2>> =
+            Refined::try_new(vec![1, 2]).unwrap();
+        let wide: Refined<alloc::vec::Vec<u8>, LenItems<0, 4>> = tight.weaken();
+        assert_eq!(wide.as_inner(), &[1, 2]);
+    }
+
     // ─── IDEA §5.14: "implication edges, where declared, preserve
     //      admissibility." For each library edge, generate through
     //      the STRONGER rule's `ArbitraryRule` strategy, weaken,
@@ -451,8 +550,12 @@ mod tests {
 
     #[cfg(feature = "proptest")]
     mod implication_preserves_admissibility {
-        use crate::primitive::{AtLeast, AtMost, GreaterThan, LessThan, Within};
+        use crate::primitive::{
+            AtLeast, AtMost, GreaterThan, LenBytes, LenChars, LenItems, LessThan, Within,
+        };
         use crate::{Refined, Rule};
+        use alloc::string::String;
+        use alloc::vec::Vec;
         use proptest::arbitrary::any;
 
         proptest::proptest! {
@@ -540,6 +643,41 @@ mod tests {
                 );
             }
 
+            #[test]
+            fn len_chars_to_len_chars(
+                strong in any::<Refined<String, LenChars<1, 5>>>()
+            ) {
+                let value = strong.as_inner().clone();
+                let weak: Refined<String, LenChars<0, 10>> = strong.weaken();
+                proptest::prop_assert_eq!(weak.as_inner(), &value);
+                proptest::prop_assert!(
+                    <LenChars<0, 10> as Rule<String>>::refine(weak.into_inner()).is_ok()
+                );
+            }
+
+            #[test]
+            fn len_bytes_to_len_bytes(
+                strong in any::<Refined<String, LenBytes<1, 5>>>()
+            ) {
+                let value = strong.as_inner().clone();
+                let weak: Refined<String, LenBytes<0, 10>> = strong.weaken();
+                proptest::prop_assert_eq!(weak.as_inner(), &value);
+                proptest::prop_assert!(
+                    <LenBytes<0, 10> as Rule<String>>::refine(weak.into_inner()).is_ok()
+                );
+            }
+
+            #[test]
+            fn len_items_to_len_items(
+                strong in any::<Refined<Vec<u8>, LenItems<1, 3>>>()
+            ) {
+                let value = strong.as_inner().clone();
+                let weak: Refined<Vec<u8>, LenItems<0, 10>> = strong.weaken();
+                proptest::prop_assert_eq!(weak.as_inner(), &value);
+                proptest::prop_assert!(
+                    <LenItems<0, 10> as Rule<Vec<u8>>>::refine(weak.into_inner()).is_ok()
+                );
+            }
         }
     }
 }
