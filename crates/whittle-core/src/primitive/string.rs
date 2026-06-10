@@ -2654,11 +2654,13 @@ mod tests {
                 >>,
             >>()
         ) {
-            proptest::prop_assert!(
-                r.as_inner()
-                    .chars()
-                    .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\'),
-            );
+            // Assert each conjunct separately: a `&&` chain here
+            // would leave permanently-dead false branches (the
+            // strategy never emits an inadmissible char), pinning
+            // branch coverage below 100%.
+            proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_graphic()));
+            proptest::prop_assert!(!r.as_inner().contains('"'));
+            proptest::prop_assert!(!r.as_inner().contains('\\'));
         }
 
         #[test]

@@ -380,6 +380,52 @@ mod tests {
         assert_eq!(r.as_inner(), "1:foo");
     }
 
+    // ─── Strategy fixup: `collect_relative_path_chars`. ──────────
+    //
+    // Deterministic coverage for the post-`collect` fixups in the
+    // `ArbitraryRule` strategy. The proptests below also reach these
+    // branches, but only when the RNG happens to draw the triggering
+    // shape (a `/` run, an edge `/`, or an all-`/` vector), which
+    // made the 100%-coverage gate flaky. Each test drives exactly
+    // one fixup with a crafted input.
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn collect_relative_path_chars_passes_through_clean_input() {
+        let out = super::collect_relative_path_chars(alloc::vec!['a', '/', 'b']);
+        assert_eq!(out, "a/b");
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn collect_relative_path_chars_coalesces_slash_run() {
+        let out = super::collect_relative_path_chars(alloc::vec!['a', '/', '/', '/', 'b']);
+        assert_eq!(out, "a/b");
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn collect_relative_path_chars_drops_leading_slash() {
+        let out = super::collect_relative_path_chars(alloc::vec!['/', 'a']);
+        assert_eq!(out, "a");
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn collect_relative_path_chars_drops_trailing_slash() {
+        let out = super::collect_relative_path_chars(alloc::vec!['a', '/']);
+        assert_eq!(out, "a");
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn collect_relative_path_chars_seeds_fallback_when_all_slashes() {
+        // `['/', '/']` coalesces to `"/"`, the leading-slash trim
+        // then empties the string, and the fallback seeds `'a'`.
+        let out = super::collect_relative_path_chars(alloc::vec!['/', '/']);
+        assert_eq!(out, "a");
+    }
+
     proptest::proptest! {
         // ─── RelativePath admit. ──────────────────────────────
 
