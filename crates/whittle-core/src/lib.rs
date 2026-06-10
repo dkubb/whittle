@@ -33,7 +33,15 @@ pub use composition::{All, And, Any, ErrorMapper, MapErr, Not, Or, Xor};
 pub use primitive::StableUnderElementMap;
 #[cfg(feature = "proptest")]
 pub use rule::ArbitraryRule;
+#[cfg(feature = "serde")]
+pub use rule::{DeserializeRule, parse_then_refine};
 pub use rule::{Refined, Rule};
+/// Re-export of `serde` so [`deserialize_rule!`] expansions resolve
+/// serde paths through `$crate` without requiring downstream crates
+/// to depend on `serde` directly.
+#[cfg(feature = "serde")]
+#[doc(hidden)]
+pub use serde;
 #[cfg(feature = "proptest")]
 pub use testing::{prop_image_refines, prop_total};
 pub use transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};

@@ -141,6 +141,13 @@ impl Rule<String> for RelativePath {
     }
 }
 
+// ─── Serde `DeserializeRule` impl: default parse-then-refine. ─────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[] DeserializeRule<String> for RelativePath
+}
+
 // ─── `ArbitraryRule` impl. ────────────────────────────────────────
 
 #[cfg(feature = "proptest")]

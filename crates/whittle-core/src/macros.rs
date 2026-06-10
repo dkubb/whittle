@@ -134,6 +134,93 @@ macro_rules! refinement {
     };
 }
 
+/// Implement [`crate::DeserializeRule`] for a rule via the default
+/// parse-then-refine path ([`crate::parse_then_refine`]).
+///
+/// `Refined<T, R>: serde::Deserialize` requires
+/// `R: DeserializeRule<'de, T>`; this macro is the one-liner that
+/// gives a rule that impl with today's standard behaviour —
+/// deserialize the raw `T`, run `Refined::try_new`, and surface
+/// rejections through `serde::de::Error::custom`. Rules that bound
+/// the *size* of their input (e.g. `LenItems` over `Vec<T>`)
+/// hand-write the hook instead so the bound is enforced while the
+/// wire value is decoded.
+///
+/// # Syntax
+///
+/// ```text
+/// deserialize_rule! {
+///     impl[<generics>] DeserializeRule<Carrier> for Rule
+///     where [<extra bounds>]   // optional
+/// }
+/// ```
+///
+/// The macro supplies `Carrier: serde::Deserialize<'de> + 'static`
+/// and `Rule::Error: Display` itself; `where [...]` carries whatever
+/// additional bounds the rule's own `Rule<Carrier>` impl needs.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// use whittle_core::{Refined, Rule, deserialize_rule};
+///
+/// /// Accepts only multiples of `N`.
+/// struct MultipleOf<const N: i64>;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// struct NotMultiple;
+///
+/// impl core::fmt::Display for NotMultiple {
+///     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+///         f.write_str("not a multiple")
+///     }
+/// }
+///
+/// impl<const N: i64> Rule<i64> for MultipleOf<N> {
+///     type Error = NotMultiple;
+///     fn refine(raw: i64) -> Result<i64, Self::Error> {
+///         if raw % N == 0 { Ok(raw) } else { Err(NotMultiple) }
+///     }
+/// }
+///
+/// deserialize_rule! {
+///     impl[const N: i64] DeserializeRule<i64> for MultipleOf<N>
+/// }
+///
+/// let ok: Refined<i64, MultipleOf<3>> = serde_json::from_str("9").unwrap();
+/// assert_eq!(*ok.as_inner(), 9);
+/// let err = serde_json::from_str::<Refined<i64, MultipleOf<3>>>("10").unwrap_err();
+/// assert!(err.to_string().contains("not a multiple"));
+/// # }
+/// ```
+#[cfg(feature = "serde")]
+#[macro_export]
+macro_rules! deserialize_rule {
+    (
+        impl[$($generics:tt)*] DeserializeRule<$carrier:ty> for $rule:ty
+        $(where [$($bounds:tt)*])?
+        $(;)?
+    ) => {
+        impl<'de, $($generics)*> $crate::DeserializeRule<'de, $carrier> for $rule
+        where
+            $carrier: $crate::serde::Deserialize<'de> + 'static,
+            <Self as $crate::Rule<$carrier>>::Error: ::core::fmt::Display,
+            $($($bounds)*)?
+        {
+            #[inline]
+            fn deserialize_refined<D>(
+                deserializer: D,
+            ) -> ::core::result::Result<$crate::Refined<$carrier, Self>, D::Error>
+            where
+                D: $crate::serde::Deserializer<'de>,
+            {
+                $crate::parse_then_refine::<$carrier, Self, D>(deserializer)
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,

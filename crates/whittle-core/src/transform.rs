@@ -216,6 +216,29 @@ where
     }
 }
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine.
+//      Transformers carry `String`, which serde delivers whole, so
+//      there is nothing to stream — the canonicalising `refine`
+//      needs the complete value anyway. ────────────────────────────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[R] DeserializeRule<String> for AsciiLowercase<R>
+    where [R: Rule<String>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[R] DeserializeRule<String> for AsciiUppercase<R>
+    where [R: Rule<String>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[R] DeserializeRule<String> for Trim<R>
+    where [R: Rule<String>]
+}
+
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
 // Each transformer is implemented as `R::arbitrary_strategy()`

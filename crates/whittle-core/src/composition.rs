@@ -467,6 +467,97 @@ impl_any_for_arity!(
     8; R1 => e1, R2 => e2, R3 => e3, R4 => e4, R5 => e5, R6 => e6, R7 => e7, R8 => e8
 );
 
+// ─── Serde `DeserializeRule` impls. Every composition operator
+//      takes the default parse-then-refine path in this commit;
+//      streaming forwarding for `And` / `All` lands separately. ────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, E, A, B] DeserializeRule<T> for And<A, B>
+    where [T: 'static, E: 'static, A: Rule<T, Error = E>, B: Rule<T, Error = E>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, E, A, B] DeserializeRule<T> for Or<A, B>
+    where [T: 'static + Clone, E: 'static, A: Rule<T, Error = E>, B: Rule<T, Error = E>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, R] DeserializeRule<T> for Not<R>
+    where [
+        T: crate::primitive::Numeric + Copy,
+        R: Rule<T, Error = crate::primitive::NumericError>,
+    ]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, A, B] DeserializeRule<T> for Xor<A, B>
+    where [
+        T: crate::primitive::Numeric + Copy,
+        A: Rule<T, Error = crate::primitive::NumericError>,
+        B: Rule<T, Error = crate::primitive::NumericError>,
+    ]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, R, M] DeserializeRule<T> for MapErr<R, M>
+    where [T: 'static, R: Rule<T>, M: ErrorMapper<R::Error>]
+}
+
+#[cfg(feature = "serde")]
+macro_rules! impl_all_deserialize_for_arity {
+    ($($Ri:ident),+ $(,)?) => {
+        crate::deserialize_rule! {
+            impl[T, E, $($Ri),+] DeserializeRule<T> for All<($($Ri,)+)>
+            where [T: 'static, E: 'static, $($Ri: Rule<T, Error = E>,)+]
+        }
+    };
+}
+
+#[cfg(feature = "serde")]
+impl_all_deserialize_for_arity!(R1, R2);
+#[cfg(feature = "serde")]
+impl_all_deserialize_for_arity!(R1, R2, R3);
+#[cfg(feature = "serde")]
+impl_all_deserialize_for_arity!(R1, R2, R3, R4);
+#[cfg(feature = "serde")]
+impl_all_deserialize_for_arity!(R1, R2, R3, R4, R5);
+#[cfg(feature = "serde")]
+impl_all_deserialize_for_arity!(R1, R2, R3, R4, R5, R6);
+#[cfg(feature = "serde")]
+impl_all_deserialize_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+#[cfg(feature = "serde")]
+impl_all_deserialize_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
+#[cfg(feature = "serde")]
+macro_rules! impl_any_deserialize_for_arity {
+    ($($Ri:ident),+ $(,)?) => {
+        crate::deserialize_rule! {
+            impl[T, E, $($Ri),+] DeserializeRule<T> for Any<($($Ri,)+)>
+            where [T: 'static + Clone, E: 'static, $($Ri: Rule<T, Error = E>,)+]
+        }
+    };
+}
+
+#[cfg(feature = "serde")]
+impl_any_deserialize_for_arity!(R1, R2);
+#[cfg(feature = "serde")]
+impl_any_deserialize_for_arity!(R1, R2, R3);
+#[cfg(feature = "serde")]
+impl_any_deserialize_for_arity!(R1, R2, R3, R4);
+#[cfg(feature = "serde")]
+impl_any_deserialize_for_arity!(R1, R2, R3, R4, R5);
+#[cfg(feature = "serde")]
+impl_any_deserialize_for_arity!(R1, R2, R3, R4, R5, R6);
+#[cfg(feature = "serde")]
+impl_any_deserialize_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+#[cfg(feature = "serde")]
+impl_any_deserialize_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
 // ─── Transformer stability. If both operands are stable under a
 //      transformation, the composition's admissible region is the
 //      intersection / union of regions that are each stable, so the

@@ -1540,6 +1540,49 @@ impl<const LEN: usize> StableUnderAsciiLowercase for HexFixedAny<LEN> {}
 #[cfg(feature = "hex")]
 impl<const LEN: usize> StableUnderAsciiUppercase for HexFixedAny<LEN> {}
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine.
+//      Strings arrive from serde as whole values (there is no
+//      element-wise `SeqAccess` analogue for `str`), so `LenChars` /
+//      `LenBytes` cannot abort mid-decode at this layer; the
+//      parse-then-refine path is the honest scope limit here. ──────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MIN: usize, const MAX: usize] DeserializeRule<String> for LenChars<MIN, MAX>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MIN: usize, const MAX: usize] DeserializeRule<String> for LenBytes<MIN, MAX>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[] DeserializeRule<String> for NonEmpty
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[P] DeserializeRule<String> for EachChar<P>
+    where [P: CharPredicate]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[P] DeserializeRule<String> for FirstChar<P>
+    where [P: CharPredicate]
+}
+
+#[cfg(all(feature = "hex", feature = "serde"))]
+crate::deserialize_rule! {
+    impl[const LEN: usize] DeserializeRule<String> for HexFixedLower<LEN>
+}
+
+#[cfg(all(feature = "hex", feature = "serde"))]
+crate::deserialize_rule! {
+    impl[const LEN: usize] DeserializeRule<String> for HexFixedAny<LEN>
+}
+
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
 // Length-bounded strings draw their `char`s from a single ASCII

@@ -142,6 +142,13 @@ impl<const RE: &'static str> Rule<String> for Pattern<RE> {
     }
 }
 
+// ─── Serde `DeserializeRule` impl: default parse-then-refine. ─────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const RE: &'static str] DeserializeRule<String> for Pattern<RE>
+}
+
 // ─── `ArbitraryRule` impl. ────────────────────────────────────────
 
 #[cfg(feature = "proptest")]

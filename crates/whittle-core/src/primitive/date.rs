@@ -234,6 +234,29 @@ pub trait ArbitraryDate: Rule<NaiveDate> {
     fn arbitrary_date() -> Self::Strategy;
 }
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine.
+//      Applicable only when `chrono`'s own `serde` support is
+//      enabled by the consumer (the `NaiveDate: Deserialize<'de>`
+//      bound is satisfied through feature unification). ────────────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MIN_DAYS_FROM_CE: i32] DeserializeRule<NaiveDate>
+    for DateAtLeast<MIN_DAYS_FROM_CE>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MAX_DAYS_FROM_CE: i32] DeserializeRule<NaiveDate>
+    for DateAtMost<MAX_DAYS_FROM_CE>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MIN_DAYS_FROM_CE: i32, const MAX_DAYS_FROM_CE: i32] DeserializeRule<NaiveDate>
+    for DateInRange<MIN_DAYS_FROM_CE, MAX_DAYS_FROM_CE>
+}
+
 #[cfg(feature = "proptest")]
 impl<R: ArbitraryDate> ArbitraryRule<NaiveDate> for R {
     type Strategy = R::Strategy;

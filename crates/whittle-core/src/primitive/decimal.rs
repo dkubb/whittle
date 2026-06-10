@@ -364,6 +364,32 @@ pub trait ArbitraryDecimal: Rule<Decimal> {
     fn arbitrary_decimal() -> Self::Strategy;
 }
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine.
+//      Applicable only when `rust_decimal`'s own `serde` support is
+//      enabled by the consumer (the `Decimal: Deserialize<'de>`
+//      bound is satisfied through feature unification). ────────────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[] DeserializeRule<Decimal> for DecimalPositive
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const S: u8] DeserializeRule<Decimal> for DecimalScale<S>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const P: u8] DeserializeRule<Decimal> for DecimalPrecision<P>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MIN_REPR: i128, const MAX_REPR: i128, const SCALE: u8] DeserializeRule<Decimal>
+    for DecimalInRange<MIN_REPR, MAX_REPR, SCALE>
+}
+
 #[cfg(feature = "proptest")]
 impl<R: ArbitraryDecimal> ArbitraryRule<Decimal> for R {
     type Strategy = R::Strategy;

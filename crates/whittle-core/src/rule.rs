@@ -342,8 +342,129 @@ where
     }
 }
 
-/// Deserialize a `Refined<T, R>` by deserializing `T` first, then
-/// running the rule via `Refined::try_new`.
+/// Per-rule deserialization hook for `Refined<T, R>`.
+///
+/// `Refined<T, R>`'s `serde::Deserialize` impl delegates to this
+/// trait, so each rule chooses *how* the wire value is consumed:
+///
+/// - Most rules use the default **parse-then-refine** path
+///   ([`parse_then_refine`]): deserialize the raw `T`, then run the
+///   rule through `Refined::try_new`. The [`crate::deserialize_rule!`]
+///   macro stamps that impl as a one-liner.
+/// - Rules whose admissibility bounds the *size* of the input may
+///   override the hook to enforce the bound **while** the wire value
+///   is being decoded, so a hostile payload is rejected without ever
+///   materializing more than the rule admits. `LenItems<MIN, MAX>`
+///   over `Vec<T>` is the library's streaming override (IDEA §5.13:
+///   bounded inputs; §7: the constructor surface must be robust
+///   against resource-exhausting payloads).
+///
+/// Whatever the strategy, the accept/reject set and the rejection
+/// diagnostics MUST be identical to the parse-then-refine path —
+/// only the allocation profile may differ. There is still no
+/// admissible code path that produces a `Refined` without the rule's
+/// admissibility predicate holding (IDEA §5.3).
+///
+/// # Custom rules
+///
+/// Downstream rules keep deserializing by stamping the default path:
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// use whittle_core::{Refined, Rule, deserialize_rule};
+///
+/// /// Accepts only even `i32`.
+/// enum Even {}
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// struct Odd;
+///
+/// impl core::fmt::Display for Odd {
+///     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+///         f.write_str("odd")
+///     }
+/// }
+///
+/// impl Rule<i32> for Even {
+///     type Error = Odd;
+///     fn refine(raw: i32) -> Result<i32, Self::Error> {
+///         if raw % 2 == 0 { Ok(raw) } else { Err(Odd) }
+///     }
+/// }
+///
+/// deserialize_rule! {
+///     impl[] DeserializeRule<i32> for Even
+/// }
+///
+/// let ok: Refined<i32, Even> = serde_json::from_str("4").unwrap();
+/// assert_eq!(*ok.as_inner(), 4);
+/// let err = serde_json::from_str::<Refined<i32, Even>>("5").unwrap_err();
+/// assert!(err.to_string().contains("odd"));
+/// # }
+/// ```
+#[cfg(feature = "serde")]
+pub trait DeserializeRule<'de, T>: Rule<T>
+where
+    T: 'static,
+{
+    /// Deserialize a `Refined<T, Self>` from `deserializer`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `D::Error` when the wire value cannot be decoded, or
+    /// when the decoded value is inadmissible under the rule (the
+    /// rule's typed error rendered through
+    /// `serde::de::Error::custom`).
+    fn deserialize_refined<D>(deserializer: D) -> Result<Refined<T, Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>;
+}
+
+/// Default [`DeserializeRule`] body: deserialize the raw `T`, then
+/// run the rule via `Refined::try_new`.
+///
+/// Rejections surface as `serde::de::Error::custom(rule_error)`, so
+/// the wire-level diagnostic is the rule error's `Display` output.
+/// Use [`crate::deserialize_rule!`] to stamp a rule's
+/// `DeserializeRule` impl with this body.
+///
+/// # Errors
+///
+/// Returns `D::Error` when `T::deserialize` fails, or the rule's
+/// error (via `serde::de::Error::custom`) when `R::refine` rejects
+/// the decoded value.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// use whittle_core::primitive::Within;
+/// use whittle_core::{Refined, parse_then_refine};
+///
+/// let mut ok = serde_json::Deserializer::from_str("42");
+/// let r: Refined<i32, Within<0, 100>> = parse_then_refine(&mut ok).unwrap();
+/// assert_eq!(*r.as_inner(), 42);
+///
+/// let mut bad = serde_json::Deserializer::from_str("101");
+/// let err = parse_then_refine::<i32, Within<0, 100>, _>(&mut bad).unwrap_err();
+/// assert!(err.to_string().contains("value 101 not in admissible range"));
+/// # }
+/// ```
+#[cfg(feature = "serde")]
+pub fn parse_then_refine<'de, T, R, D>(deserializer: D) -> Result<Refined<T, R>, D::Error>
+where
+    T: serde::Deserialize<'de> + 'static,
+    R: Rule<T>,
+    R::Error: fmt::Display,
+    D: serde::Deserializer<'de>,
+{
+    let raw = T::deserialize(deserializer)?;
+    Refined::try_new(raw).map_err(serde::de::Error::custom)
+}
+
+/// Deserialize a `Refined<T, R>` through the rule's
+/// [`DeserializeRule`] hook (parse-then-refine for most rules;
+/// streaming bound enforcement for length-bounded collections).
 ///
 /// **Unknown-field policy is `T`'s decision, not whittle's.**
 /// `Refined<T, R>` has no visibility into `T`'s field-level
@@ -382,16 +503,14 @@ where
 #[cfg(feature = "serde")]
 impl<'de, T, R> serde::Deserialize<'de> for Refined<T, R>
 where
-    T: serde::Deserialize<'de> + 'static,
-    R: Rule<T>,
-    R::Error: fmt::Display,
+    T: 'static,
+    R: DeserializeRule<'de, T>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let raw = T::deserialize(deserializer)?;
-        Self::try_new(raw).map_err(serde::de::Error::custom)
+        R::deserialize_refined(deserializer)
     }
 }
 
@@ -507,6 +626,13 @@ mod tests {
         fn refine(raw: i32) -> Result<i32, Self::Error> {
             if raw >= 0 { Ok(raw) } else { Err(Negative) }
         }
+    }
+
+    // The downstream-facing one-liner: a custom rule keeps
+    // deserializing by stamping the default parse-then-refine
+    // `DeserializeRule` impl.
+    crate::deserialize_rule! {
+        impl[] DeserializeRule<i32> for NonNeg
     }
 
     impl super::ArbitraryRule<i32> for NonNeg {

@@ -242,6 +242,31 @@ pub trait ArbitraryDateTime: Rule<DateTime<Utc>> {
     fn arbitrary_datetime() -> Self::Strategy;
 }
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine.
+//      Applicable only when `chrono`'s own `serde` support is
+//      enabled by the consumer (the `DateTime<Utc>:
+//      Deserialize<'de>` bound is satisfied through feature
+//      unification). ──────────────────────────────────────────────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MIN_SECS_SINCE_EPOCH: i64] DeserializeRule<DateTime<Utc>>
+    for DateTimeAtLeast<MIN_SECS_SINCE_EPOCH>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MAX_SECS_SINCE_EPOCH: i64] DeserializeRule<DateTime<Utc>>
+    for DateTimeAtMost<MAX_SECS_SINCE_EPOCH>
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[const MIN_SECS_SINCE_EPOCH: i64, const MAX_SECS_SINCE_EPOCH: i64]
+    DeserializeRule<DateTime<Utc>>
+    for DateTimeInRange<MIN_SECS_SINCE_EPOCH, MAX_SECS_SINCE_EPOCH>
+}
+
 #[cfg(feature = "proptest")]
 impl<R: ArbitraryDateTime> ArbitraryRule<DateTime<Utc>> for R {
     type Strategy = R::Strategy;

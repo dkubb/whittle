@@ -783,6 +783,44 @@ where
 // their `Rule` and `ArbitraryRule` impls come from the underlying
 // generic impls above.
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine. ────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, const MIN: i128, const MAX: i128] DeserializeRule<T> for Within<MIN, MAX>
+    where [T: Numeric]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, const MIN: i128] DeserializeRule<T> for AtLeast<MIN>
+    where [T: Numeric]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, const MAX: i128] DeserializeRule<T> for AtMost<MAX>
+    where [T: Numeric]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, const MIN: i128] DeserializeRule<T> for GreaterThan<MIN>
+    where [T: Numeric]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, const MAX: i128] DeserializeRule<T> for LessThan<MAX>
+    where [T: Numeric]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, const N: i128] DeserializeRule<T> for EqualTo<N>
+    where [T: Numeric]
+}
+
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
 // Each rule's strategy emits values that are admissible by

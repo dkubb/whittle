@@ -922,6 +922,44 @@ where
     }
 }
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine. ────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, const MIN: usize, const MAX: usize] DeserializeRule<Vec<T>> for LenItems<MIN, MAX>
+    where [T: 'static]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, R] DeserializeRule<Vec<T>> for AllItems<R>
+    where [T: 'static, R: Rule<T>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, K] DeserializeRule<Vec<T>> for UniqueByKey<T, K>
+    where [T: 'static, K: KeyOf<T>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, K] DeserializeRule<Vec<T>> for Sorted<T, K>
+    where [T: 'static, K: KeyOf<T>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, P] DeserializeRule<Vec<T>> for NoneOf<P>
+    where [T: 'static, P: Predicate<T>]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[T, P] DeserializeRule<Vec<T>> for AnyOf<P>
+    where [T: 'static, P: Predicate<T>]
+}
+
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
 // Length-bounded vectors draw from `T`'s `Arbitrary` strategy.

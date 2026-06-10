@@ -513,6 +513,39 @@ impl<
     }
 }
 
+// ─── Serde `DeserializeRule` impls: default parse-then-refine. ────
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[F] DeserializeRule<F> for NotNan
+    where [F: Float]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[F] DeserializeRule<F> for NotInfinite
+    where [F: Float]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[F] DeserializeRule<F> for Finite
+    where [F: Float]
+}
+
+#[cfg(feature = "serde")]
+crate::deserialize_rule! {
+    impl[
+        F,
+        const MIN_NUMERATOR: i64,
+        const MIN_DENOMINATOR: i64,
+        const MAX_NUMERATOR: i64,
+        const MAX_DENOMINATOR: i64,
+    ] DeserializeRule<F>
+    for InClosedRange<MIN_NUMERATOR, MIN_DENOMINATOR, MAX_NUMERATOR, MAX_DENOMINATOR>
+    where [F: Float]
+}
+
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 
 #[cfg(feature = "proptest")]
