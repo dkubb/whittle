@@ -426,22 +426,29 @@ single source of truth, every artifact a refined named type needs:
 - the schema reflection;
 - the implication edges declared in the macro input.
 
-The macro's input MUST use named, ordered pipeline steps for the
-narrowing morphism: normalisation steps (`trim`, `to_lowercase`,
-`nfc_normalise`, ...) and validation steps (length bounds like
-`min_chars`, `max_chars`, character-class predicates like `each_char`,
-and so on) interleave in declaration order.
+The narrowing morphism MUST be expressed as named, ordered steps.
+Type-level composition satisfies this requirement: transformer rules
+(`Trim<R>`, `AsciiLowercase<R>`, ...) and validation rules
+(`LenChars<MIN, MAX>`, `EachChar<P>`, ...) compose in declaration
+order, and the composed rule type IS the pipeline. A macro-level step
+vocabulary is NOT required; the macro accepts a composed rule type as
+its single source of truth for the morphism. [Amended 2026-06-10: the
+original text required a macro-input step DSL (`trim`, `min_chars`,
+...); the type-level form expresses the same ordered, named, auditable
+pipeline without a second language, so the DSL form is no longer
+required.]
 
-A closure escape hatch MUST be supported for cases the structured
-vocabulary cannot express. The escape hatch MUST use a visibly distinct
-syntax (a `custom_refine:` step or equivalent) so that audit and tooling
-can distinguish structured pipeline steps (which produce schema
-metadata) from opaque closure bodies (which do not).
+An escape hatch MUST be supported for cases the structured vocabulary
+cannot express: a hand-written `Rule` implementation. This is visibly
+distinct from library compositions by construction — audit and tooling
+can distinguish a composed rule type (which can produce schema
+metadata) from a hand-written `refine` body (which cannot) without
+macro-level marking.
 
-The macro MUST NOT silently treat a closure-based normalisation step as
-equivalent to a named normalisation step. Silent business-policy
-normalisation is the failure mode the structured pipeline exists to
-prevent; users who reach for the closure escape hatch are accepting
+The library MUST NOT present a hand-written rule as equivalent to a
+named composition. Silent business-policy normalisation inside an
+opaque `refine` body is the failure mode the structured vocabulary
+exists to prevent; users who write a custom rule are accepting
 responsibility for canonicalisation's correctness.
 
 ### 5.11. Derived Property Generators
@@ -453,15 +460,27 @@ MUST generate only admissible values; the rejection-sampling approach
 ("generate any value, then filter through `refine`") is NOT RECOMMENDED
 as the default and MUST NOT be the only available implementation.
 
-The generation strategy MUST be derivable from the rule's reflectable
-schema (Section 5.9). For rules whose schema lacks structural
-content (the architecture document names these variants
-`Schema::Unconstrained { reason: OpaqueRule | CustomRefine }` and
-`Schema::ContextOpaque`), the library MUST NOT emit a default
-`Arbitrary` impl that uses rejection sampling. Users MAY provide a
-hand-written strategy; in its absence, the corresponding refined
-type does NOT implement `Arbitrary`. The library MUST NOT block
-manual implementations.
+Strategies MUST generate only admissible values. Until schema
+reflection (Section 5.9) is implemented, direct per-rule strategies
+(an `ArbitraryRule` trait implemented alongside each rule) are the
+sanctioned mechanism; the carrier's `Arbitrary` implementation MUST
+surface a strategy that emits an inadmissible value as a test-time
+defect, not silently filter it. Once a rule carries a structural
+schema, its generator SHOULD be derived from that schema (or at
+minimum cross-checked against it); direct implementations remain
+sanctioned for rules whose admissible state space exceeds the schema
+vocabulary. [Amended 2026-06-10: the original text required
+derivation from the reflectable schema; per-rule direct strategies
+are the interim mechanism, with schema derivation as the destination
+once Section 5.9 lands — each schema constructor that lands SHOULD
+convert its rule family from hand-written to derived generation.]
+
+For rules with no structural description (opaque custom `refine`,
+contextual opacity), the library MUST NOT emit a default `Arbitrary`
+impl that uses rejection sampling. Users MAY provide a hand-written
+strategy; in its absence, the corresponding refined type does NOT
+implement `Arbitrary`. The library MUST NOT block manual
+implementations.
 
 ### 5.12. Bidirectional Codecs
 
