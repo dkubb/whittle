@@ -21,6 +21,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod composition;
+pub mod implies;
 #[macro_use]
 mod macros;
 pub mod primitive;
@@ -30,6 +31,7 @@ pub mod testing;
 pub mod transform;
 
 pub use composition::{All, And, Any, ErrorMapper, MapErr, Not, Or, Xor};
+pub use implies::Implies;
 pub use primitive::StableUnderElementMap;
 #[cfg(feature = "proptest")]
 pub use rule::ArbitraryRule;
