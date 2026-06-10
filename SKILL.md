@@ -96,6 +96,14 @@ the domain; `Refined<T, R>` is implementation.
   `into_inner(self) -> T`. Forwards
   `Debug`, `Clone`, `Copy`, `Hash`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`
   to `T` with no rule wrapper noise.
+- `Implies<W>` + `Refined::weaken` (`crates/whittle-core/src/implies.rs`):
+  explicit "rule S is logically stronger than rule W" edges (IDEA §5.7).
+  `weaken::<W>()` upcasts `Refined<T, S>` to `Refined<T, W>` by moving the
+  inner value — no narrowing morphism re-runs. Library edges cover numeric
+  range narrowing (`Within`/`AtLeast`/`AtMost`/`GreaterThan`/`LessThan`)
+  and length narrowing (`LenChars`/`LenBytes`/`LenItems`); an invalid
+  widening (target does not contain the source range) is a compile error
+  at the `weaken` call site via the `const VALID` monomorphisation gate.
 - `refinement!` (macro, `crates/whittle-core/src/macros.rs:69`): expands
   `pub Foo: Inner, Rule;` to `pub struct Foo(Refined<Inner, Rule>)` plus
   `try_new`, `as_inner`, `into_inner`. Inherited attrs (`#[derive(...)]`,
@@ -406,6 +414,29 @@ Tradeoff: silently rewriting input is a different semantic from
 validation-only. Use transformers only when canonical form is part of the
 contract (hex hashes, hostnames, IANA tokens). For invariants where the
 input should be preserved verbatim, use the validation-only rule directly.
+
+### Weakening a proof without erasing it (`weaken`)
+
+Reach for `weaken` when a function accepts a looser refinement than the
+one you hold — e.g. you have a `Refined<u16, Within<10, 20>>` and the
+callee takes `Refined<u16, Within<0, 100>>`. The proof-erasing
+alternative (`into_inner` → `try_new`) re-runs the rule and forces the
+caller to handle an error that cannot happen; `weaken` moves the value
+and converts the proof in place:
+
+```rust
+let tight: Refined<u16, Within<10, 20>> = Refined::try_new(15)?;
+let wide: Refined<u16, Within<0, 100>> = tight.weaken();
+```
+
+The conversion is gated on `S: Implies<W>`; the library supplies the
+numeric and length family edges (see Core API), and custom rule pairs
+declare their own edge with `impl Implies<Weaker> for Stronger {}` after
+documenting the IDEA §5.7 three-property contract (admissibility
+containment, canonical-form compatibility, no re-run dependence). Do not
+declare self-edges (`impl Implies<R> for R`); the degenerate
+instantiation of a library family edge (`Within<0, 100>` →
+`Within<0, 100>`) is fine and is a no-op.
 
 ### Serde integration
 
