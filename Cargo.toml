@@ -155,6 +155,11 @@ path             = "tests/proptest-arbitrary.rs"
 required-features = ["proptest", "hex"]
 
 [[test]]
+name             = "property-harness"
+path             = "tests/property-harness.rs"
+required-features = ["proptest"]
+
+[[test]]
 name             = "serde-roundtrip"
 path             = "tests/serde-roundtrip.rs"
 required-features = ["serde"]

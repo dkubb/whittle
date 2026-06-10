@@ -25,6 +25,8 @@ pub mod composition;
 mod macros;
 pub mod primitive;
 mod rule;
+#[cfg(feature = "proptest")]
+pub mod testing;
 pub mod transform;
 
 pub use composition::{All, And, Any, ErrorMapper, MapErr, Not, Or, Xor};
@@ -32,6 +34,8 @@ pub use primitive::StableUnderElementMap;
 #[cfg(feature = "proptest")]
 pub use rule::ArbitraryRule;
 pub use rule::{Refined, Rule};
+#[cfg(feature = "proptest")]
+pub use testing::{prop_image_refines, prop_total};
 pub use transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 /// Compile-time-validated constructor for [`primitive::Pattern`].
 ///
