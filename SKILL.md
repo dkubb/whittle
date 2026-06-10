@@ -543,6 +543,45 @@ documented on the `StableUnderTrim` trait's docstring in
 `crates/whittle-core/src/transform.rs`. Follow it whenever introducing
 a new transformer or a new marker impl.
 
+#### Boundary-matrix checklist (manual)
+
+Constructor faithfulness — the smart constructor accepts *exactly* the
+admitted set — is tested on the constructor with a hand-written
+boundary matrix. For **each bounded rule conversion** (a new
+`Refined<T, R>` / `refinement!` newtype whose rule carries MIN/MAX
+bounds), write these five tests, asserting the **exact error variant**
+on every reject (not a bare `is_err()`):
+
+1. **Accept at MIN** — `try_new(min)` succeeds; inner value
+   round-trips.
+2. **Accept at MAX** — `try_new(max)` succeeds; inner value
+   round-trips.
+3. **Reject at MIN − 1** — `try_new(min - 1)` fails with the exact
+   variant (e.g. `NumericError::OutOfRange { value }`,
+   `StringError::TooShort { .. }`). For `MIN = 0` length rules this
+   case is unrepresentable — document the skip at the test site.
+4. **Reject at MAX + 1** — `try_new(max + 1)` fails with the exact
+   variant.
+5. **One charset/class miss** — where the rule constrains content as
+   well as bounds (charset, hex, pattern, per-char predicate), one
+   in-bounds input with a single forbidden character, asserting the
+   exact variant (e.g. `StringError::BadChar { offset }`).
+
+This matrix is the input-side counterpart of the
+`whittle::testing` harness (`prop_total` / `prop_image_refines`),
+which covers totality and image-validity; the edge-biased generators
+cover boundary reachability. The matrix alone pins the accept/reject
+*frontier*.
+
+**Why no generator (R-T1 deferred).** A macro that emits this matrix
+is deferred until schema reflection (IDEA §5.9) lands. Without a
+schema the generator cannot read MIN/MAX off the rule, so the bounds
+would have to be restated at the test site — a second determinant for
+the same bound, the exact P3 ("one determinant") violation whittle
+exists to remove. Once the rule tree is reflectable, the matrix can be
+derived from the single in-type declaration; until then, write the
+five cases by hand.
+
 ### Feature gating
 
 Workspace root `Cargo.toml` lists workspace-level features
