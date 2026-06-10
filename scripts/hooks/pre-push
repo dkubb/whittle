@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Gate: the branch must be 100%-covered before it leaves the machine.
-# Coverage is too slow for pre-commit (breaks the atomic-commit workflow),
-# so it runs here, once, before push.
+# Gates, in order:
+#   1. Default-features tests must compile (`just test-default-build`):
+#      every other gate runs --all-features, so a test that uses a
+#      feature-gated item without a cfg gate is only caught here.
+#   2. The branch must be 100%-covered before it leaves the machine.
+# Both are too slow for pre-commit (they break the atomic-commit
+# workflow), so they run here, once, before push.
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -25,6 +29,15 @@ export PATH="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN-$(rustc -vV | s
 SYSROOT="$(rustc --print sysroot)"
 HOST="$(rustc -vV | sed -n 's/^host: //p')"
 LLVM_BIN="$SYSROOT/lib/rustlib/$HOST/bin"
+
+echo "pre-push: building default-features tests (feature-gate gate)..." >&2
+if ! cargo test -p whittle-core --no-run >/tmp/whittle-prepush-default-build.log 2>&1; then
+    echo "pre-push: default-features test build FAILED — see /tmp/whittle-prepush-default-build.log" >&2
+    tail -20 /tmp/whittle-prepush-default-build.log >&2
+    echo "pre-push: push aborted. Add cfg gates so the default feature set builds." >&2
+    exit 1
+fi
+echo "pre-push: default-features test build passed." >&2
 
 echo "pre-push: running cargo coverage (100% gate)..." >&2
 if ! LLVM_COV="$LLVM_BIN/llvm-cov" LLVM_PROFDATA="$LLVM_BIN/llvm-profdata" \

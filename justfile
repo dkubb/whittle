@@ -8,8 +8,9 @@
 default:
     @just --list
 
-# Run every gate in `ci` order: fmt-check, lint, test, docs.
-ci: fmt-check lint test docs
+# Run every gate in `ci` order: fmt-check, lint, test,
+# test-default-build, docs.
+ci: fmt-check lint test test-default-build docs
 
 # Markdown lint over the committed Markdown set.
 docs:
@@ -26,6 +27,13 @@ lint:
 # Unit, doc, and integration tests across the workspace.
 test:
     cargo test --workspace --all-features
+
+# Default-features test compile. Every other gate runs
+# --all-features, so a test that uses a feature-gated item without
+# a cfg gate breaks only here; `scripts/hooks/pre-push` enforces
+# the same threshold before a branch leaves the machine.
+test-default-build:
+    cargo test -p whittle-core --no-run
 
 # Build the rustdoc tree without dependencies.
 doc-build:
