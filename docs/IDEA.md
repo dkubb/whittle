@@ -302,8 +302,20 @@ The library MUST provide a set of rule primitives covering at least:
 - length bounds for collections and strings;
 - per-element character-class predicates for strings;
 - non-empty markers for collections and strings;
-- subset-of-sum markers for enumerated types (accept only listed
-  variants of an enum);
+- closed-set parses for enumerated types: a wire string admitted
+  against a single declared injective string ↔ variant table and
+  parsed into the enum itself, with the parse, the wire form, the
+  typed error's expected set, and the derived integrations all
+  determined by that one table. [Amended 2026-06-11: the original
+  bullet required subset-of-sum markers (accept only listed
+  variants of an enum). The requirement is split: (a) closed-set
+  parse into a full enum is MUST and is satisfied by the
+  `closed_set!` family; (b) enum-side subset markers over an
+  existing enum are deferred — a smaller local enum with a
+  `From<Local> for Foreign` impl strictly dominates in every
+  observed case, so (b) waits for the documented hard case:
+  overlapping subsets of one (typically foreign) enum where
+  per-subset local enums explode combinatorially.];
 - binary composition operators (`And`, `Or`); n-ary composition is
   expressible by nesting (the declarative macro performs the nesting
   on the user's behalf) so a single domain type can layer length,

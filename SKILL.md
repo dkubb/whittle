@@ -111,6 +111,16 @@ the domain; `Refined<T, R>` is implementation.
   flatten errors — `Foo::try_new` returns `<Rule as Rule<Inner>>::Error`
   unchanged. When the rule is a composition and you need a flat domain
   error, hand-write the newtype.
+- `ClosedSet` + `closed_set!` (`crates/whittle-core/src/closed_set.rs`,
+  macro in `crates/whittle-core/src/macros.rs`): closed-set enums —
+  wire string ↔ variant, declared once. Not a `Rule`/`Refined` pair:
+  the enum itself is the constructive target. The macro generates the
+  enum, the injective `MEMBERS` table (duplicate wire strings rejected
+  at compile time via the `const VALID` gate; duplicate variants are a
+  duplicate-definition error), the standard derive set, and
+  `FromStr`/`TryFrom<&str>`/`Display` plus serde impls forwarding to
+  `closed_set::parse` / `closed_set::as_str`. See the closed-set
+  pattern below for when to choose it over `Pattern` or a plain enum.
 - `And<A, B>` (`crates/whittle-core/src/composition.rs`): both rules
   must accept; `A::refine` runs first, output threaded into `B::refine`.
   Both rules must share `Rule::Error = E`. `Self::Error = E` — the
@@ -437,6 +447,73 @@ containment, canonical-form compatibility, no re-run dependence). Do not
 declare self-edges (`impl Implies<R> for R`); the degenerate
 instantiation of a library family edge (`Within<0, 100>` →
 `Within<0, 100>`) is fine and is a no-op.
+
+### Closed-set enums (`closed_set!`)
+
+When a provider field is a small fixed set of nominal wire tokens
+parsed into an enum (`"active"`/`"inactive"`, branch codes, ISO
+currency codes), do not reach for `Refined` at all. The enum is
+already constructive — its representable states are exactly the
+admissible states — so the right artifact is the enum plus one
+declaration of the wire table:
+
+```rust
+whittle::closed_set! {
+    /// Account activity status.
+    pub enum ActivityStatus {
+        /// The account is in active use.
+        Active = "active",
+        /// The account is dormant.
+        Inactive = "inactive",
+    }
+}
+
+let status: ActivityStatus = "active".parse()?;   // FromStr → parse
+assert_eq!(status.to_string(), "active");          // Display → as_str
+```
+
+The declaration is the single determinant. The macro generates the
+enum, the injective `ClosedSet::MEMBERS` table, the standard derive
+set (`Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord` —
+do not re-derive these via the attribute passthrough),
+`FromStr`/`TryFrom<&str>`/`Display`, and — behind the `serde`
+feature — `Serialize`/`Deserialize` with a plain-string wire shape
+routed through `parse`. Behind the `proptest` feature,
+`closed_set::admissible::<E>()` (select-from-table, admissible by
+construction) and `closed_set::rejects::<E>()` (derived case-flips,
+truncations, extensions, empty string, filtered arbitrary) come
+from the same table, so boundary tests need no hand-maintained
+reject list. Rejections carry the bounded offending value and the
+expected set; a duplicate wire string is a compile error. v1 is
+injective-only: exact, case-sensitive matching, no aliases.
+
+Least-power decision table:
+
+| You have | Reach for |
+|---|---|
+| Fixed wire tokens ↔ enum variants | `closed_set!` |
+| Enum with no wire form | plain enum |
+| Positional string grammar (prefixes, segments) | `pattern!` |
+| Bounded / char-class string | `Refined<String, …>` newtype |
+| Subset of a foreign enum | smaller local enum + `From` impl |
+
+Why not the alternatives:
+
+- `Refined<String, OneOfStrings<…>>` — predicative carrier: every
+  consumer matches on strings behind `_ => unreachable!()` arms,
+  and the enum (where representable = admissible) already exists.
+- `Pattern<"^(?:active|inactive)$">` — over-powered: regex engine
+  capability is pure gap for a finite nominal set, the `NoMatch`
+  error is opaque, members are not enumerable for generation or
+  reject derivation, and it drags `regex` + nightly + `std` into a
+  dependency-free invariant.
+- A plain enum with a hand-written `try_new` — redeclares the same
+  admitted set in the parser, the tests, and the error (many
+  determinants for one fact), with per-consumer coverage burden.
+- Enum-side subset markers (`OnlyVariants<…>`) — deliberately
+  deferred (IDEA §5.6): a smaller local enum with
+  `From<Local> for Foreign` strictly dominates until the documented
+  hard case shows up (overlapping subsets of one foreign enum).
 
 ### Serde integration
 
