@@ -21,7 +21,9 @@
 //! A hand-written [`ClosedSet`] impl carries two obligations:
 //!
 //! 1. **Wire-string injectivity** — no two table entries share a
-//!    wire string.
+//!    wire string. This is compile-time checked by
+//!    [`ClosedSet::VALID`], which [`parse`] and [`as_str`] force at
+//!    monomorphisation.
 //! 2. **Variant coverage** — every variant of the enum appears in
 //!    `MEMBERS` exactly once. The type system cannot see "every
 //!    variant" generically, so this is a documented contract;
@@ -51,9 +53,10 @@ const MAX_RENDERED_MEMBERS: usize = 8;
 /// the error's expected-set payload are all derived from it.
 ///
 /// The table must be injective in both directions — no duplicate
-/// wire strings and no duplicate variants (a documented obligation
-/// for hand-written impls; see the [module docs](self)). Aliases
-/// (many wire strings mapping to one variant) are deliberately not
+/// wire strings (checked at compile time by [`VALID`](Self::VALID))
+/// and no duplicate variants (a documented obligation for
+/// hand-written impls; see the [module docs](self)). Aliases (many
+/// wire strings mapping to one variant) are deliberately not
 /// supported.
 ///
 /// # Examples
@@ -85,6 +88,86 @@ pub trait ClosedSet: Copy + PartialEq + Sized + 'static {
     /// table. Order is the declaration order and is what
     /// [`ClosedSetError`]'s `Display` renders.
     const MEMBERS: &'static [(&'static str, Self)];
+
+    /// Compile-time witness that the table is well-formed:
+    /// non-empty and with no duplicate wire strings.
+    ///
+    /// [`parse`] and [`as_str`] evaluate this const at
+    /// monomorphisation (the same house pattern as `Within`'s
+    /// `MIN <= MAX` gate and [`Implies::VALID`](crate::Implies)),
+    /// so an impl whose table declares the same wire string twice
+    /// is a compile error at first use.
+    ///
+    /// A table mapping one wire string to two variants is rejected
+    /// here; a table mapping one *variant* to two wire strings (an
+    /// alias) cannot be detected generically at compile time
+    /// (`PartialEq` is not const-callable) and remains covered by
+    /// the documented variant-coverage obligation instead.
+    ///
+    /// ```compile_fail
+    /// use whittle_core::ClosedSet;
+    ///
+    /// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// enum Dup {
+    ///     A,
+    ///     B,
+    /// }
+    ///
+    /// impl ClosedSet for Dup {
+    ///     const MEMBERS: &'static [(&'static str, Self)] =
+    ///         &[("same", Self::A), ("same", Self::B)];
+    /// }
+    ///
+    /// // error[E0080]: duplicate wire string in ClosedSet::MEMBERS
+    /// const _: () = <Dup as ClosedSet>::VALID;
+    /// ```
+    const VALID: () = {
+        assert!(
+            !Self::MEMBERS.is_empty(),
+            "ClosedSet::MEMBERS must be non-empty: an empty closed set admits \
+             nothing and cannot witness any enum variant",
+        );
+        assert!(
+            !has_duplicate_wire_string(Self::MEMBERS),
+            "duplicate wire string in ClosedSet::MEMBERS: the table must map \
+             each wire string to exactly one variant",
+        );
+    };
+}
+
+/// Const-evaluable byte-wise string equality (`==` on `str` is not
+/// const-callable).
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Const-evaluable pairwise duplicate scan over the table's wire
+/// strings. `O(n^2)` at compile time; closed sets are small by
+/// definition.
+const fn has_duplicate_wire_string<E>(members: &[(&str, E)]) -> bool {
+    let mut i = 0;
+    while i < members.len() {
+        let mut j = i + 1;
+        while j < members.len() {
+            if str_eq(members[i].0, members[j].0) {
+                return true;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Rejection produced by [`parse`] when the input is not a member
@@ -247,6 +330,7 @@ impl<E: core::fmt::Debug> core::error::Error for ClosedSetError<E> {}
 /// ```
 #[inline]
 pub fn parse<E: ClosedSet>(raw: &str) -> Result<E, ClosedSetError<E>> {
+    const { E::VALID };
     for &(wire, variant) in E::MEMBERS {
         if wire == raw {
             return Ok(variant);
@@ -308,6 +392,7 @@ pub fn parse<E: ClosedSet>(raw: &str) -> Result<E, ClosedSetError<E>> {
               surface for a buggy hand-written impl"
 )]
 pub fn as_str<E: ClosedSet>(value: E) -> &'static str {
+    const { E::VALID };
     for &(wire, variant) in E::MEMBERS {
         if variant == value {
             return wire;
@@ -328,7 +413,7 @@ pub fn as_str<E: ClosedSet>(value: E) -> &'static str {
 mod tests {
     use alloc::string::ToString as _;
 
-    use super::{ClosedSet, as_str, parse};
+    use super::{ClosedSet, as_str, has_duplicate_wire_string, parse, str_eq};
 
     /// First monomorphisation of the generic fns.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -537,5 +622,34 @@ mod tests {
         // branches and `as_str`.
         let nine = parse::<Digit>("nine").unwrap();
         assert_eq!(as_str(nine), "nine");
+    }
+
+    // ─── Const helpers, exercised at runtime for coverage. ────────
+
+    #[test]
+    fn str_eq_distinguishes_equal_prefixes_and_lengths() {
+        assert!(str_eq("active", "active"));
+        assert!(!str_eq("active", "activé"));
+        assert!(!str_eq("active", "act"));
+    }
+
+    #[test]
+    fn has_duplicate_wire_string_detects_pairwise_duplicates() {
+        assert!(!has_duplicate_wire_string(&[("a", 0_u8), ("b", 1_u8)]));
+        assert!(has_duplicate_wire_string(&[
+            ("a", 0_u8),
+            ("b", 1_u8),
+            ("a", 2_u8),
+        ]));
+    }
+
+    #[test]
+    fn valid_default_passes_for_well_formed_tables() {
+        // Force the side condition for each well-formed impl; a
+        // failure would be a compile error, so compiling (and
+        // reaching) these consts is the assertion.
+        const { <Status as ClosedSet>::VALID };
+        const { <Toggle as ClosedSet>::VALID };
+        const { <Digit as ClosedSet>::VALID };
     }
 }
