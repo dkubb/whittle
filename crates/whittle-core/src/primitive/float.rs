@@ -13,9 +13,10 @@
 //!   refinement for code that compares, sums, or divides values.
 //! - `InClosedRange<MIN, MAX>`: inclusive bound. Constants are
 //!   passed as `(numerator, denominator)` so floating-point endpoints
-//!   can be expressed exactly in the const-generic syntax. The
-//!   denominator must be non-zero; the rule rejects everything when
-//!   the range is empty (`MIN > MAX`) or the denominator is zero.
+//!   can be expressed exactly in the const-generic syntax. A zero
+//!   denominator or an empty range (`MIN > MAX`) fails to compile —
+//!   both are rejected by `const { assert!(...) }` at
+//!   monomorphisation, so no runtime rejects-everything state exists.
 
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
