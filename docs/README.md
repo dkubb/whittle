@@ -11,13 +11,13 @@ guaranteed by construction.
 - [IDEA.md](IDEA.md) — authoritative project specification (RFC-style):
   goals, scope, product model, normative requirements, non-goals,
   reliability and security considerations.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — concrete architecture derived
-  from IDEA.md: workspace layout, dependency direction, the `Rule`
-  trait and `Refined` carrier, library-supplied primitive rules,
-  contextual rules, schema reflection and derived integrations,
-  implication and subtyping, the `refinement!` declarative macro and
-  `#[derive(Refined)]` derive, testing architecture, build sequence,
-  open issues.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — concrete architecture of the
+  implemented library, derived from IDEA.md: workspace layout, gates,
+  dependency direction, the `Rule` trait and `Refined` carrier,
+  library-supplied primitive rules and composition, closed sets,
+  implication and subtyping, the declarative and procedural macros,
+  testing architecture, and the planned milestones with their
+  evidence triggers.
 - [DESIGN.md](DESIGN.md) — high-level narrative sketch that summarises
   the normative documents at a single sitting's worth of reading;
   intended as on-ramp, not as authoritative source.

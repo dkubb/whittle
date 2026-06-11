@@ -7,32 +7,31 @@ Markdown form. The document borrows structure and editorial discipline from
 RFC 7322 and uses RFC 2026 as process vocabulary for maturity, review, and
 applicability.
 
-This document is the concrete architecture for Whittle. It is derived from
-[IDEA.md](IDEA.md), which is authoritative for goals, scope, non-goals,
-and invariants. When this document conflicts with [IDEA.md](IDEA.md),
-[IDEA.md](IDEA.md) takes precedence.
-
-Section 16 is non-normative sequencing guidance. Section 17 is a
-non-normative open-issue list. Staged decisions MUST NOT weaken the
-invariants in [IDEA.md](IDEA.md).
+This document is the concrete architecture for Whittle and describes the
+library as implemented. It is derived from [IDEA.md](IDEA.md), which is
+authoritative for goals, scope, non-goals, and invariants. When this
+document conflicts with [IDEA.md](IDEA.md), [IDEA.md](IDEA.md) takes
+precedence. Designs that are required or admitted by [IDEA.md](IDEA.md)
+but not yet built are collected in Section 15 with their evidence
+triggers; every other section describes shipped code.
 
 Abstract
 
 This document specifies the architecture for the Whittle library: a Rust
 parse-don't-validate engine that narrows raw input into refined values at
 construction time and propagates the resulting proofs through ordinary
-Rust types. The architecture uses a Cargo workspace with one facade crate
-and three member crates: a pure core crate holding the `Rule` trait,
-the `Refined` carrier, the contextual-rule companion, the implication
-trait, the library-supplied primitive rules, and (behind a `proptest`
-feature) the `proptest::Strategy` derivation; a proc-macro crate
-hosting the `refinement!` declarative macro and `#[derive(Refined)]`
-derive; and a workspace-internal integration-test crate. `serde`,
-`schemars`, `sqlx`, and `proptest` are integration modules exposed on
-the facade crate behind Cargo features; keeping the `Arbitrary` impl
-inside `whittle-core` (rather than a separate `whittle-arbitrary`
-crate) avoids Rust's orphan-rule violation for the foreign
-`Arbitrary` trait on the foreign `Refined<T, R>` type.
+Rust types. The implementation is a Cargo workspace with a thin facade
+package at the root and two member crates: `whittle-core`, a `no_std`
+kernel holding the `Rule` trait, the `Refined` carrier, the composition
+operators, the library-supplied primitive rules, the closed-set family,
+the implication trait, and the declarative macros; and `whittle-macros`,
+a proc-macro crate hosting the compile-time-validated `pattern!` macro.
+The kernel is dependency-free by default; `serde`, `proptest`, `regex`,
+`rust_decimal`, `chrono`, and Unicode-category support are opt-in Cargo
+features. The `serde` and `proptest` impls for `Refined<T, R>` live
+inside `whittle-core` (rather than separate integration crates) because
+implementing a foreign trait for `Refined` from any other crate would
+violate Rust's orphan rule.
 
 Table of Contents
 
@@ -48,33 +47,52 @@ Table of Contents
 - [Section 10: Library-Supplied Primitive Rules](#10-library-supplied-primitive-rules)
   ([Numeric](#101-numeric), [Floating-Point](#102-floating-point),
   [Decimal](#103-decimal), [String Grammar](#104-string-grammar),
-  [Collection](#105-collection), [Enum Subset](#106-enum-subset),
-  [Composition](#107-composition), [Date](#108-date),
-  [DateTime](#109-datetime))
-- [Section 11: Contextual Rules](#11-contextual-rules)
-- [Section 12: Schema Reflection and Derived Integrations](#12-schema-reflection-and-derived-integrations)
-- [Section 13: Implication and Subtyping](#13-implication-and-subtyping)
-- [Section 14: The Refinement Macro](#14-the-refinement-macro)
-- [Section 15: Testing Architecture](#15-testing-architecture)
-- [Section 16: Build Sequence](#16-build-sequence)
-- [Section 17: Open Issues](#17-open-issues)
-- [Section 18: References](#18-references)
+  [String Transformers](#105-string-transformers),
+  [Collection](#106-collection), [Composition](#107-composition),
+  [Date](#108-date), [DateTime](#109-datetime), [Path](#1010-path),
+  [Pattern](#1011-pattern))
+- [Section 11: Closed Sets](#11-closed-sets)
+- [Section 12: Implication and Subtyping](#12-implication-and-subtyping)
+- [Section 13: Macros](#13-macros)
+- [Section 14: Testing Architecture](#14-testing-architecture)
+- [Section 15: Planned Milestones](#15-planned-milestones)
+- [Section 16: References](#16-references)
 
 ## 1. Introduction
 
 Whittle is a Rust library that turns untrusted raw values into refined
 values through a single user-defined rule per refinement. The refinement
 runs at construction time; once a refined value exists, downstream code
-trusts it without further checks. The library provides the kernel (`Rule`,
-`Refined`, implication, contextual variants), a set of primitive rules
-for common cases, a declarative macro that emits named refinements from
-one source of truth, and derived integrations for property testing,
-serialization, JSON Schema, and SQL row decoding.
+trusts it without further checks.
+
+The shipped surface comprises:
+
+- the kernel: the `Rule<T>` trait and the `Refined<T, R>` carrier, with
+  `try_new` as the sole public construction path;
+- library-supplied primitive rules for numerics, floats, decimals,
+  strings, collections, dates, datetimes, relative paths, and regex
+  patterns;
+- composition operators (`And`, `Or`, `Not`, `Xor`, `MapErr`, and the
+  n-ary `All`/`Any`) that keep error types flat;
+- string transformers (`Trim`, `AsciiLowercase`, `AsciiUppercase`) that
+  canonicalise before delegating;
+- the closed-set family (`ClosedSet`, `closed_set!`) for parsing wire
+  strings into plain enums;
+- the `Implies` trait and the `weaken` upcast;
+- declarative macros (`refinement!`, `deserialize_rule!`, `closed_set!`)
+  and the procedural `pattern!` macro;
+- behind the `serde` feature, deserialization gated through the rule,
+  with streaming bound enforcement for length-bounded collections;
+- behind the `proptest` feature, per-rule admissible-by-construction
+  strategies and the `prop_total` / `prop_image_refines` test harness.
 
 This document specifies the concrete mechanisms that realize the
 requirements in [IDEA.md](IDEA.md). The architecture is a Technical
 Specification in the RFC 2026 sense: it describes concrete procedures,
-conventions, and formats for this library.
+conventions, and formats for this library. Requirements that are stated
+in [IDEA.md](IDEA.md) are cited, not restated; the practitioner guide in
+the repository root `SKILL.md` covers usage patterns and is likewise not
+duplicated here.
 
 ## 2. Requirements Language
 
@@ -97,14 +115,12 @@ Reference inputs are:
 
 - the `refined` crate, whose `Predicate::test(&T) -> bool` shape we
   deliberately diverge from in favour of consume-and-rebuild narrowing;
-- the `witnessed` crate, whose contextual-witness pattern (a
-  `WitnessIn<T, Env>` trait with borrowed and owned environment
-  carriers) we adopt;
-- the `branded` crate, whose nominal-newtype derive structure informs
-  the macro's generated surface (`Display`, `AsRef`, `Deref`, optional
-  `serde`/`sqlx` derivation);
+- the `witnessed` crate, whose contextual-witness pattern informs the
+  planned contextual-rule design (Section 15);
+- the `branded` crate, whose nominal-newtype structure informs the
+  delegating surface domain newtypes expose;
 - the Effect.Schema library, whose schema-as-value design informs the
-  reflectable-schema architecture in Section 12;
+  planned schema reflection (Section 15);
 - the [DESIGN.md](DESIGN.md) sketch that preceded this document, which
   this document supersedes for architectural commitments.
 
@@ -112,78 +128,103 @@ Reference inputs are:
 
 The implementation uses these concrete foundations:
 
-- Language: Rust, edition 2024.
-- Toolchain: pinned per commit via `rust-toolchain.toml`.
+- Language: Rust, edition 2024; workspace `rust-version` 1.94.
+- Toolchain: a pinned nightly via `rust-toolchain.toml` (with
+  `rustfmt`, `clippy`, and `llvm-tools-preview` components). Nightly is
+  required by the branch-coverage gate (Section 5) and, behind the
+  `regex` feature, by the `adt_const_params` / `unsized_const_params`
+  features that let a `&'static str` regex live in a const generic.
 - Workspace shape: one Cargo workspace containing a thin facade package
-  at the workspace root and three member crates under `crates/`.
+  at the workspace root and two member crates under `crates/`.
+- `whittle-core` is `#![no_std]` with `alloc`; it pulls in `std` only
+  when the `regex` feature is enabled (the regex crate and its keyed
+  compile cache require `std`).
 - Async runtime: none. Whittle is synchronous; the constructor surface
   is `fn`, not `async fn`.
-- Serialization: `serde` with derive support, behind a Cargo feature.
-- JSON Schema: `schemars`, behind a Cargo feature.
-- SQL row decoding: `sqlx`, behind a Cargo feature.
-- Property testing: `proptest`, behind a Cargo feature. `quickcheck`
-  support is a future extension.
-- Numeric representation for decimals: `rust_decimal`, behind the
-  `decimal` Cargo feature (shipped).
-- Time representation: `chrono` (no-default-features,
-  `no_std`-compatible), behind the `chrono` Cargo feature (shipped).
-- Unicode general-category lookup: `unicode-general-category`, behind
-  the `unicode` Cargo feature (shipped); backs `PrintableChar`.
-- Bounded collections: `bounded-vec`, `non-empty-string`, shared across
-  crates via `workspace.dependencies`.
-- Error handling: `thiserror` for typed error definitions.
+- Default feature set: **empty**. A default build of the kernel has no
+  dependencies at all.
 
-Local `whittle-core` domain types built on the foundations above include
-the `Rule` trait, the `Refined<T, R>` carrier, `RuleWith<T, Env>`, the
-`RefinedWith` family, the `Implies` trait, the `Schema` reflection enum,
-and the library-supplied primitive rule markers. These are part of the
-crate's public surface, not external dependencies.
+Optional dependencies, each behind the Cargo feature of the same name
+unless noted:
 
-### 4.1. Constants
+| Feature    | Dependency                          | Notes               |
+| ---------- | ----------------------------------- | ------------------- |
+| `serde`    | `serde` (no default features)       | codec + gating      |
+| `proptest` | `proptest` (`std` feature)          | strategies, harness |
+| `decimal`  | `rust_decimal` (no default feats)   | decimal rules       |
+| `chrono`   | `chrono` (no default features)      | date/datetime rules |
+| `unicode`  | `unicode-general-category`          | `PrintableChar`     |
+| `regex`    | `regex` + `whittle-macros`          | `Pattern`, needs std|
+| `hex`      | (none)                              | hex string rules    |
 
-Numeric limits referenced throughout the architecture live in
-`whittle-core::limits` as `pub const` items. The initial values satisfy
-the requirements of [IDEA.md](IDEA.md):
+Error types are hand-written enums implementing `core::error::Error`;
+the library does not depend on `thiserror`, and bounded carriers are
+expressed as rules over `String` / `Vec<T>` rather than via external
+bounded-container crates. Dev-dependencies (test-only) are `proptest`,
+`serde` with derive, `serde_json`, and `serde_test`; the facade
+additionally uses `thiserror` in its integration-test corpus.
 
-| Constant | Value | Unit | Used in |
-| --- | --- | --- | --- |
-| `MAX_STRING_LEN` | 65536 | UTF-8 bytes | default `LenBytes` cap |
-| `MAX_COLLECTION_LEN` | 65536 | items | default `LenItems` cap |
-| `MAX_ENUM_VARIANTS` | 256 | variants | `subset_of!` admit list cap |
-| `MAX_RULE_DEPTH` | 32 | nesting levels | `And`/`Or` nesting cap |
-| `MAX_SCHEMA_NODES` | 4096 | nodes | `Schema` tree size cap |
-
-Implementations MAY raise these constants; they MUST NOT lower any
-constant below a value that breaks a documented integration test.
+There is no central limits module. Every bound is a const-generic
+parameter on the rule that owns it (`LenBytes<MIN, MAX>`,
+`LenItems<MIN, MAX>`, ...), so the bound's single determinant is the
+rule instantiation at the use site. The only library-chosen numeric
+limits are the closed-set diagnostic caps (Section 11).
 
 ## 5. Toolchain and Gates
 
-The local gate vocabulary is provided by `just` and cargo aliases:
+The local gate vocabulary is provided by `just` recipes backed by cargo
+aliases in `.cargo/config.toml`:
 
+- `just ci` runs the full local gate, in order: `fmt-check`, `lint`,
+  `test`, `test-default-build`, `docs`.
 - `just fmt-check` runs `cargo fmt --all --check`.
-- `just lint` runs the `clippy-all` alias, which expands to
-  `cargo clippy --all-features --all-targets --tests --workspace`.
-- `just test` runs the `test-all` alias (nextest under the hood) plus
-  `cargo test --doc --workspace --all-features`.
-- `just docs` runs `mado check` against the committed Markdown
-  documents using the repository's `.mado.toml` configuration.
-- `just deny` runs `cargo deny check` against `.cargo/deny.toml`.
-- `just coverage` runs `cargo llvm-cov` and asserts zero uncovered
-  regions, functions, or lines.
-- `just ci` runs the full gate: `check deny`, where `check` itself is
-  `fmt-check lint test docs coverage`.
+- `just lint` runs
+  `cargo clippy --workspace --all-features --all-targets`.
+- `just test` runs `cargo test --workspace --all-features` (unit, doc,
+  and integration tests).
+- `just test-default-build` runs `cargo test -p whittle-core --no-run`.
+  Every other gate runs `--all-features`, so a test that uses a
+  feature-gated item without a `cfg` gate breaks only here.
+- `just docs` runs `mado check` over `git ls-files '*.md'` using
+  `.mado.toml`. The tracked-file list is the single determinant of the
+  linted set: gitignored scratch documents are excluded and newly
+  tracked Markdown joins the gate automatically.
+- `just doc-build` builds the rustdoc tree
+  (`cargo doc --workspace --all-features --no-deps`).
 
-Lint posture: every default Clippy lint, plus `pedantic`, `nursery`,
-`cargo`, and `restriction`, is denied. Every Rustdoc lint is denied.
-Suppressions MUST use `#![expect(LINT, reason = "…")]` with a reason
-string. The unfulfilled-lint-expectations lint is denied so an `expect`
-whose lint does not fire becomes a build failure.
+The `cargo coverage` alias runs `cargo llvm-cov nextest` over the whole
+workspace with `--all-features` and `--branch`, and fails on any
+uncovered region, function, or line (thresholds 0). Together with the
+branch flag this enforces 100% coverage on four axes: regions,
+functions, lines, and branches. `whittle-macros` is excluded from the
+file filter because proc-macro code executes inside the compiler, where
+coverage instrumentation cannot observe it; its expansion output is
+covered by `whittle-core` and facade tests instead.
+
+Git hooks are tracked in `scripts/hooks/` and installed into
+`.git/hooks` by `scripts/install-hooks.sh`:
+
+- `pre-commit` runs the rustfmt check (fast; per commit).
+- `pre-push` runs the default-features test compile and the
+  `cargo coverage` 100% gate (slow; once per push), pinning the
+  toolchain from `rust-toolchain.toml` for every nested cargo
+  invocation.
+
+Lint posture: workspace lints are declared in the root `Cargo.toml`.
+Every Clippy group — `all`, `pedantic`, `nursery`, `cargo`, and
+`restriction` — is denied, with a documented allow-back list (each
+entry carries its reason as a comment). Every Rustdoc lint is denied.
+Suppressions MUST use `#[expect(LINT, reason = "...")]`; an `expect`
+whose lint does not fire is itself a build failure.
+`.cargo/clippy.toml` carries the disallowed-methods configuration.
 
 Dependency-license posture: `.cargo/deny.toml` allows the standard
-permissive set (MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception,
-BSD-3-Clause, ISC, Unicode-3.0, BSL-1.0, CC0-1.0, CDLA-Permissive-2.0,
-0BSD, Unlicense, Zlib). Unknown registries are denied. Unknown git
-sources are denied.
+permissive set (0BSD, Apache-2.0, Apache-2.0 WITH LLVM-exception,
+BSD-3-Clause, BSL-1.0, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT,
+Unicode-3.0, Unlicense, Zlib); unknown registries and unknown git
+sources are denied. `cargo deny check` is run ad hoc (it is wired via
+the `[deny]` table in `.cargo/config.toml`) and is not part of
+`just ci`.
 
 ## 6. Crate and Module Shape
 
@@ -193,16 +234,30 @@ The repository layout is:
 whittle/
 ├── Cargo.toml                  workspace + thin facade package
 ├── justfile                    gate recipes
-├── rust-toolchain.toml
+├── rust-toolchain.toml         pinned nightly + components
 ├── .mado.toml                  Markdown lint configuration
 ├── .cargo/
 │   ├── clippy.toml             disallowed-methods configuration
-│   ├── config.toml             cargo aliases + build flags
+│   ├── config.toml             cargo aliases (coverage, test-all, ...)
 │   └── deny.toml               license allowlist, registry rules
-├── src/lib.rs                  re-exports core + selected features
-├── tests/                      integration tests exercising the feature matrix
+├── src/lib.rs                  facade: re-exports whittle-core (+ pattern!)
+├── tests/                      integration corpus (feature-gated targets)
+├── scripts/
+│   ├── install-hooks.sh        copies tracked hooks into .git/hooks
+│   └── hooks/                  pre-commit, pre-push
 ├── crates/
-│   └── whittle-core/           Rule, Refined, refinement!, primitives, Schema, Implies
+│   ├── whittle-core/           the no_std kernel
+│   │   └── src/
+│   │       ├── rule.rs         Rule, Refined, DeserializeRule, ArbitraryRule
+│   │       ├── composition.rs  And, Or, Not, Xor, MapErr, All, Any
+│   │       ├── transform.rs    Trim, AsciiLowercase/Uppercase, StableUnder*
+│   │       ├── implies.rs      Implies, weaken, library edges
+│   │       ├── closed_set.rs   ClosedSet, parse/as_str, codec, strategies
+│   │       ├── macros.rs       refinement!, deserialize_rule!, closed_set!
+│   │       ├── testing.rs      prop_total, prop_image_refines (proptest)
+│   │       └── primitive/      numeric, float, decimal, string,
+│   │                           collection, path, pattern, date, datetime
+│   └── whittle-macros/         proc-macro crate: pattern!
 └── docs/
     ├── README.md
     ├── IDEA.md
@@ -210,80 +265,133 @@ whittle/
     └── DESIGN.md
 ```
 
-`whittle-schemars`, `whittle-sqlx`, and `whittle-serde` integrations are
-Cargo features on the root facade crate rather than separate member
-crates; their public surface lives in `whittle::integrations` (with
-sub-modules `serde`, `schemars`, `sqlx`) and is conditionally compiled.
+Unit and property tests live inline next to the rule they cover
+(`mod tests` in each module file). Integration tests live in the root
+`tests/` directory; targets that need optional features declare them
+via `required-features` in the facade's `Cargo.toml`, so every feature
+combination builds.
 
 ## 7. Dependency Direction
 
-The dependency graph MUST be one-way through the facade boundary:
+The dependency graph is one-way through the facade boundary:
 
-- `whittle-core` depends on `serde` (optional), `thiserror`,
-  `rust_decimal` (optional), `chrono` (optional), `bounded-vec`,
-  `non-empty-string`. It MUST NOT depend on any other whittle crate.
-  The `refinement!` declarative macro lives in `whittle-core::macros`;
-  there is no separate proc-macro crate.
-- The `proptest::Strategy` derivation and the `Arbitrary` impl for
-  `Refined<T, R>` live inside `whittle-core` behind a `proptest`
-  Cargo feature. They cannot live in a separate crate without an
-  orphan-rule violation, because both the `Arbitrary` trait
-  (foreign, from `proptest`) and `Refined<T, R>` would be foreign
-  to that crate.
-- The root facade `whittle` re-exports `whittle-core`'s public surface
-  (including the `refinement!` macro) and gates each integration
-  module behind a Cargo feature. Integration tests live in the root
-  `tests/` directory and exercise the full feature matrix.
+- `whittle-core` depends only on the optional ecosystem crates listed
+  in Section 4, plus (under the `regex` feature) `whittle-macros` for
+  the `pattern!` re-export. It MUST NOT depend on the facade.
+- `whittle-macros` is a leaf proc-macro crate (`proc-macro2`,
+  `proc-macro-crate`, `quote`, `regex`, `syn`). It resolves the path
+  its expansions emit through `proc-macro-crate`, preferring the
+  `whittle` facade and falling back to `whittle-core`, so consumers of
+  either crate can invoke `pattern!`.
+- The root facade `whittle` re-exports `whittle-core`'s entire public
+  surface (`pub use whittle_core::*`) and forwards each Cargo feature
+  to the corresponding `whittle-core` feature. A consumer that wants
+  only the `Rule`/`Refined` kernel pays nothing for the integrations
+  they do not enable.
 
-The default feature set enables `serde` and the `refinement!` macro.
-`proptest`, `schemars`, and `sqlx` are opt-in features. A consumer that
-wants only the `Rule`/`Refined` kernel pays nothing for the
-integrations they do not enable.
+The `serde` and `proptest` impls for `Refined<T, R>` live inside
+`whittle-core` behind their features. They cannot live in separate
+crates without an orphan-rule violation: both the trait
+(`serde::Deserialize`, `proptest::arbitrary::Arbitrary`) and the type
+`Refined<T, R>` would be foreign to such a crate.
 
 ## 8. Core Traits
 
 ### 8.1. Rule
 
 ```rust
-pub trait Rule<T: 'static>: Sized + 'static {
+pub trait Rule<T>: Sized + 'static
+where
+    T: 'static,
+{
     type Error;
     fn refine(raw: T) -> Result<T, Self::Error>;
-    fn schema() -> Schema;
 }
 ```
-
-`T: 'static` is required because every `Schema` variant that carries
-a type identity uses `TypeId::of::<T>()`, which is bounded
-`T: 'static`. The kernel could expose a separate `Rule<T>` without
-`T: 'static` and a `RuleSchema<T: 'static>: Rule<T>` super-trait, but
-the simplification is not worth the API surface; refined types in
-practice are owned types (`String`, `i64`, `Decimal`, `Url`, ...),
-not borrows.
 
 `refine` is the narrowing morphism: it consumes raw input, returns the
 narrowed (and possibly canonicalised) value on success, or a typed
 error on rejection. Rules whose narrowing is purely a predicate return
-`Ok(raw)` unchanged.
+`Ok(raw)` unchanged. The soundness obligation — `Ok(y)` implies `y` is
+admissible — is [IDEA.md](IDEA.md) §5.1 and is discharged by property
+test for every library-supplied rule (Section 14).
 
-`schema()` returns the reflectable schema described in Section 12.
-Rules that cannot provide a schema MUST still implement `Rule<T>` but
-MUST return a `Schema::Unconstrained` variant whose `reason` is
-`UnconstrainedReason::OpaqueRule` so the integrations that depend on
-schema
-metadata can detect the absence and either skip or fall back gracefully.
+`T: 'static` is required so the planned schema reflection (Section 15)
+can use `TypeId::of::<T>()`. Refined types in practice are owned types
+(`String`, `i64`, `Decimal`, ...), not borrows, so the bound costs
+nothing today.
 
-### 8.2. PureFilter
+There is no `schema()` method on `Rule`; schema reflection is unbuilt
+(Section 15).
+
+### 8.2. DeserializeRule (serde feature)
 
 ```rust
-pub trait PureFilter<T>: Rule<T> {}
+pub trait DeserializeRule<'de, T>: Rule<T>
+where
+    T: 'static,
+{
+    fn deserialize_refined<D>(deserializer: D) -> Result<Refined<T, Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>;
+}
 ```
 
-A marker trait implemented by rules whose `refine` is the identity on
-admissible inputs (no canonicalisation). The codec, JSON Schema, and
-the optimiser of consumer libraries (such as axiom-rs) can exploit
-this to prove the rule preserves bytes. The marker is otherwise
-load-bearing only as a contract: implementers assert that
-`refine(x) == Ok(x)` for every admissible `x`.
+`Refined<T, R>`'s `serde::Deserialize` impl delegates to this per-rule
+hook, so each rule chooses *how* the wire value is consumed:
+
+- Most rules use the default **parse-then-refine** path, exposed as the
+  free function `parse_then_refine` and stamped as a one-line impl by
+  the `deserialize_rule!` macro (Section 13.2): deserialize the raw
+  `T`, then run `Refined::try_new`, surfacing rejections through
+  `serde::de::Error::custom` (the rule error's `Display` output).
+- Rules whose admissibility bounds the *size* of the input override the
+  hook to enforce the bound **while** the wire value is decoded, so a
+  hostile payload is rejected without materializing more than the rule
+  admits. `LenItems<MIN, MAX>` over `Vec<T>` is the library's streaming
+  override — the concrete mechanism behind [IDEA.md](IDEA.md) §5.13
+  (bounded inputs) and the §7 requirement that the constructor surface
+  be robust against resource-exhausting payloads.
+
+Whatever the strategy, the accept/reject set and rejection diagnostics
+MUST be identical to the parse-then-refine path; only the allocation
+profile may differ. There remains no admissible code path that produces
+a `Refined` without the rule's predicate holding ([IDEA.md](IDEA.md)
+§5.3).
+
+Unknown-field policy belongs to `T`, not to whittle: serde's data model
+gives outer adapters no field-level callbacks, so consumers who want
+`deny_unknown_fields` put the attribute on the inner type.
+
+### 8.3. ArbitraryRule (proptest feature)
+
+```rust
+pub trait ArbitraryRule<T>: Rule<T>
+where
+    T: 'static,
+{
+    type Strategy: proptest::strategy::Strategy<Value = T>;
+    fn arbitrary_strategy() -> Self::Strategy;
+}
+```
+
+Each rule supplies a strategy that emits admissible-by-construction
+values. The blanket `Arbitrary` impl for `Refined<T, R>` maps the
+rule's strategy through `try_new` and, on contract violation, panics
+with the violating rule's `type_name` — a strategy bug surfaces as a
+localized test-time panic, never as silently dropped samples. The
+blanket impl performs no rejection sampling; composition rules MAY
+filter their operands' strategies, primitive rules MUST be
+constructive. This is the per-rule mechanism sanctioned by
+[IDEA.md](IDEA.md) §5.11 as amended; derivation from a reflected schema
+is the destination (Section 15).
+
+Bounded numeric strategies are edge-biased: samples concentrate on the
+admissible region's boundaries, where off-by-one defects live.
+Carrier-family helper traits (`ArbitraryNumeric`, `ArbitraryFloat`,
+`ArbitraryDecimal`, `ArbitraryDate`, `ArbitraryDateTime`,
+`ArbitraryChar`, `ArbitraryPredicate`) supply the per-carrier strategy
+plumbing; see the rustdoc for each.
 
 ## 9. The Refined Carrier
 
@@ -293,82 +401,98 @@ load-bearing only as a contract: implementers assert that
 #[repr(transparent)]
 pub struct Refined<T, R> {
     inner: T,
-    _rule: PhantomData<R>,
+    rule: PhantomData<fn() -> R>,
 }
 ```
 
-The struct definition does not bound `R: Rule<T>` because the carrier
-itself never invokes `R::refine` after construction. Bounding on impl
-blocks lets accessors and trait passes through without re-stating the
-bound everywhere.
-
-`#[repr(transparent)]` plus the zero-sized `PhantomData` guarantee
-that `Refined<T, R>` has the same layout as `T`. Niche optimisations
-available on `T` are preserved by `Refined<T, R>`.
+`#[repr(transparent)]` plus the zero-sized phantom guarantee that
+`Refined<T, R>` has the same layout as `T`; niche optimisations on `T`
+are preserved ([IDEA.md](IDEA.md) §5.4). The phantom is
+`PhantomData<fn() -> R>` so the rule marker contributes neither
+auto-trait obligations nor drop-check constraints. The struct does not
+bound `R: Rule<T>`; the bound is applied on the impl blocks that need
+it, so accessors and trait passes compile without restating it.
 
 ### 9.2. Construction
 
-```rust
-impl<T, R: Rule<T>> Refined<T, R> {
-    pub fn try_new(raw: T) -> Result<Self, R::Error> {
-        R::refine(raw).map(|inner| Self { inner, _rule: PhantomData })
-    }
-}
-```
-
-`try_new` is the sole public construction path. The inner field is
-crate-private; no public accessor returns a mutable reference to the
-inner value. No `unsafe` construction shortcut is provided, and the
+`Refined::<T, R>::try_new(raw: T) -> Result<Self, R::Error>` is the
+sole public construction path ([IDEA.md](IDEA.md) §5.2). The inner
+field is private; no `unsafe` construction shortcut exists, and the
 library MUST NOT introduce one without a corresponding amendment to
 [IDEA.md](IDEA.md) §5.2.
 
+Two crate-private constructors exist for paths that have already
+checked the invariant, each with a per-site soundness comment:
+`from_inner` (used by the const constructors of Section 10.1 and the
+streaming deserialization hooks of Section 8.2) and `as_inner_mut`
+(used only by the checked mutation methods of Section 9.4, which verify
+the rule's invariant before committing).
+
 ### 9.3. Accessors
 
-```rust
-impl<T, R> Refined<T, R> {
-    pub fn as_inner(&self) -> &T { &self.inner }
-    pub fn into_inner(self) -> T { self.inner }
-}
-```
+- `as_inner(&self) -> &T` (a `const fn`) — proof-preserving borrow.
+- `into_inner(self) -> T` — the proof-erasing morphism of
+  [IDEA.md](IDEA.md) §5.2: the caller takes ownership but must re-run
+  `try_new` to reconstruct a refined value.
 
-`into_inner` returns an owned `T` and is the proof-erasing morphism
-required by [IDEA.md](IDEA.md) §5.2: returning the inner value is
-sound because the only public path back to `Refined<T, R>` is
-`try_new`, which re-runs the rule. There is no `AsMut<T>`; mutation
-of the inner value MUST go through `into_inner` followed by `try_new`
-on the modified value.
+There is no public mutable accessor; the general mutation path is
+`into_inner` → mutate → `try_new`.
 
-Pass-through derives (`Debug`, `Clone`, `Hash`, `PartialEq`, `Eq`,
-`PartialOrd`, `Ord`) are implemented manually with the appropriate
-`where T: ...` bounds rather than via `#[derive]`, because Rust's
-derive macros do not introduce per-trait `where`-clauses (they bound
-on the *type parameters* of the struct, which would force `R: Hash`
-etc.). The manual impls delegate to the inner value; the rule
-identity is part of the type, not part of equality or ordering.
+### 9.4. Proof-Preserving Operations
 
-### 9.4. Serde
+Beyond the accessors, the carrier offers operations whose outputs
+remain proof-carrying:
+
+- `try_map<U, S, F>(self, f: F) -> Result<Refined<U, S>, S::Error>` on
+  any `Refined<T, R>`: transform the inner value and re-establish a
+  (possibly different) rule by routing through `try_new`. No soundness
+  debt — the target rule re-runs.
+- On `Refined<Vec<T>, R>`:
+  - `map_items` — an *infallible* element-wise map for rules marked
+    `StableUnderElementMap` (length-only rules such as `LenItems`):
+    the map preserves length, so the proof transfers without
+    re-validation.
+  - `try_push` / `try_extend` — checked mutation under
+    `LenItems<MIN, MAX>` with the typed `CapacityFull` rejection that
+    returns the rejected payload to the caller; `try_extend` is
+    all-or-nothing.
+  - `first` / `last` / `split_first` — **total** accessors available
+    when the rule proves `MIN >= 1`: the non-empty proof makes the
+    `Option` unnecessary.
+
+### 9.5. Pass-Through Impls
+
+`Debug`, `Display`, `Clone`, `Copy`, `Hash`, `PartialEq`, `Eq`,
+`PartialOrd`, and `Ord` are implemented manually with `where T: ...`
+bounds rather than via `#[derive]`, because derive macros bound on the
+struct's type parameters (which would force `R: Hash` etc.). All
+delegate to the inner value; the rule identity is part of the type, not
+part of equality or ordering.
+
+### 9.6. Serde
 
 When the `serde` feature is enabled:
 
-- `Serialize` delegates to the inner value's `Serialize`. No
-  rule-specific transformation is applied during serialisation; the
-  refined value's inner bytes are what get written.
-- `Deserialize` deserialises the inner value, then routes through
-  `try_new`, returning the rule's typed error wrapped in
-  `serde::de::Error::custom`.
+- `Serialize` delegates to the inner value's `Serialize`; refined
+  values are indistinguishable from raw values on the wire.
+- `Deserialize` routes through the rule's `DeserializeRule` hook
+  (Section 8.2), so deserialization cannot bypass the narrowing
+  morphism.
 
-The round-trip law is `Deserialize(Serialize(x)) == Ok(x)` for every
-refined `x`, which holds because the rule's canonical form is stable
-under re-narrowing.
+The round-trip law and its derivation from canonical-form stability are
+[IDEA.md](IDEA.md) §5.12.
 
 ## 10. Library-Supplied Primitive Rules
 
 The library provides the following primitive rule markers in
-`whittle-core::primitive`:
+`whittle-core::primitive`. Every rule returns its module's flat error
+enum (`NumericError`, `FloatError`, `DecimalError`, `StringError`,
+`CollectionError`, `DateError`, `DateTimeError`, `PathError`,
+`PatternError`); see the rustdoc for variant-level detail.
 
 ### 10.1. Numeric
 
-Standalone primitives:
+Standalone primitives, parameterised over `i128` const generics:
 
 ```rust
 pub struct Within<const MIN: i128, const MAX: i128>;
@@ -388,30 +512,30 @@ pub type Positive  = GreaterThan<0>;
 pub type Negative  = LessThan<0>;
 ```
 
-`Within<MIN, MAX>` rejects `MIN > MAX` at compile time via
-`const { assert!(MIN <= MAX) }` inside the `Rule::refine` impl, so
-the empty-range case is unrepresentable in instantiated types and
-no `NumericError::EmptyRange` variant is needed.
+`Within<MIN, MAX>` rejects `MIN > MAX` at compile time through its
+`VALID` const (`const { assert!(MIN <= MAX) }`, forced from `refine`
+and the proptest strategy), so the empty range is unrepresentable in
+instantiated types. Internally `Within` is a nominal newtype over
+`And<AtLeast<MIN>, AtMost<MAX>>`; the composition does not leak into
+the public error surface.
 
-Numeric primitives are generic over the underlying type via a
-`Numeric` trait that exposes `into_i128` / `from_i128`. The trait
-is implemented for `i8`, `i16`, `i32`, `i64`, `i128`, `u8`, `u16`,
-`u32`, `u64`, `usize`, `isize`. Out-of-range conversions during
-`from_i128` (e.g. an admissible `i128` value that doesn't fit the
-narrower carrier) return `NumericError::OutOfRange { value: i128 }`.
+`Within` additionally provides const-capable constructors —
+`try_new_i8` through `try_new_i128`, `try_new_u8` through `try_new_u64`,
+`try_new_usize`, `try_new_isize` — so known protocol constants can be
+expressed as `const` refined values without a runtime `unwrap`.
 
-`u128` is not covered by the `i128`-parameterised primitives because
-`i128` cannot represent values above `i128::MAX`. Consumers needing
-ranges in the `i128::MAX..=u128::MAX` band MUST write a custom rule
-or use the `WithinUnsigned<MIN, MAX>` companion (added when a real
-use-case appears).
+Numeric primitives are generic over the carrier via a `Numeric` trait
+(`into_i128` / `from_i128`), implemented for `i8`, `i16`, `i32`, `i64`,
+`i128`, `u8`, `u16`, `u32`, `u64`, `usize`, and `isize`. `u128` is not
+covered because `i128` cannot represent values above `i128::MAX`;
+consumers needing that band write a custom rule.
 
 ### 10.2. Floating-Point
 
 ```rust
-pub struct NotNan;          // rejects NaN, admits ±inf
-pub struct NotInfinite;     // rejects ±inf, admits NaN
-pub struct Finite;          // nominal newtype hiding And<NotNan, NotInfinite>
+pub struct NotNan;          // rejects NaN
+pub struct NotInfinite;     // rejects ±inf
+pub struct Finite;          // rejects NaN and ±inf
 pub struct InClosedRange<
     const MIN_NUMERATOR: i64,
     const MIN_DENOMINATOR: i64,
@@ -420,66 +544,58 @@ pub struct InClosedRange<
 >;
 ```
 
-Float-range endpoints are encoded as `(numerator, denominator)`
-ratios because const-generic `f64` is not stable in Rust 2024. The
-endpoints are reconstructed at refine time via
-`F::from_ratio(num, den)`. `InClosedRange<0, 1, 1, 1>` is
-`0.0..=1.0`; `InClosedRange<1, 2, 3, 4>` is `0.5..=0.75`. The
-denominators MUST be positive, and
-`MIN_NUMERATOR / MIN_DENOMINATOR` MUST be less than or equal to
-`MAX_NUMERATOR / MAX_DENOMINATOR`. Both checks are
-`const { assert!(...) }` blocks inside the `Rule::refine` impl.
-
-A single `InClosedRange` definition serves both `f32` and `f64`
-because the sealed `Float` trait abstracts over the ratio
-reconstruction. No separate `InClosedRangeF32` is needed.
+Float-range endpoints are encoded as `(numerator, denominator)` ratios
+because const-generic `f64` is not stable in Rust 2024; the endpoints
+are reconstructed at refine time. `InClosedRange<0, 1, 1, 1>` is
+`0.0..=1.0`. The rule's `VALID` const asserts at compile time that both
+denominators are positive and that the range is non-empty. A single
+definition serves both `f32` and `f64` through the sealed `Float`
+trait. `Finite` is a nominal domain newtype over
+`And<NotNan, NotInfinite>`; both share `FloatError`, so the composition
+is invisible to callers.
 
 ### 10.3. Decimal
 
 ```rust
-pub struct DecimalPrecision<const P: u8>;       // total significant digits
-pub struct DecimalScale<const S: u8>;           // digits after the point
 pub struct DecimalPositive;
+pub struct DecimalScale<const S: u8>;           // digits after the point
+pub struct DecimalPrecision<const P: u8>;       // total significant digits
 pub struct DecimalInRange<const MIN_REPR: i128, const MAX_REPR: i128, const SCALE: u8>;
 ```
 
 Behind the `decimal` Cargo feature, which pulls in `rust_decimal`.
-Range constants encode the range's representative as a fixed-point
-integer with explicit scale. The same dodge `InClosedRange` uses for
-`f64` — Rust 2024 does not yet allow `Decimal` const generics.
+Range constants are scaled `i128` mantissas with an explicit shared
+scale — the same dodge `InClosedRange` uses for `f64`, because Rust
+2024 does not yet allow `Decimal` const generics.
 
 ### 10.4. String Grammar
 
-Shipped validation rules:
+Validation rules (each a `Rule<String>`; the carrier is owned because
+of the kernel's `T: 'static` bound):
 
 ```rust
 pub struct LenChars<const MIN: usize, const MAX: usize>;
 pub struct LenBytes<const MIN: usize, const MAX: usize>;
 pub struct NonEmpty;
-pub struct EachChar<P: CharPredicate>(PhantomData<P>);
-pub struct FirstChar<P: CharPredicate>(PhantomData<P>);
+pub struct EachChar<P>(PhantomData<P>);   // every char satisfies P
+pub struct FirstChar<P>(PhantomData<P>);  // the first char satisfies P
 ```
 
-Shipped string transformers (in `whittle-core::transform`, not the
-primitive module; each transformer normalises input before
-delegating to its inner rule, so the stored carrier is the
-canonical form):
+`CharPredicate` is the per-character predicate trait. Library-supplied
+implementations: `AsciiAlphabetic`, `AsciiAlphanumeric`, `AsciiDigit`,
+`AsciiGraphic`, `AsciiLowercase`, `AsciiUppercase`, `IdentChar`,
+`IdentStart`, `IdentDashChar`, `NonControl`, and the combinators
+`CharLiteral<const CH: char>`, `CharEither<A, B>`, `CharExcept<A, B>`.
+`HexChar` is behind the `hex` feature; `PrintableLine`,
+`PrintableMultiline`, and `PrintableChar` are behind the `unicode`
+feature — `PrintableChar` rejects the Unicode general categories
+Cc/Cf/Cs/Co/Cn/Zl/Zp via `unicode-general-category`, while
+`PrintableLine` / `PrintableMultiline` are dep-free hardcoded subsets.
+Users may implement `CharPredicate` for their own predicates.
 
-```rust
-pub struct Trim<R>(PhantomData<R>);           // strips ASCII whitespace, then delegates
-pub struct AsciiLowercase<R>(PhantomData<R>); // lowercases ASCII, then delegates
-pub struct AsciiUppercase<R>(PhantomData<R>); // uppercases ASCII, then delegates
-```
-
-`CharPredicate` is a sub-trait with library-supplied
-implementations: `AsciiAlphanumeric`, `IdentChar`, `IdentStart`,
-`IdentDashChar`, `NonControl`, plus `HexChar` (behind the `hex`
-feature) and `PrintableLine` / `PrintableMultiline` / `PrintableChar`
-(behind the `unicode` feature). `PrintableChar` rejects the Unicode
-General Categories Cc/Cf/Cs/Co/Cn/Zl/Zp via the
-`unicode-general-category` crate; `PrintableLine` and
-`PrintableMultiline` are dep-free hardcoded subsets. Users may
-implement `CharPredicate` for their own predicates.
+`RejectsTrimWhitespace` is a marker sub-trait for predicates that
+reject every `char::is_whitespace()` character; it makes
+`FirstChar<P>: StableUnderTrim` (Section 10.5) sound.
 
 Fixed-length hex string rules (behind the `hex` feature):
 
@@ -490,131 +606,127 @@ pub type HexFixedNormalized<const LEN: usize>
     = AsciiLowercase<HexFixedAny<LEN>>;            // admits any case, stores lowercase
 ```
 
-NFC normalisation (`NfcNormalised`, `IsNfcNormalised`) and the
-non-canonical lowercase / uppercase rules (`IsLowerCase` /
-`IsUpperCase`) remain planned future extensions, not shipped.
+### 10.5. String Transformers
 
-### 10.5. Collection
+In `whittle-core::transform` (not the primitive module): each
+transformer normalises input *before* delegating to its inner rule, so
+the stored carrier is the canonical form.
 
 ```rust
-use core::cmp::Ordering;
-use core::marker::PhantomData;
+pub struct Trim<R>(PhantomData<fn() -> R>);           // str::trim, then delegate
+pub struct AsciiLowercase<R>(PhantomData<fn() -> R>); // ASCII-lowercase, then delegate
+pub struct AsciiUppercase<R>(PhantomData<fn() -> R>); // ASCII-uppercase, then delegate
+```
 
+Transformers are infallible themselves (`Error = R::Error`) and compose
+with each other and with validation rules (`Trim<NonEmpty>` rejects
+input that is empty *after* trimming). Use them only when canonical
+form is part of the contract; for invariants where the input form must
+be preserved verbatim, use validation-only rules.
+
+Each transformer's proptest strategy applies the normalisation to an
+inner-rule sample, which is sound only when the inner rule's admissible
+region is invariant under the morphism. The `StableUnderTrim`,
+`StableUnderAsciiLowercase`, and `StableUnderAsciiUppercase` marker
+traits encode that proof obligation; the kernel provides the blanket
+propagation impls for compositions, and the audit recipe for adding a
+new `StableUnder*` marker is documented on `StableUnderTrim`'s rustdoc.
+
+### 10.6. Collection
+
+Rules over `Vec<T>` (other collection shapes land when a real consumer
+needs them):
+
+```rust
 pub struct LenItems<const MIN: usize, const MAX: usize>;
 pub struct AllItems<R>(PhantomData<R>);          // every item satisfies R
-pub struct UniqueByKey<T, K: KeyOf<T>>(PhantomData<(T, K)>);
+pub struct UniqueByKey<T, K>(PhantomData<(T, K)>);
 pub type   Distinct<T> = UniqueByKey<T, IdentityKey<T>>;
-pub struct Sorted<T, K: KeyOf<T> = IdentityKey<T>>(PhantomData<(T, K)>);
+pub struct Sorted<T, K>(PhantomData<(T, K)>);    // ascending by key
 pub struct NoneOf<P>(PhantomData<P>);            // no item matches P
 pub struct AnyOf<P>(PhantomData<P>);             // at least one item matches P
-
-pub trait KeyOf<T> {
-    type Key: Ord + Clone;
-    fn key_of(t: &T) -> Self::Key;
-}
-pub trait Predicate<T> { fn test(value: &T) -> bool; }
-
-/// Identity key: a type that uses `T` itself as the ordering key.
-/// Requires `T: Ord + Clone`.
-pub struct IdentityKey<T>(PhantomData<T>);
-impl<T: Ord + Clone + 'static> KeyOf<T> for IdentityKey<T> {
-    type Key = T;
-    fn key_of(t: &T) -> T { t.clone() }
-}
 ```
 
-`AllItems<R>::Error` carries the failing index so callers can locate
-the offending element:
+Companion traits: `KeyOf<T>` (key extraction; `IdentityKey<T>` is the
+`T: Ord + Clone` identity) and `Predicate<T>` (pure item predicate).
 
-```rust
-pub struct AllItemsError<E> {
-    pub index: usize,
-    pub source: E,
-}
-```
-
-`AllItems<R>` is the per-element refinement primitive. The standard
-pattern for a bounded list of refined items is
+`CollectionError<EI = Infallible>` is the shared flat error enum; the
+`BadItem { index, source: EI }` variant carries the failing index and
+the inner rule's error so callers can locate the offending element. The
+standard pattern for a bounded list of refined items is:
 
 ```rust
 Refined<Vec<T>, And<LenItems<1, 100>, AllItems<MyItemRule>>>
 ```
 
-### 10.6. Enum Subset
-
-```rust
-// Per-subset marker type, generated by the `subset_of!` macro:
-// subset_of!(NonCleanFileState, FileState, [Dirty, Fixing, Testing,
-//                                            FileGreen, Failed]);
-// generates `pub struct NonCleanFileState;` plus the `Rule` impl.
-```
-
-Accepts only the listed variants of an enum. Used for "this
-`FileState` must not be `Clean`" cases. A per-subset marker type is
-generated by macro rather than encoding admitted variants in a
-const-generic `&'static [&'static str]` parameter; the latter
-requires the unstable `adt_const_params` feature and admits
-misspelled variant names at the const-generic boundary, which the
-type system cannot catch.
-
-The `Enum` trait used by the generated implementations is
-derive-emitted by `#[derive(EnumRule)]`.
+`LenItems` hand-writes its `DeserializeRule` hook to enforce the length
+bound during decoding (Section 8.2). `StableUnderElementMap` marks
+length-only rules for which `map_items` (Section 9.4) is sound.
 
 ### 10.7. Composition
 
-Binary operators (generic over any carrier whose operands share
-`Rule::Error`):
+Binary operators, generic over any carrier whose operands share the
+same `Rule::Error` type:
 
 ```rust
-pub struct And<A, B>(PhantomData<(A, B)>);   // both rules must accept; Error = E
+pub struct And<A, B>(PhantomData<(A, B)>);   // both must accept; Error = E
 pub struct Or<A, B>(PhantomData<(A, B)>);    // either may accept; Error = [E; 2]
 ```
 
 `And` short-circuits on first failure and threads the previous
 operand's (possibly canonicalised) output into the next. `Or`
-short-circuits on first success and runs the right operand against
-a clone of the original input. Both compose with any other rule.
+short-circuits on first success and runs the right operand against a
+clone of the original input; on full rejection both errors are
+preserved positionally. Because the operands share an error type, no
+positional `Left` / `Right` wrapper exists — domain newtypes
+pattern-match the flat error enum directly.
 
 Boolean inversion and exclusive-or, restricted to numeric carriers
 (`T: Numeric + Copy`, operands sharing `Rule::Error = NumericError`)
-because the rejection paths fabricate an error variant:
+because the rejection paths must fabricate an error variant:
 
 ```rust
 pub struct Not<R>(PhantomData<fn() -> R>);   // admits exactly what R rejects
 pub struct Xor<A, B>(PhantomData<(A, B)>);   // exactly one of A, B accepts
 ```
 
-Both reuse `NumericError::OutOfRange { value }` for the inverted
-rejection case. Other carrier families MAY add their own `Not<R>` /
-`Xor<A, B>` impls under the same constraint (each family's error
-enum needs a generic "value rejected by composition" variant).
-`type NotEqualTo<const N: i128> = Not<EqualTo<N>>` is the canonical
-use; `NonZero = NotEqualTo<0>` chains through it.
+Both reuse `NumericError::OutOfRange { value }` for the fabricated
+rejection. Other carrier families MAY add their own impls under the
+same constraint. `NotEqualTo<N> = Not<EqualTo<N>>` is the canonical
+use.
 
-N-ary tuple-based operators (carrier-generic, same `Rule::Error`
-sharing as `And`/`Or`):
+Error-codomain mapping:
 
 ```rust
-pub struct All<TUPLE>(PhantomData<fn() -> TUPLE>); // every operand must accept; Error = E
-pub struct Any<TUPLE>(PhantomData<fn() -> TUPLE>); // any operand may accept; Error = [E; N]
+pub trait ErrorMapper<E>: 'static {
+    type Error;
+    fn map_error(error: E) -> Self::Error;
+}
+pub struct MapErr<R, M>(PhantomData<(R, M)>);
+```
+
+`MapErr<R, M>` preserves `R`'s accepted values while mapping its
+rejection error through `M`, so a domain type can expose only the
+rejection cases reachable through its composition instead of the full
+breadth of a shared primitive error enum.
+
+N-ary tuple-based operators (same shared-error constraint):
+
+```rust
+pub struct All<TUPLE>(PhantomData<fn() -> TUPLE>); // every operand accepts; Error = E
+pub struct Any<TUPLE>(PhantomData<fn() -> TUPLE>); // first acceptance wins; Error = [E; N]
 ```
 
 Supported arities: 2..=8. `All<(A, B, C)>` runs three operands
-sequentially (equivalent to `And<A, And<B, C>>` without nesting);
-`Any<(A, B, C)>` tries each in order against a clone and returns
-the first acceptance or `[E; 3]` collecting every rejection. For
-arity 2 they reduce to the same shape as `And` / `Or`. Common
-includes/excludes patterns:
+sequentially (equivalent to `And<A, And<B, C>>` without the nesting);
+`Any<(A, B, C)>` tries each in order against a clone and returns the
+first acceptance or `[E; 3]` collecting every rejection. For arity 2
+they reduce to the same shape as `And` / `Or`.
 
-```rust
-type AllowedRoll = Any<(EqualTo<1>, EqualTo<3>, EqualTo<6>)>;
-type Forbidden   = All<(NotEqualTo<13>, NotEqualTo<666>)>;
-```
-
-There is no `AndN` n-ary alias; `All<(...)>` is the supported flat
-form. The `<And<A, B> as Rule<T>>::schema` impl flattens its
-right-spine into a single `Schema::And(vec![...])` so the
-reflectable schema is flat regardless of nesting depth.
+All composition operators forward the serde `DeserializeRule` hook
+(`And` / `All` thread the streaming hooks of their first operand) and
+provide `ArbitraryRule` impls; composition strategies MAY filter their
+operands' strategies (Section 8.3).
 
 ### 10.8. Date
 
@@ -629,16 +741,16 @@ pub struct DateInRange<const MIN_DAYS_FROM_CE: i32, const MAX_DAYS_FROM_CE: i32>
 Bounds are encoded as `i32` days from CE (the value returned by
 `NaiveDate::num_days_from_ce`) because Rust 2024 does not yet allow
 `NaiveDate` const generics. Compile-time `const { ... }` blocks
-validate that each bound is within `NaiveDate`'s representable
-range and that `MIN_DAYS_FROM_CE <= MAX_DAYS_FROM_CE`. Cross-field
-ordering (e.g. a `from <= to` date-range struct) is multi-field
-and remains a downstream concern, not a primitive.
+validate that each bound is within `NaiveDate`'s representable range
+and that the range is non-empty. Cross-field ordering (a `from <= to`
+date-range struct) is multi-field and remains a downstream concern, not
+a primitive.
 
 ### 10.9. DateTime
 
 Behind the `chrono` Cargo feature. Carrier: `chrono::DateTime<Utc>`
-only (`DateTime<FixedOffset>` / `DateTime<Local>` deliberately
-unsupported; convert at the boundary).
+only (`FixedOffset` / `Local` deliberately unsupported; convert to UTC
+at the boundary).
 
 ```rust
 pub struct DateTimeAtLeast<const MIN_SECS_SINCE_EPOCH: i64>;
@@ -647,561 +759,353 @@ pub struct DateTimeInRange<const MIN_SECS_SINCE_EPOCH: i64, const MAX_SECS_SINCE
 ```
 
 Bounds are encoded as `i64` seconds since the Unix epoch
-(`DateTime::<Utc>::timestamp`) because Rust 2024 does not yet allow
-`DateTime` const generics. Same compile-time validation pattern as
-`DateInRange`.
+(`DateTime::<Utc>::timestamp`), with the same compile-time validation
+pattern as `DateInRange`.
 
-## 11. Contextual Rules
+### 10.10. Path
 
 ```rust
-pub trait RuleWith<T: 'static, Env: 'static>: Sized + 'static {
-    type Error;
-    fn refine_with(env: &Env, raw: T) -> Result<T, Self::Error>;
-    fn schema() -> Schema {
-        Schema::ContextOpaque {
-            ty:     TypeId::of::<T>(),
-            env_ty: TypeId::of::<Env>(),
-        }
-    }
-}
+pub struct RelativePath;
+```
 
-#[repr(transparent)]
-pub struct RefinedWithRef<'a, T, Env, R: RuleWith<T, Env>> {
-    inner: T,
-    _env:  PhantomData<&'a Env>,
-    _rule: PhantomData<R>,
-}
+A portable, forward-slash-segmented relative-path check for the "this
+string is a sandbox-relative path" guarantee: rejects empty input,
+absolute paths (Unix `/`-rooted, Windows drive letters, UNC prefixes),
+`..` parent traversal, and empty segments, with the offending segment
+index in `PathError`. Full cross-platform path handling is out of
+scope.
 
-impl<'a, T, Env, R: RuleWith<T, Env>> RefinedWithRef<'a, T, Env, R> {
-    pub fn try_new(env: &'a Env, raw: T) -> Result<Self, R::Error> {
-        R::refine_with(env, raw).map(|inner| Self {
-            inner, _env: PhantomData, _rule: PhantomData,
-        })
-    }
-    pub fn as_inner(&self) -> &T { &self.inner }
-    pub fn into_inner(self) -> T { self.inner }
-}
+### 10.11. Pattern
 
-pub struct RefinedWithOwned<T, Env, R: RuleWith<T, Env>> {
-    inner: T,
-    env:   Env,                  // stored — proof identity depends on it
-    _rule: PhantomData<R>,
-}
+Behind the `regex` Cargo feature (which requires `std` and the nightly
+const-generics features per Section 4):
 
-impl<T, Env, R: RuleWith<T, Env>> RefinedWithOwned<T, Env, R> {
-    pub fn try_new(env: Env, raw: T) -> Result<Self, R::Error> {
-        R::refine_with(&env, raw).map(|inner| Self {
-            inner, env, _rule: PhantomData,
-        })
-    }
-    pub fn as_inner(&self) -> &T { &self.inner }
-    pub fn as_env(&self)   -> &Env { &self.env }
-    pub fn into_parts(self) -> (T, Env) { (self.inner, self.env) }
+```rust
+pub struct Pattern<const RE: &'static str>;
+```
+
+The regular expression lives in the type. A candidate is admissible
+only when the regex matches the **entire** input — the rule enforces
+the full span itself, so unanchored and anchored patterns behave
+identically. Compiled regexes are cached in a keyed `OnceLock`. A bare
+`Pattern<RE>` with a malformed `RE` panics on first construction;
+prefer the `pattern!` macro (Section 13.4), which turns the malformed
+pattern into a compile error. `Pattern` is the escape hatch for
+positional grammars the composable character-class rules cannot express
+ergonomically.
+
+## 11. Closed Sets
+
+The closed-set family satisfies [IDEA.md](IDEA.md) §5.6's closed-set
+bullet as amended: a wire string is admitted against a single declared
+injective string ↔ variant table and parsed into a plain Rust enum.
+The enum is already constructive — its representable states are exactly
+the admissible states — so no `Refined` carrier is involved.
+
+```rust
+pub trait ClosedSet: Copy + PartialEq + Sized + 'static {
+    const MEMBERS: &'static [(&'static str, Self)];
+    const VALID: ();   // compile-time witness: non-empty, injective
 }
 ```
 
-Adapted from the `witnessed` crate's `WitnessIn<T, Env>` /
-`WitnessedInRef` / `WitnessedInOwned` pattern, with two structural
-fixes:
+`MEMBERS` is the single determinant; everything else is derived:
 
-1. `RefinedWithOwned` **stores** the environment alongside the inner
-   value. The previous `PhantomData<EnvHandle>` carrier could not
-   tell apart "constructed against this `Arc<X>`" from "constructed
-   against that `Arc<X>`" — both produced the same phantom type, so
-   the proof was purely nominal and a different instance of the same
-   type defeated it. Storing the env trades the `#[repr(transparent)]`
-   layout for owned carriers in exchange for proof identity tied to
-   the actual constructed-against environment value.
-2. Parameter order is `(T, Env)` on both carriers and the trait, so
-   the position of the inner type is consistent across the surface.
+- `closed_set::parse(&str) -> Result<E, ClosedSetError<E>>` — the
+  boundary morphism;
+- `closed_set::as_str(E) -> &'static str` — the lossless inverse;
+- `ClosedSetError<E>` — a typed rejection carrying the offending value
+  (truncated to 64 characters so error payloads stay bounded) and a
+  `'static` borrow of the expected table (its `Display` renders at most
+  8 members, then `… (N total)`);
+- behind `serde`, `closed_set::serialize` / `deserialize` — the
+  plain-wire-string codec (`Serialize` = `as_str`, `Deserialize` =
+  `parse`), emitted automatically for macro-generated enums and usable
+  via `#[serde(with)]` for hand-written impls;
+- behind `proptest`, `closed_set::admissible()` (select-from-`MEMBERS`,
+  support exactly the closed set) and `closed_set::rejects()` (a
+  derived reject-input generator: case flips, truncations, extensions,
+  the empty string, filtered arbitrary strings), so boundary tests need
+  no hand-maintained reject list.
 
-The borrowed carrier ties the proof to a borrowed environment's
-lifetime: `RefinedWithRef<'a, T, Env, R>` cannot outlive the borrow.
-The owned carrier ties the proof to a specific environment value that
-the carrier holds.
+`VALID` is forced at monomorphisation by `parse` and `as_str` (the same
+house pattern as `Within`'s `MIN <= MAX` gate), so a table with a
+duplicate wire string is a compile error at first use. The
+`closed_set!` macro (Section 13.3) additionally forces it at
+declaration time and makes variant/table mismatches unrepresentable; a
+hand-written impl instead carries the documented variant-coverage
+obligation described in the module rustdoc.
 
-Documentation MUST warn callers that owned contextual refinement is a
-snapshot at construction time: if the environment is internally
-mutable and changes after construction, the proof against the
-*original* construction-time state MAY no longer hold against the
-*current* state. Consumers needing live-environment guarantees MUST
-use the borrowed carrier (and a non-mutable environment).
+Enum-side *subset* markers over an existing enum are deferred per the
+[IDEA.md](IDEA.md) §5.6 amendment (Section 15).
 
-`Deserialize` is NOT implemented on `RefinedWithRef` or
-`RefinedWithOwned` — `serde` has no slot for the environment.
-Contextual values MUST be constructed via `try_new(env, raw)` after a
-separate deserialization of `raw` against the environment in scope.
-
-## 12. Schema Reflection and Derived Integrations
-
-### 12.1. The Schema enum
+## 12. Implication and Subtyping
 
 ```rust
-pub enum Schema {
-    /// No structural constraints beyond the inner type's own invariants.
-    /// `reason` discriminates *why* the rule is unconstrained so derived
-    /// integrations can report it (OpaqueRule for an external rule with
-    /// no schema, CustomRefine for a `custom_refine:` closure). Both
-    /// reasons cause schema-driven strategy and JSON-schema generation
-    /// to be skipped; the discriminator exists for diagnostics, not for
-    /// behavioural branching.
-    Unconstrained { ty: TypeId, reason: UnconstrainedReason },
-    /// Contextual rule; schema for the value-side is not extractable.
-    ContextOpaque { ty: TypeId, env_ty: TypeId },
-    /// Numeric range over i128.
-    NumericRange { ty: TypeId, min: Option<i128>, max: Option<i128> },
-    /// Float finiteness / non-NaN / range.
-    FloatRefined {
-        ty: TypeId, finite: bool, not_nan: bool,
-        min_bits: Option<u64>, max_bits: Option<u64>,
-    },
-    /// Decimal precision/scale.
-    Decimal {
-        precision: Option<u8>,
-        scale:     Option<u8>,
-        positive:  bool,
-        range:     Option<DecimalRange>,
-    },
-    /// String with length and per-character rules.
-    StringRule {
-        len_bytes:  Option<(usize, usize)>,
-        len_chars:  Option<(usize, usize)>,
-        each_char:  Option<CharSchema>,
-        normalised: Vec<StringNormaliser>,
-    },
-    /// Collection with length and per-element rule.
-    Collection {
-        len:       Option<(usize, usize)>,
-        item:      Option<Box<Schema>>,
-        unique_by: Option<&'static str>,
-        sorted:    Option<SortSpec>,
-    },
-    /// Enum subset.
-    EnumSubset { ty: TypeId, variants: Vec<&'static str> },
-    /// Composition.
-    And(Vec<Schema>),
-    Or(Vec<Schema>),
-}
-
-pub enum UnconstrainedReason {
-    /// Rule exists but provides no introspectable structure
-    /// (e.g. an opaque external rule).
-    OpaqueRule,
-    /// Rule body is a `custom_refine:` closure with no schema metadata.
-    CustomRefine,
-}
-
-pub struct SortSpec {
-    pub direction: SortDirection,
-    pub key: Option<&'static str>,  // None == identity (Ord on T)
-}
-pub enum SortDirection { Ascending, Descending }
-
-pub struct DecimalRange {
-    pub min_repr: i128,
-    pub max_repr: i128,
-    pub scale:    u8,    // shared scale for min_repr and max_repr
+pub trait Implies<W>: Sized {
+    const VALID: () = ();
 }
 ```
 
-The `Schema::Unconstrained` variant collapses the earlier `Any` and
-`Opaque` variants into one shape with a discriminator, so the
-"unconstrained" fact lives in one place and derived integrations
-branch on `reason` rather than on variant identity.
-
-`Schema::ContextOpaque` carries both the value and environment type
-ids so two distinct `RuleWith<T, Env>` rules — even with the same
-`T` but different `Env` — produce structurally distinct schemas.
-
-`DecimalRange` replaces the earlier loose pair of `min_repr` /
-`max_repr` / `scale_anchor` fields with one struct whose three fields
-have a single, documented meaning.
-
-`SortSpec` carries the direction and the key extractor's identity so
-schema equality reflects sort identity rather than collapsing to a
-boolean.
-
-The exact enum is revisable; the contract is that `Schema` is enough
-information for the derived integrations of Sections 12.2–12.4 to
-function.
-
-### 12.2. Property Generators
-
-Behind a `proptest` Cargo feature, `whittle-core::arbitrary`
-introduces a sub-trait of `Rule<T>` that promises a schema-driven
-strategy, and implements `Arbitrary` only for rules that provide
-it. The `Arbitrary` impl, the `StrategyFromSchema` trait, and the
-primitive impls all live in `whittle-core` so Rust's orphan rule is
-satisfied (the trait is local — even though `Arbitrary` is foreign,
-`Refined<T, R>` is local to `whittle-core`):
-
-```rust
-pub trait StrategyFromSchema<T: 'static>: Rule<T> {
-    fn strategy_from_schema() -> BoxedStrategy<T>;
-}
-
-impl<T, R> proptest::arbitrary::Arbitrary for Refined<T, R>
-where
-    T: 'static,
-    R: StrategyFromSchema<T>,
-{
-    type Parameters = ();
-    type Strategy = BoxedStrategy<Self>;
-    fn arbitrary_with(_: ()) -> Self::Strategy {
-        R::strategy_from_schema()
-            .prop_map(|raw| Refined::<T, R>::try_new(raw)
-                // SAFETY by schema: the derived strategy generates
-                // only admissible values; refuted via property test
-                // in `whittle-core::arbitrary` tests if a primitive misbehaves.
-                .expect("schema-derived strategy produced inadmissible value"))
-            .boxed()
-    }
-}
-```
-
-Every library-supplied primitive whose `schema()` is structurally
-derivable implements `StrategyFromSchema`; these impls live in
-`whittle-core` alongside the primitives themselves. The
-implementation walks the rule's `Schema`:
-
-- a `NumericRange` node with `min` and `max` produces a `min..=max`
-  strategy;
-- a `StringRule` node with declared character predicates and length
-  bounds produces a constrained-character `proptest::collection::vec`
-  projected to `String`;
-- an `And` node composes the constrained strategies of its branches;
-- an `Or` node samples a branch uniformly (see §17 for the weights
-  open issue).
-
-The strategy MUST NOT use rejection sampling ("generate any value,
-filter through refine") as its default path.
-
-For rules whose schema is `Unconstrained` with reason `OpaqueRule` or
-`CustomRefine`, or for contextual rules (`Schema::ContextOpaque`),
-`StrategyFromSchema` is NOT implemented — `Refined<T, OpaqueRule>`
-correspondingly does NOT implement `Arbitrary`. Users MAY supply a
-hand-written strategy by implementing `StrategyFromSchema` for their
-rule, or they MAY skip schema-driven arbitrary generation entirely
-for that type. The library MUST NOT silently fall back to rejection
-sampling for opaque rules.
-
-### 12.3. JSON Schema (schemars feature)
-
-Each schema node maps onto the corresponding JSON Schema construct:
-`NumericRange` → `{type: integer, minimum, maximum}`; `StringRule` →
-`{type: string, minLength, maxLength, pattern}`; etc. The schema's
-unique identity (TypeId) provides the `$id`.
-
-### 12.4. Pretty Display
-
-`Schema` implements a `fmt_human(&self)` method that returns a short
-human-readable description ("integer between 0 and 100", "non-empty
-string of printable Unicode") used by the default `Display` impl on a
-rule's typed error.
-
-## 13. Implication and Subtyping
-
-```rust
-/// `Self: Implies<W>` means `Self` is strictly stronger than `W`.
-/// Implementers MUST NOT write `R: Implies<R>` (reflexive edges are
-/// forbidden by convention).
-pub trait Implies<Weaker> {}
-```
-
-`Self` is the stronger rule. When `S: Implies<W>` holds, the library
-provides an explicit upcast method on `Refined<T, S>`:
+`Self` is the stronger rule (`adm(Self) ⊆ adm(W)`). Declaring
+`S: Implies<W>` unlocks the explicit upcast on the carrier:
 
 ```rust
 impl<T: 'static, S: Rule<T>> Refined<T, S> {
-    /// Upcast to a refined value carrying the weaker rule. No
-    /// narrowing morphism runs; the inner value is moved.
     pub fn weaken<W>(self) -> Refined<T, W>
     where
         W: Rule<T>,
-        S: Implies<W>,
-    {
-        Refined { inner: self.inner, _rule: PhantomData }
-    }
+        S: Implies<W>;
 }
 ```
 
-`weaken` was chosen over a `From<Refined<T, S>>` blanket impl
-because that blanket overlaps with the reflexive
-`impl<X> From<X> for X` from `core::convert` whenever `S = W`. Rust's
-coherence checker reasons over all possible parameter instantiations
-and rejects the overlap, regardless of any convention against
-reflexive `Implies` edges. When a future Rust release admits
-negative bounds, the library MAY add a `From` impl gated on a
-`NotEqual<S, W>` marker; until then, `weaken` is the explicit upcast
-path and is what consumers MUST call.
+`weaken` moves the inner value and re-runs neither rule's narrowing
+morphism. It is a method rather than a blanket `From` impl because that
+blanket would overlap with the reflexive `impl<X> From<X> for X` in
+`core::convert` whenever `S = W`, which Rust's coherence checker
+rejects regardless of any convention against reflexive edges.
 
-The implication contract from [IDEA.md](IDEA.md) §5.7 is on the
-implementer: `adm(S) ⊆ adm(W)`; when `W` canonicalises, every value
-in `S::refine`'s range MUST already be in `W::refine`'s range; the
-weaker rule has no observable behaviour that depends on re-running
-its narrowing morphism on the upcast value. The conversion consumes
-the stronger value and moves the inner field; no `Clone` bound on
-`T` is introduced.
+`VALID` defaults to `()` for unconditional user-declared edges. The
+const-generic family impls override it with an `assert!`-carrying body,
+so a `weaken` call whose instantiation violates the side condition is a
+compile error at monomorphisation rather than an unsound upcast.
 
-The library supplies implication edges for common numeric narrowings
-(`Within<A, B>: Implies<Within<C, D>>` when `C <= A && B <= D`) via
-macro expansion. Edges for arbitrary rules are user-written.
+Library-supplied edges (each side condition compile-checked through
+`VALID`):
 
-Transitivity: the library does NOT automatically derive transitive
-implication edges. If `A: Implies<B>` and `B: Implies<C>` both hold,
-`A: Implies<C>` MUST be declared explicitly (the library MAY supply
-the impl via macro for documented numeric chains).
+| Stronger         | Weaker           | Side condition     |
+| ---------------- | ---------------- | ------------------ |
+| `Within<A, B>`   | `Within<C, D>`   | `C <= A && B <= D` |
+| `Within<A, B>`   | `AtLeast<C>`     | `C <= A`           |
+| `Within<A, B>`   | `AtMost<D>`      | `B <= D`           |
+| `AtLeast<A>`     | `AtLeast<C>`     | `C <= A`           |
+| `AtMost<B>`      | `AtMost<D>`      | `B <= D`           |
+| `GreaterThan<A>` | `GreaterThan<C>` | `C <= A`           |
+| `LessThan<B>`    | `LessThan<D>`    | `B <= D`           |
+| `LenChars<A, B>` | `LenChars<C, D>` | `C <= A && B <= D` |
+| `LenBytes<A, B>` | `LenBytes<C, D>` | `C <= A && B <= D` |
+| `LenItems<A, B>` | `LenItems<C, D>` | `C <= A && B <= D` |
 
-## 14. The Refinement Macro
+The three-property implication contract, the irreflexivity requirement,
+and its reading against the const-generic family impls (where the
+degenerate same-parameters instantiation is a trivially valid
+containment, not a declared self-edge) are [IDEA.md](IDEA.md) §5.7; the
+contract discharge for all ten edges is documented in the `implies`
+module rustdoc, along with the edges deliberately *not* supplied
+(cross-shape strict/inclusive edges, `EqualTo` edges, transformer and
+composition edges) and the reasoning for each deferral.
 
-### 14.1. Declarative form
+Transitive edges are not derived (OPTIONAL per [IDEA.md](IDEA.md)
+§5.7): if `A: Implies<B>` and `B: Implies<C>` hold, `A: Implies<C>`
+must be declared explicitly.
+
+## 13. Macros
+
+The declarative macros live in `whittle-core::macros` and are exported
+with `#[macro_export]`; the only proc-macro is `pattern!` in
+`whittle-macros`.
+
+### 13.1. refinement!
 
 ```rust
 refinement! {
-    /// A 1..=100 character string of non-control Unicode.
-    pub struct BoundedPrintable(String) {
-        normalize: trim,
-        normalize: nfc,
-        min_chars: 1,
-        max_chars: 100,
-        each_char: non_control,
+    /// User-supplied display name. Always at least one char.
+    #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+    pub Identifier: String, NonEmpty;
+}
+```
+
+The macro expands to a tuple struct wrapping `Refined<Inner, Rule>` and
+three inherent methods — `try_new`, `as_inner`, `into_inner` — with the
+inner field private, so the named newtype inherits the smart-constructor
+guarantee ([IDEA.md](IDEA.md) §5.2). Standard trait impls are forwarded
+from `Refined` and selected by the user-supplied `#[derive(...)]`
+passthrough; `Display`, `AsRef`, serde impls, and the rest of the
+delegating surface stay hand-written. `Inner` and `Rule` are separated
+by a comma because Rust's macro follow-set rules forbid `ty` followed
+by `in`.
+
+The narrowing pipeline is the composed rule type itself — transformer
+and validation rules composed in declaration order — per
+[IDEA.md](IDEA.md) §5.10 as amended; the macro accepts that composed
+type as its single source of truth and has no step DSL. Generated
+`try_new` returns the rule's error unchanged: for single primitives and
+shared-error `And` chains that is the flat domain enum; for `Or<...>`
+compositions (`[E; 2]`) a public domain API usually hand-writes the
+newtype and collapses the pair into named variants instead. Generation
+of the remaining IDEA §5.10 artifacts is queued (Section 15).
+
+### 13.2. deserialize_rule!
+
+```rust
+deserialize_rule! {
+    impl[const N: i64] DeserializeRule<i64> for MultipleOf<N>
+}
+```
+
+Stamps a rule's `DeserializeRule` impl with the default
+parse-then-refine body (Section 8.2). An optional `where [...]` clause
+carries whatever extra bounds the rule's own `Rule` impl needs. Rules
+that bound input size hand-write the hook instead.
+
+### 13.3. closed_set!
+
+```rust
+closed_set! {
+    /// Account activity status.
+    pub enum ActivityStatus {
+        Active = "active",
+        Inactive = "inactive",
     }
 }
 ```
 
-Expansion (sketch), preserving all five declared steps in order:
+Declarative codegen for the closed-set family (Section 11): generates
+the enum (with the full forwarded derive set), the `ClosedSet` impl
+whose `MEMBERS` table is in declaration order, a `const` forcing
+`VALID` at declaration time, `FromStr` / `TryFrom<&str>` / `Display`
+forwarding to `parse` / `as_str`, and — when the `serde` feature is
+enabled — `Serialize` / `Deserialize` impls over the plain-wire-string
+codec. Generating enum and table from one declaration list makes
+"variant without a wire string", "wire string without a variant", and
+"variant declared twice" unrepresentable in the declaration artifact.
+
+### 13.4. pattern!
 
 ```rust
-pub struct BoundedPrintable(
-    Refined<String, And<Trim,
-                       And<NfcNormalised,
-                           And<LenChars<1, 100>,
-                               EachChar<NonControl>>>>>,
-);
-
-#[derive(Debug, thiserror::Error)]
-pub enum BoundedPrintableError {
-    // Normalisation steps (Trim, NfcNormalised) in the default
-    // vocabulary are infallible and do not produce variants.
-    #[error("length not in 1..=100 characters")]
-    LenChars(<LenChars<1, 100> as Rule<String>>::Error),
-    #[error("contains a control character")]
-    EachChar(<EachChar<NonControl> as Rule<String>>::Error),
-}
-
-impl BoundedPrintable {
-    pub fn try_new(raw: String) -> Result<Self, BoundedPrintableError> {
-        Refined::try_new(raw).map(Self).map_err(Into::into)
-    }
-    pub fn as_str(&self) -> &str { self.0.as_inner().as_str() }
-    // Plus generated Display, AsRef<str>, Debug, Deserialize impls
-    // and a generated `From<<RuleComposition as Rule<String>>::Error>
-    // for BoundedPrintableError` impl that maps the composed rule's
-    // error variants into BoundedPrintableError's named variants.
-}
+type Name = whittle::pattern!(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$");
 ```
 
-The macro emits `And<A, And<B, And<C, D>>>` nested compositions in
-declaration order, NOT an n-ary `AndN` alias. The macro additionally
-emits a documentation comment listing the canonical step sequence so
-readers can audit the pipeline from the generated code.
+A function-like proc-macro (the `whittle-macros` crate's entire
+surface) that parses its argument as a string literal, validates it as
+a regular expression **at compile time**, and expands to the
+const-generic rule type `Pattern::<"...">` (Section 10.11). A malformed
+pattern is a compile error at the literal's span instead of a runtime
+panic on first construction. The expansion resolves its path through
+`proc-macro-crate`, so it works for consumers of the facade and of
+`whittle-core` alike.
 
-Normalisation steps in the default vocabulary are documented as
-infallible; the generated error enum carries only variants for the
-validation steps that can fail. A `custom_refine:` step contributes
-its own error variant (see Section 14.3).
+## 14. Testing Architecture
 
-### 14.2. Step vocabulary
+### 14.1. Core Tests
 
-Named pipeline steps the macro recognises by default:
+Unit and property tests are co-located with each rule (`mod tests` in
+the module file). Every library-supplied rule has:
 
-- **Normalisation** (canonicalising): `trim`, `to_lowercase`,
-  `to_uppercase`, `nfc`, `nfd`, `strip_trailing_slash`,
-  `collapse_internal_whitespace`.
-- **Validation** (predicate, no canonicalisation):
-  `min_chars: N`, `max_chars: N`, `min_bytes: N`, `max_bytes: N`,
-  `min_len: N`, `max_len: N`, `min: N`, `max: N`, `non_zero`,
-  `finite`, `not_nan`, `each_char: <predicate-name>`,
-  `each_item: <rule-name>`, `unique_by: <key-expr>`, `sorted`.
+- accept/reject unit tests at the admissible region's boundaries;
+- the property tests [IDEA.md](IDEA.md) §5.14 requires (admissibility,
+  idempotence on admissible inputs, canonicalisation determinism,
+  implication-edge admissibility preservation);
+- doctests in the house style: each public item shows at least one
+  admit and one reject example;
+- `compile_fail` doctests for the compile-time gates (the `VALID`
+  consts of `Within` / `InClosedRange` / `Implies` / `ClosedSet`, and
+  malformed `pattern!` literals).
 
-The step vocabulary is extensible: users can register custom named
-steps via `whittle_register_step!(step_name, fn(T) -> Result<T, _>)`.
+### 14.2. Property Harness (proptest feature)
 
-### 14.3. Escape hatch
+`whittle-core::testing` ships the `f: A → B` harness: for a function
+whose domain is a refined type, `prop_total(f)` asserts `f` never
+panics over `Arbitrary`-generated admissible inputs, and
+`prop_image_refines::<RB, _, _, _>(f)` additionally asserts `f`'s image
+satisfies a stated output rule. When `f` already returns a refined `B`,
+image-validity is discharged by the return type and `prop_total` alone
+is the right call — the harness rustdoc states the obligations and the
+"delete the test the type proves" rule. Entry points are closure-taking
+functions (not strategy combinators) so the input set has exactly one
+determinant: `A`'s `Arbitrary` impl.
 
-For cases the structured vocabulary cannot express:
+### 14.3. Integration Tests
 
-```rust
-refinement! {
-    pub struct OddIso8601(String) {
-        custom_refine: |s: String| -> Result<String, MyErr> {
-            // parse, validate, return canonical or fail
-        },
-    }
-}
-```
+The root `tests/` corpus exercises the public surface as a consumer
+would, including:
 
-`custom_refine:` produces no structural schema metadata; the
-resulting rule's `schema()` returns
-`Schema::Unconstrained { reason: UnconstrainedReason::CustomRefine, ty }`.
-Schema-driven integrations skip automatic strategy and JSON-schema
-generation for it; `Arbitrary` is not auto-derived. The macro emits a
-documentation note when `custom_refine` is used so reviewers can find
-it.
+- serde round-trips and rejection fixtures proving invariant-violating
+  payloads are rejected with typed errors ([IDEA.md](IDEA.md) §5.3);
+- the closed-set codec and the derived reject-input generator;
+- the `Arbitrary` derivations and the property harness;
+- the domain-newtype, transformer, and composition patterns;
+- the `pattern!` macro (expansion and compile-fail).
 
-### 14.4. Derive macro
+Targets that need optional features declare `required-features`, and
+`just test-default-build` plus the pre-push hook keep the
+default-feature build compiling (Section 5).
 
-```rust
-#[derive(Refined)]
-#[refined(rule = And<LenChars<1, 100>, EachChar<NonControl>>)]
-pub struct BoundedPrintable(String);
-```
+### 14.4. Coverage
 
-Equivalent to the declarative form for the case where the rule is
-already a named library or user composition. The derive macro is
-preferred when the rule type is the abstraction the user wants to
-expose; the declarative macro is preferred when the pipeline is the
-abstraction the user wants to expose.
+The pre-push hook enforces 100% coverage on four axes — regions,
+functions, lines, and branches — via the `cargo coverage` alias
+(Section 5). New code lands with its tests in the same commit or the
+push fails.
 
-## 15. Testing Architecture
+## 15. Planned Milestones
 
-### 15.1. Core tests
+This section collects the designs that [IDEA.md](IDEA.md) requires or
+admits but that are not yet built. Each entry names its evidence
+trigger. Nothing in this section is implemented; earlier revisions of
+this document carried concrete sketches for some of them (a `Schema`
+enum, a `StrategyFromSchema` trait, a `RuleWith` family, a
+`refinement!` step DSL), which are retrievable from git history but are
+not normative.
 
-`whittle-core` MUST contain:
+### 15.1. Schema Reflection
 
-- unit tests for every library-supplied primitive's accept/reject
-  behaviour;
-- property tests proving each primitive's narrowing morphism is
-  idempotent on admissible inputs;
-- property tests proving canonicalising rules are deterministic;
-- property tests proving implication edges preserve admissibility;
-- compile-time tests (via `compile_fail` doctests) proving rule
-  type-mismatch is rejected at compile time.
+[IDEA.md](IDEA.md) §5.9. A runtime-introspectable schema per rule,
+sufficient to drive derived property strategies (the §5.11 destination;
+per-rule `ArbitraryRule` impls are the sanctioned interim per the
+amendment), JSON Schema generation, human-readable rule descriptions,
+and schema equality. It is also the intended carrier for the dogfooding
+audit's residual-set reporting (R-S2), storage-constraint
+synchronisation (R-S4), and boundary-matrix generation (R-T1). Build it
+constructor-by-constructor; each schema constructor that lands SHOULD
+convert its rule family from hand-written to derived generation.
 
-### 15.2. Macro tests
+### 15.2. Contextual Rules
 
-The `refinement!` declarative macro in `whittle-core::macros` is
-covered by:
+[IDEA.md](IDEA.md) §5.8. A contextual companion to `Rule` with borrowed
+and owned carriers (the `witnessed`-informed design). Evidence trigger:
+the first dogfooding adoption that reaches a genuine
+environment-dependent invariant — one candidate site is identified (the
+symbiote consumer's `RecoveredParentInvocation`); implement when that
+adoption lands rather than speculatively.
 
-- doctests on the macro itself showing each supported invocation shape;
-- `compile_fail` doctests for malformed invocations (missing
-  separators, contradictory steps, unknown named steps).
+### 15.3. refinement! Generation-Completeness
 
-### 15.3. Arbitrary derivation tests
+[IDEA.md](IDEA.md) §5.10. Today's `refinement!` generates the newtype
+and construction surface (Section 13.1). The remaining §5.10 artifacts
+— the named typed-error enum with mapped variants, the `Deserialize`
+impl, the read-only delegating surface, schema reflection, and declared
+implication edges — are queued as `refinement!` v2, generated from the
+same single declaration.
 
-`whittle-core::arbitrary` (under the `proptest` feature) MUST
-contain property tests proving that every
-value the derived strategy generates passes the rule's `refine`. This
-encodes the blanket `Refined<T, R>: Arbitrary` impl's no-rejection
-guarantee in code; primitive and composition strategies may apply
-bounded filtering on dense or composed regions.
+### 15.4. Enum-Subset Markers
 
-### 15.4. Integration tests
+[IDEA.md](IDEA.md) §5.6(b) as amended. Subset rules over an existing
+enum are deferred: a smaller local enum with a
+`From<Local> for Foreign` impl strictly dominates in every observed
+case. Evidence trigger: the documented hard case — overlapping
+subsets of one
+(typically foreign) enum where per-subset local enums explode
+combinatorially.
 
-The root `tests/` directory MUST exercise:
+### 15.5. PureFilter Marker
 
-- the `serde` feature against deserialization fixtures that include
-  both admissible and invariant-violating payloads;
-- the `schemars` feature against generated JSON Schema fragments
-  compared with a committed expected schema (cassette-style);
-- the `sqlx` feature against a fixture database. The default
-  `just ci` gate runs `sqlx` type-derivation tests (encode/decode
-  round-trips against in-memory `sqlx::Decode` mocks); a separate
-  `just it` gate runs against a live fixture database. The mock-based
-  tests are required; the live-database tests are opt-in and excluded
-  from `just ci`;
-- the `proptest` feature against random schemas.
+[IDEA.md](IDEA.md) §5.1 admits a marker trait (named `PureFilter`) for
+rules whose `refine` is the identity on admissible inputs, so derived
+integrations can exploit byte preservation. No shipped integration
+exploits it yet; add it together with the first consumer (codec
+inversion or JSON Schema generation).
 
-## 16. Build Sequence
+### 15.6. Ecosystem Integrations
 
-Phase A — kernel:
+[IDEA.md](IDEA.md) §3 names `quickcheck`, `schemars`, and `sqlx` as
+optional integration targets. None has consumer demand yet; `schemars`
+additionally depends on schema reflection (Section 15.1). Each would be
+a Cargo feature, with impls hosted wherever the orphan rule requires.
 
-1. `whittle-core::rule`: `Rule<T>` trait, `Refined<T, R>` carrier,
-   `try_new`, accessors, plus the manual pass-through impls
-   (`Debug`, `Clone`, `Hash`, `PartialEq`, `Eq`, `PartialOrd`,
-   `Ord`) with appropriate `where T: ...` bounds per §9.3.
-2. `whittle-core::schema`: `Schema` enum, `fmt_human`, equality.
-3. `whittle-core::primitive::numeric`: `Within`, `AtLeast`, `AtMost`,
-   `NonZero`, `Positive`, `Negative` with `Rule` impls for all
-   integer types.
-4. `whittle-core::primitive::float`: `Finite`, `NotNan`,
-   `InClosedRange`.
-5. `whittle-core::primitive::string`: `LenChars`, `LenBytes`,
-   `NonEmpty`, `EachChar`, `Trim`, `IsTrimmed`, `LowerCase`,
-   `IsLowerCase`, `UpperCase`, `IsUpperCase`, `NfcNormalised`,
-   `IsNfcNormalised`, `AsciiOnly`.
-6. `whittle-core::primitive::collection`: `LenItems`, `AllItems`,
-   `UniqueByKey`, `Sorted`, `SortedBy`, plus the `KeyOf` /
-   `Cmp` / `IdentityKey` companion traits.
-7. `whittle-core::composition`: `And`, `Or`, plus the schema-
-   flattening rule so a nested `And<A, And<B, ...>>` reflects as a
-   flat `Schema::And(vec![...])`.
-8. `whittle-core::implies`: `Implies` trait, the
-   `Refined::weaken` upcast method, library-supplied numeric
-   implication edges.
+## 16. References
 
-Phase B — contextual and integrations:
-
-1. `whittle-core::contextual`: `RuleWith`, `RefinedWithRef`,
-   `RefinedWithOwned`.
-2. `serde` integration on `Refined`.
-3. `whittle-core::macros::refinement`: declarative macro with the step
-   vocabulary in Section 14.2.
-4. `whittle-core::arbitrary` (under `proptest` feature):
-   schema-driven `StrategyFromSchema` trait, primitive impls, and
-   the `Arbitrary` impl for `Refined<T, R>`.
-5. Root `tests/`: full integration coverage.
-6. `schemars` integration.
-7. `sqlx` integration.
-
-Each step is its own commit. Each commit passes the full gate.
-
-This sequence is non-normative guidance. Implementations MAY reorder
-if the dependency graph permits and the invariants in
-[IDEA.md](IDEA.md) are preserved.
-
-## 17. Open Issues
-
-The items in this section are unresolved questions that affect the
-architecture but not yet the implementation.
-
-- **Step vocabulary registration.** Section 14.2's
-  `whittle_register_step!` macro is sketched but the exact mechanism
-  for cross-crate step registration is not designed. Defer until the
-  first cross-crate user appears.
-- **Contextual rule schema.** Contextual rules currently emit
-  `Schema::ContextOpaque`, which forfeits schema-driven property
-  generation. Whether the schema can carry a description of "the
-  environment-dependent portion" is open.
-- **Implication for arbitrary const expressions.** Section 13's
-  numeric implication edges are macro-expanded over a finite set. A
-  generic implementation using `generic_const_exprs` would cover all
-  cases but is unstable. Defer.
-- **Bidirectional codec for canonicalising rules.** Section 9.4 says
-  `Serialize` delegates to the inner value. For a canonicalising
-  rule, the round-trip is `decode(encode(x)) == x` because the
-  canonical form is stable; but `encode(decode(raw))` may differ from
-  `raw` for non-canonical raws. The architecture does not currently
-  surface this asymmetry to the user.
-- **Float NaN and the `Eq` derive.** A `Refined<f64, NotNan>` does
-  not contain NaN, so `Eq` is sound. Whether the library should emit
-  `Eq` on such types automatically is open; the conservative default
-  is "no, the user must opt in."
-- **`no_std` support.** The kernel could be `no_std` with
-  `alloc`; the integrations cannot. Whether to gate the kernel on a
-  feature is open. Defer until a `no_std` consumer appears.
-- **Property-test strategy for `Or`.** The default is "pick a branch
-  uniformly," which biases toward strategies that admit larger value
-  sets. Whether the schema should carry weights is open.
-- **Macro hygiene with user-defined types.** A user rule that
-  references a type from the user's own crate must be resolvable from
-  the macro-emitted code. The current sketch assumes the user re-
-  exports the type in scope; a more robust solution may require
-  attribute-macro parsing of the full type path.
-
-## 18. References
-
-### 18.1. Normative References
+### 16.1. Normative References
 
 [RFC2119] Bradner, S., "Key words for use in RFCs to Indicate
 Requirement Levels", BCP 14, RFC 2119, March 1997,
@@ -1211,7 +1115,7 @@ Requirement Levels", BCP 14, RFC 2119, March 1997,
 Key Words", BCP 14, RFC 8174, May 2017,
 <https://www.rfc-editor.org/rfc/rfc8174.html>.
 
-### 18.2. Informative References
+### 16.2. Informative References
 
 [RFC2026] Bradner, S., "The Internet Standards Process -- Revision 3",
 BCP 9, RFC 2026, October 1996,
