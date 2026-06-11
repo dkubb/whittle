@@ -12,9 +12,12 @@ default:
 # test-default-build, docs.
 ci: fmt-check lint test test-default-build docs
 
-# Markdown lint over the committed Markdown set.
+# Markdown lint over the committed Markdown set. `git ls-files` is
+# the single determinant: tracked files are linted, local-only
+# working files (e.g. the gitignored docs/DOGFOODING.md scratchpad)
+# are not, and newly tracked Markdown joins the gate automatically.
 docs:
-    mado check README.md SKILL.md docs/*.md
+    mado check $(git ls-files '*.md')
 
 # Rustfmt drift check; fails if anything is unformatted.
 fmt-check:
