@@ -74,7 +74,6 @@ pub struct Pattern<const RE: &'static str>;
 /// structured character-class rules, whose errors pinpoint the failing
 /// character.
 #[derive(Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum PatternError {
     /// The input did not match the pattern over its whole span.
     NoMatch,
