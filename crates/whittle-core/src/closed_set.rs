@@ -19,7 +19,13 @@
 //!   the plain-wire-string codec (`Serialize` = [`as_str`],
 //!   `Deserialize` = [`parse`]), emitted automatically for
 //!   macro-generated enums and usable via `#[serde(with)]` for
-//!   hand-written impls.
+//!   hand-written impls;
+//! - behind the `proptest` feature, [`admissible`] / [`rejects`] —
+//!   a select-from-`MEMBERS` strategy (admissible by construction,
+//!   support exactly the closed set) and a derived reject-input
+//!   generator (case-flips, truncations, extensions, the empty
+//!   string, filtered arbitrary strings), so boundary tests need no
+//!   hand-maintained reject list.
 //!
 //! Prefer the [`closed_set!`](macro@crate::closed_set) macro over a
 //! hand-written impl: the macro generates the enum and the table
@@ -501,6 +507,142 @@ where
     deserializer.deserialize_str(ClosedSetVisitor(core::marker::PhantomData))
 }
 
+// ─── Proptest strategies (behind the `proptest` feature). ─────────
+
+/// Strategy generating admissible closed-set values by uniform
+/// selection from the [`ClosedSet::MEMBERS`] table.
+///
+/// Admissible **by construction** — the support is exactly the
+/// closed set, with no generate-then-filter step — and trivially
+/// boundary-complete for small `n`: every member is in the support
+/// of every run's sample space.
+///
+/// # Examples
+///
+/// ```
+/// use proptest::strategy::Strategy as _;
+/// use whittle_core::ClosedSet;
+/// use whittle_core::closed_set;
+///
+/// /// Feature toggle wire form.
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// enum Toggle {
+///     On,
+///     Off,
+/// }
+///
+/// impl ClosedSet for Toggle {
+///     const MEMBERS: &'static [(&'static str, Self)] =
+///         &[("on", Self::On), ("off", Self::Off)];
+/// }
+///
+/// proptest::proptest! {
+///     |(toggle in closed_set::admissible::<Toggle>())| {
+///         // Every generated value round-trips through the table.
+///         let wire = closed_set::as_str(toggle);
+///         proptest::prop_assert_eq!(closed_set::parse::<Toggle>(wire).unwrap(), toggle);
+///     }
+/// }
+/// ```
+#[cfg(feature = "proptest")]
+pub fn admissible<E>() -> impl proptest::strategy::Strategy<Value = E>
+where
+    E: ClosedSet + core::fmt::Debug,
+{
+    use proptest::strategy::Strategy as _;
+    proptest::sample::select(E::MEMBERS).prop_map(|(_, variant)| variant)
+}
+
+/// Membership test against `E`'s table (the reject generators must
+/// never emit an admissible value).
+#[cfg(feature = "proptest")]
+fn is_member<E: ClosedSet>(candidate: &str) -> bool {
+    E::MEMBERS.iter().any(|&(wire, _)| wire == candidate)
+}
+
+/// Push `candidate` onto the derived reject list unless it is a
+/// member of the closed set or already present.
+#[cfg(feature = "proptest")]
+fn push_reject<E: ClosedSet>(derived: &mut alloc::vec::Vec<String>, candidate: String) {
+    if !is_member::<E>(&candidate) && !derived.contains(&candidate) {
+        derived.push(candidate);
+    }
+}
+
+/// Strategy generating reject inputs for `E`, derived from the
+/// [`ClosedSet::MEMBERS`] table — no hand-maintained reject list.
+///
+/// The support mixes near-miss candidates derived from each member
+/// (ASCII case-flips, last-character truncations, one-character
+/// extensions, plus the empty string) with arbitrary strings, every
+/// candidate filtered against membership so the strategy never
+/// emits an admissible value. The derived list is never empty: a
+/// maximal-length member's one-character extension is longer than
+/// every member, hence never a member itself.
+///
+/// # Examples
+///
+/// ```
+/// use proptest::strategy::Strategy as _;
+/// use whittle_core::ClosedSet;
+/// use whittle_core::closed_set;
+///
+/// /// Feature toggle wire form.
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// enum Toggle {
+///     On,
+///     Off,
+/// }
+///
+/// impl ClosedSet for Toggle {
+///     const MEMBERS: &'static [(&'static str, Self)] =
+///         &[("on", Self::On), ("off", Self::Off)];
+/// }
+///
+/// proptest::proptest! {
+///     |(raw in closed_set::rejects::<Toggle>())| {
+///         // Every generated input is rejected by the parse.
+///         proptest::prop_assert!(closed_set::parse::<Toggle>(&raw).is_err());
+///     }
+/// }
+/// ```
+#[cfg(feature = "proptest")]
+pub fn rejects<E>() -> impl proptest::strategy::Strategy<Value = String>
+where
+    E: ClosedSet,
+{
+    use proptest::strategy::Strategy as _;
+    let mut derived: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+    push_reject::<E>(&mut derived, String::new());
+    for &(wire, _) in E::MEMBERS {
+        let flipped: String = wire.chars().map(flip_ascii_case).collect();
+        push_reject::<E>(&mut derived, flipped);
+        let mut truncated = String::from(wire);
+        truncated.pop();
+        push_reject::<E>(&mut derived, truncated);
+        let mut extended = String::from(wire);
+        extended.push('x');
+        push_reject::<E>(&mut derived, extended);
+    }
+    proptest::prop_oneof![
+        proptest::sample::select(derived),
+        proptest::arbitrary::any::<String>()
+            .prop_filter("must not be a member of the closed set", |raw| {
+                !is_member::<E>(raw)
+            }),
+    ]
+}
+
+/// Swap the ASCII case of `c` (identity on non-letters).
+#[cfg(feature = "proptest")]
+const fn flip_ascii_case(c: char) -> char {
+    if c.is_ascii_uppercase() {
+        c.to_ascii_lowercase()
+    } else {
+        c.to_ascii_uppercase()
+    }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
@@ -805,5 +947,65 @@ mod tests {
     #[test]
     fn expecting_propagates_formatter_errors_at_every_write() {
         assert_display_propagates_at_every_write(&ExpectingText);
+    }
+
+    // ─── Proptest strategies (behind the `proptest` feature). ─────
+
+    /// Case-flip collisions (`"a"` vs `"A"`) and a letterless wire
+    /// (`"1"`, its own case-flip): drives the member-skip and
+    /// dedupe paths of the derived reject generator.
+    #[cfg(feature = "proptest")]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WireEdge {
+        Lower,
+        Upper,
+        Digit,
+    }
+
+    #[cfg(feature = "proptest")]
+    impl ClosedSet for WireEdge {
+        const MEMBERS: &'static [(&'static str, Self)] =
+            &[("a", Self::Lower), ("A", Self::Upper), ("1", Self::Digit)];
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn wire_edge_set_admits_and_round_trips() {
+        // Cover this monomorphisation's admit branches; the
+        // property below only ever drives the reject branch.
+        assert_eq!(parse::<WireEdge>("a").unwrap(), WireEdge::Lower);
+        assert_eq!(as_str(WireEdge::Digit), "1");
+    }
+
+    #[cfg(feature = "proptest")]
+    proptest::proptest! {
+        /// `admissible` support is exactly the closed set: every
+        /// generated value round-trips through the table.
+        #[test]
+        fn admissible_values_round_trip_through_the_table(
+            status in super::admissible::<Status>()
+        ) {
+            let again = parse::<Status>(as_str(status)).unwrap();
+            proptest::prop_assert_eq!(again, status);
+        }
+
+        /// Every derived or arbitrary reject input is rejected by
+        /// the boundary morphism.
+        #[test]
+        fn reject_inputs_are_rejected(
+            raw in super::rejects::<Status>()
+        ) {
+            proptest::prop_assert!(parse::<Status>(&raw).is_err());
+        }
+
+        /// Same property over the edge-case wires (case-flip
+        /// collisions, letterless member): the generator skips
+        /// candidates that are themselves members and stays sound.
+        #[test]
+        fn reject_inputs_for_edge_wires_are_rejected(
+            raw in super::rejects::<WireEdge>()
+        ) {
+            proptest::prop_assert!(parse::<WireEdge>(&raw).is_err());
+        }
     }
 }
