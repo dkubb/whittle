@@ -20,6 +20,7 @@ extern crate alloc;
 #[cfg(feature = "regex")]
 extern crate std;
 
+pub mod closed_set;
 pub mod composition;
 pub mod implies;
 #[macro_use]
@@ -30,6 +31,7 @@ mod rule;
 pub mod testing;
 pub mod transform;
 
+pub use closed_set::{ClosedSet, ClosedSetError};
 pub use composition::{All, And, Any, ErrorMapper, MapErr, Not, Or, Xor};
 pub use implies::Implies;
 pub use primitive::StableUnderElementMap;
