@@ -245,7 +245,15 @@ macro_rules! deserialize_rule {
 ///   error on the declaration itself;
 /// - `FromStr` and `TryFrom<&str>` forwarding to
 ///   [`closed_set::parse`](crate::closed_set::parse), and `Display`
-///   forwarding to [`closed_set::as_str`](crate::closed_set::as_str).
+///   forwarding to [`closed_set::as_str`](crate::closed_set::as_str);
+/// - when whittle's `serde` feature is enabled, `Serialize` /
+///   `Deserialize` impls forwarding to the closed-set codec — the
+///   wire shape is the plain wire string, serialization is the
+///   table's wire form, and deserialization routes untrusted
+///   ingress through `parse` so rejections carry the domain
+///   diagnostics. Do not add `#[derive(serde::Serialize)]` /
+///   `#[derive(serde::Deserialize)]` through the attribute
+///   passthrough; the impls are already emitted.
 ///
 /// # Syntax
 ///
@@ -392,7 +400,50 @@ macro_rules! closed_set {
                 f.write_str($crate::closed_set::as_str(*self))
             }
         }
+
+        $crate::__closed_set_serde!($name);
     };
+}
+
+/// Internal `closed_set!` helper: emits the `Serialize` /
+/// `Deserialize` impls forwarding to the closed-set codec. Defined
+/// as a separate macro so its expansion follows **whittle's** own
+/// `serde` feature (resolved when whittle-core is compiled) rather
+/// than a feature of the downstream crate expanding `closed_set!`.
+#[cfg(feature = "serde")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __closed_set_serde {
+    ($name:ident) => {
+        impl $crate::serde::Serialize for $name {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error>
+            where
+                S: $crate::serde::Serializer,
+            {
+                $crate::closed_set::serialize(self, serializer)
+            }
+        }
+
+        impl<'de> $crate::serde::Deserialize<'de> for $name {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
+            where
+                D: $crate::serde::Deserializer<'de>,
+            {
+                $crate::closed_set::deserialize(deserializer)
+            }
+        }
+    };
+}
+
+/// Internal `closed_set!` helper: no-op arm used when whittle's
+/// `serde` feature is disabled.
+#[cfg(not(feature = "serde"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __closed_set_serde {
+    ($name:ident) => {};
 }
 
 #[cfg(test)]
@@ -568,6 +619,25 @@ mod tests {
                 ("active", TestActivityStatus::Active),
                 ("inactive", TestActivityStatus::Inactive),
             ],
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn closed_set_macro_serde_round_trips_the_plain_wire_string() {
+        let json = serde_json::to_string(&TestActivityStatus::Active).unwrap();
+        assert_eq!(json, r#""active""#);
+        let back: TestActivityStatus = serde_json::from_str(r#""inactive""#).unwrap();
+        assert_eq!(back, TestActivityStatus::Inactive);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn closed_set_macro_serde_rejects_non_members_at_ingress() {
+        let err = serde_json::from_str::<TestActivityStatus>(r#""actve""#).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(r#"invalid value "actve": expected one of "active", "inactive""#),
         );
     }
 

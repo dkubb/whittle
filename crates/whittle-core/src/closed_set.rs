@@ -14,7 +14,12 @@
 //! - [`parse`] — the boundary morphism `&str → Result<E, _>`;
 //! - [`as_str`] — the lossless inverse onto the wire form;
 //! - [`ClosedSetError`] — a typed rejection carrying the (bounded)
-//!   offending value and a `'static` borrow of the expected table.
+//!   offending value and a `'static` borrow of the expected table;
+//! - behind the `serde` feature, [`serialize`] / [`deserialize`] —
+//!   the plain-wire-string codec (`Serialize` = [`as_str`],
+//!   `Deserialize` = [`parse`]), emitted automatically for
+//!   macro-generated enums and usable via `#[serde(with)]` for
+//!   hand-written impls.
 //!
 //! Prefer the [`closed_set!`](macro@crate::closed_set) macro over a
 //! hand-written impl: the macro generates the enum and the table
@@ -419,6 +424,83 @@ pub fn as_str<E: ClosedSet>(value: E) -> &'static str {
     );
 }
 
+// ─── Serde: the wire shape is the plain wire string (P5). ─────────
+
+/// Serialize `value` as its plain wire string ([`as_str`]) — no
+/// enum-variant wrapping, the same shape the provider sent.
+///
+/// This is the body of the `Serialize` impl the
+/// [`closed_set!`](macro@crate::closed_set) macro emits; the
+/// by-reference signature also makes the module directly usable as
+/// `#[serde(with = "whittle::closed_set")]` on a field whose type
+/// is a hand-written [`ClosedSet`] impl.
+///
+/// # Errors
+///
+/// Propagates the serializer's own error; the wire form itself is
+/// total (see [`as_str`]).
+#[cfg(feature = "serde")]
+#[inline]
+pub fn serialize<E, S>(value: &E, serializer: S) -> Result<S::Ok, S::Error>
+where
+    E: ClosedSet,
+    S: serde::Serializer,
+{
+    serializer.serialize_str(as_str(*value))
+}
+
+/// Visitor admitting exactly the wire strings of `E`'s table.
+#[cfg(feature = "serde")]
+struct ClosedSetVisitor<E>(core::marker::PhantomData<E>);
+
+#[cfg(feature = "serde")]
+impl<E: ClosedSet> serde::de::Visitor<'_> for ClosedSetVisitor<E> {
+    type Value = E;
+
+    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("one of ")?;
+        write_expected_list(
+            f,
+            E::MEMBERS.len(),
+            &mut E::MEMBERS.iter().map(|member| member.0),
+        )
+    }
+
+    fn visit_str<Failure>(self, raw: &str) -> Result<Self::Value, Failure>
+    where
+        Failure: serde::de::Error,
+    {
+        parse(raw).map_err(Failure::custom)
+    }
+}
+
+/// Deserialize a closed-set enum from its plain wire string by
+/// routing through [`parse`].
+///
+/// Untrusted ingress is gated by the same boundary morphism as
+/// every other construction path, and a rejection surfaces
+/// [`ClosedSetError`]'s domain diagnostics (bounded offending
+/// value, expected set) through `serde::de::Error::custom`.
+///
+/// This is the body of the `Deserialize` impl the
+/// [`closed_set!`](macro@crate::closed_set) macro emits, and the
+/// `#[serde(with = "whittle::closed_set")]` hook for hand-written
+/// impls.
+///
+/// # Errors
+///
+/// Returns the deserializer's error for non-string input, and the
+/// rendered [`ClosedSetError`] when the string is not a member.
+#[cfg(feature = "serde")]
+#[inline]
+pub fn deserialize<'de, E, D>(deserializer: D) -> Result<E, D::Error>
+where
+    E: ClosedSet,
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(ClosedSetVisitor(core::marker::PhantomData))
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
@@ -666,5 +748,62 @@ mod tests {
         const { <Status as ClosedSet>::VALID };
         const { <Toggle as ClosedSet>::VALID };
         const { <Digit as ClosedSet>::VALID };
+    }
+
+    // ─── Serde codec (behind the `serde` feature). ────────────────
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serialize_writes_the_plain_wire_string() {
+        let value = super::serialize(&Status::Active, serde_json::value::Serializer).unwrap();
+        assert_eq!(value, serde_json::json!("active"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialize_admits_members_through_parse() {
+        let status: Status =
+            super::deserialize(serde_json::Value::String("inactive".into())).unwrap();
+        assert_eq!(status, Status::Inactive);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialize_rejects_non_members_with_domain_diagnostics() {
+        let err =
+            super::deserialize::<Status, _>(serde_json::Value::String("nope".into())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(r#"invalid value "nope": expected one of "active", "inactive""#),
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialize_reports_the_expected_set_on_type_mismatch() {
+        // A non-string wire value drives the visitor's `expecting`
+        // rendering (shared with `ClosedSetError`'s `Display`).
+        let err = super::deserialize::<Status, _>(serde_json::Value::from(7_i32)).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains(r#"one of "active", "inactive""#));
+    }
+
+    /// Adapter exposing the visitor's `expecting` rendering as a
+    /// `Display`, so the budget sweep can drive its `?` branch.
+    #[cfg(feature = "serde")]
+    struct ExpectingText;
+
+    #[cfg(feature = "serde")]
+    impl core::fmt::Display for ExpectingText {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            let visitor = super::ClosedSetVisitor::<Status>(core::marker::PhantomData);
+            serde::de::Visitor::expecting(&visitor, f)
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn expecting_propagates_formatter_errors_at_every_write() {
+        assert_display_propagates_at_every_write(&ExpectingText);
     }
 }
