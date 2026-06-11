@@ -16,9 +16,16 @@
 //! - [`ClosedSetError`] — a typed rejection carrying the (bounded)
 //!   offending value and a `'static` borrow of the expected table.
 //!
+//! Prefer the [`closed_set!`](macro@crate::closed_set) macro over a
+//! hand-written impl: the macro generates the enum and the table
+//! from one declaration list, which makes "variant without a wire
+//! string", "wire string without a variant", and "variant declared
+//! twice" unrepresentable in the declaration artifact itself.
+//!
 //! # Hand-written impl obligations
 //!
-//! A hand-written [`ClosedSet`] impl carries two obligations:
+//! A hand-written [`ClosedSet`] impl carries two obligations the
+//! macro discharges structurally:
 //!
 //! 1. **Wire-string injectivity** — no two table entries share a
 //!    wire string. This is compile-time checked by
@@ -54,12 +61,15 @@ const MAX_RENDERED_MEMBERS: usize = 8;
 ///
 /// The table must be injective in both directions — no duplicate
 /// wire strings (checked at compile time by [`VALID`](Self::VALID))
-/// and no duplicate variants (a documented obligation for
-/// hand-written impls; see the [module docs](self)). Aliases (many
-/// wire strings mapping to one variant) are deliberately not
-/// supported.
+/// and no duplicate variants (structural under
+/// [`closed_set!`](macro@crate::closed_set); a documented
+/// obligation for hand-written impls). Aliases (many wire strings
+/// mapping to one variant) are deliberately not supported.
 ///
 /// # Examples
+///
+/// A hand-written impl (prefer the macro, which generates all of
+/// this from one declaration):
 ///
 /// ```
 /// use whittle_core::ClosedSet;
@@ -96,13 +106,16 @@ pub trait ClosedSet: Copy + PartialEq + Sized + 'static {
     /// monomorphisation (the same house pattern as `Within`'s
     /// `MIN <= MAX` gate and [`Implies::VALID`](crate::Implies)),
     /// so an impl whose table declares the same wire string twice
-    /// is a compile error at first use.
+    /// is a compile error at first use. The
+    /// [`closed_set!`](macro@crate::closed_set) macro additionally
+    /// forces it at declaration time.
     ///
     /// A table mapping one wire string to two variants is rejected
     /// here; a table mapping one *variant* to two wire strings (an
     /// alias) cannot be detected generically at compile time
-    /// (`PartialEq` is not const-callable) and remains covered by
-    /// the documented variant-coverage obligation instead.
+    /// (`PartialEq` is not const-callable) and is instead made
+    /// unrepresentable by the macro's single-declaration shape —
+    /// one table row per declared variant.
     ///
     /// ```compile_fail
     /// use whittle_core::ClosedSet;
@@ -342,10 +355,11 @@ pub fn parse<E: ClosedSet>(raw: &str) -> Result<E, ClosedSetError<E>> {
 /// Return the wire form of `value`: the lossless inverse of
 /// [`parse`] onto the [`ClosedSet::MEMBERS`] table.
 ///
-/// `as_str` is total over every well-formed [`ClosedSet`] impl: by
-/// the variant-coverage obligation (see the [module docs](self))
-/// the table has one row per variant, so every value has a
-/// witness. No
+/// `as_str` is total over every well-formed [`ClosedSet`] impl. For
+/// macro-generated impls that is structural: the table has one row
+/// per declared variant, so every value has a witness. For
+/// hand-written impls it follows from the documented
+/// variant-coverage obligation (see the [module docs](self)). No
 /// fallback value exists or is wanted: returning a synthesized
 /// string for an uncovered variant would silently violate the
 /// `parse(as_str(v)) == Ok(v)` round-trip, so a violated obligation
@@ -400,7 +414,8 @@ pub fn as_str<E: ClosedSet>(value: E) -> &'static str {
     }
     panic!(
         "ClosedSet contract violated: every enum variant must appear in MEMBERS \
-         (a hand-written impl omitted this value's row)"
+         (a hand-written impl omitted this value's row; the closed_set! macro \
+         makes this unrepresentable)"
     );
 }
 

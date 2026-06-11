@@ -221,6 +221,180 @@ macro_rules! deserialize_rule {
     };
 }
 
+/// Define a closed-set enum from a single declaration: each variant
+/// paired with its wire string, everything else derived.
+///
+/// This is `refinement!`-class **declarative codegen**: the macro
+/// generates the enum itself, the [`ClosedSet`](crate::ClosedSet)
+/// impl whose `MEMBERS` table is the single determinant, the
+/// standard derives, and the forwarding impls — it does not merely
+/// validate and forward an existing type. Generating enum and table
+/// from one declaration list makes "variant without a wire string",
+/// "wire string without a variant", and "variant declared twice"
+/// unrepresentable in the declaration artifact itself.
+///
+/// The expansion emits:
+///
+/// - the enum, with
+///   `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]`
+///   (the full forwarded set `refinement!` documents; do not
+///   re-derive these via the attribute passthrough);
+/// - `impl ClosedSet` with the `MEMBERS` table in declaration order;
+/// - a `const` forcing [`ClosedSet::VALID`](crate::ClosedSet::VALID)
+///   at declaration time, so a duplicate wire string is a compile
+///   error on the declaration itself;
+/// - `FromStr` and `TryFrom<&str>` forwarding to
+///   [`closed_set::parse`](crate::closed_set::parse), and `Display`
+///   forwarding to [`closed_set::as_str`](crate::closed_set::as_str).
+///
+/// # Syntax
+///
+/// ```text
+/// closed_set! {
+///     /// doc comment, attributes, etc.
+///     pub enum Name {
+///         /// per-variant docs/attributes
+///         Variant = "wire-string",
+///         ...
+///     }
+/// }
+/// ```
+///
+/// # Examples
+///
+/// The bank-integration `ActivityStatus` shape — one declaration,
+/// parse and wire form derived:
+///
+/// ```
+/// use whittle_core::closed_set;
+///
+/// closed_set! {
+///     /// Account activity status.
+///     pub enum ActivityStatus {
+///         /// The account is in active use.
+///         Active = "active",
+///         /// The account is dormant.
+///         Inactive = "inactive",
+///     }
+/// }
+///
+/// // Admit: `FromStr` routes through `closed_set::parse`.
+/// let status: ActivityStatus = "active".parse().unwrap();
+/// assert_eq!(status, ActivityStatus::Active);
+///
+/// // `Display` is the wire form (`closed_set::as_str`).
+/// assert_eq!(status.to_string(), "active");
+///
+/// // `TryFrom<&str>` is the same boundary morphism.
+/// let by_try: ActivityStatus = "inactive".try_into().unwrap();
+/// assert_eq!(by_try, ActivityStatus::Inactive);
+///
+/// // Reject: exact error contents — the bounded offending value
+/// // and the expected set borrowed from the MEMBERS table.
+/// let err = "actve".parse::<ActivityStatus>().unwrap_err();
+/// assert_eq!(err.value(), "actve");
+/// assert_eq!(err.expected(), <ActivityStatus as whittle_core::ClosedSet>::MEMBERS);
+/// assert_eq!(
+///     err.to_string(),
+///     r#"invalid value "actve": expected one of "active", "inactive""#,
+/// );
+/// ```
+///
+/// A duplicate wire string is a **compile error** (the `VALID`
+/// side condition, forced at declaration time):
+///
+/// ```compile_fail
+/// whittle_core::closed_set! {
+///     /// Two variants cannot share a wire string.
+///     pub enum Dup {
+///         /// First claimant.
+///         A = "same",
+///         /// Second claimant.
+///         B = "same",
+///     }
+/// }
+/// ```
+///
+/// A duplicate variant is a **compile error** (the macro generates
+/// the enum, so the duplicate is a duplicate definition):
+///
+/// ```compile_fail
+/// whittle_core::closed_set! {
+///     /// A variant cannot be declared twice.
+///     pub enum Dup {
+///         /// First declaration.
+///         A = "first",
+///         /// Duplicate declaration.
+///         A = "second",
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! closed_set {
+    (
+        $(#[$attr:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $(#[$vattr:meta])*
+                $variant:ident = $wire:literal
+            ),+ $(,)?
+        }
+    ) => {
+        $(#[$attr])*
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            Hash,
+            PartialOrd,
+            Ord
+        )]
+        $vis enum $name {
+            $(
+                $(#[$vattr])*
+                $variant
+            ),+
+        }
+
+        impl $crate::ClosedSet for $name {
+            const MEMBERS: &'static [(&'static str, Self)] = &[
+                $(($wire, Self::$variant)),+
+            ];
+        }
+
+        // Force the injectivity side condition at declaration time
+        // rather than first use.
+        const _: () = <$name as $crate::ClosedSet>::VALID;
+
+        impl ::core::str::FromStr for $name {
+            type Err = $crate::ClosedSetError<Self>;
+
+            #[inline]
+            fn from_str(raw: &str) -> ::core::result::Result<Self, Self::Err> {
+                $crate::closed_set::parse(raw)
+            }
+        }
+
+        impl ::core::convert::TryFrom<&str> for $name {
+            type Error = $crate::ClosedSetError<Self>;
+
+            #[inline]
+            fn try_from(raw: &str) -> ::core::result::Result<Self, Self::Error> {
+                $crate::closed_set::parse(raw)
+            }
+        }
+
+        impl ::core::fmt::Display for $name {
+            #[inline]
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                f.write_str($crate::closed_set::as_str(*self))
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
@@ -329,6 +503,85 @@ mod tests {
         assert_eq!(
             err,
             crate::primitive::CollectionError::LenOutOfRange { actual: 0 },
+        );
+    }
+
+    closed_set! {
+        /// Account activity status (macro-generated test fixture).
+        pub enum TestActivityStatus {
+            /// In active use.
+            Active = "active",
+            /// Dormant.
+            Inactive = "inactive",
+        }
+    }
+
+    closed_set! {
+        /// Branch code: a second, distinct monomorphisation of the
+        /// generic closed-set fns through the macro front door.
+        pub enum TestBranch {
+            /// Main branch.
+            Main = "main",
+            /// Satellite branch.
+            Satellite = "satellite",
+        }
+    }
+
+    #[test]
+    fn closed_set_macro_from_str_admits_members() {
+        let status: TestActivityStatus = "active".parse().unwrap();
+        assert_eq!(status, TestActivityStatus::Active);
+        let branch: TestBranch = "satellite".parse().unwrap();
+        assert_eq!(branch, TestBranch::Satellite);
+    }
+
+    #[test]
+    fn closed_set_macro_from_str_rejects_non_members() {
+        let err = "actve".parse::<TestActivityStatus>().unwrap_err();
+        assert_eq!(err.value(), "actve");
+        "trunk".parse::<TestBranch>().unwrap_err();
+    }
+
+    #[test]
+    fn closed_set_macro_try_from_routes_through_parse() {
+        let status = TestActivityStatus::try_from("inactive").unwrap();
+        assert_eq!(status, TestActivityStatus::Inactive);
+        TestActivityStatus::try_from("paused").unwrap_err();
+        let branch = TestBranch::try_from("main").unwrap();
+        assert_eq!(branch, TestBranch::Main);
+        TestBranch::try_from("MAIN").unwrap_err();
+    }
+
+    #[test]
+    fn closed_set_macro_display_is_the_wire_form() {
+        assert_eq!(TestActivityStatus::Active.to_string(), "active");
+        assert_eq!(TestActivityStatus::Inactive.to_string(), "inactive");
+        assert_eq!(TestBranch::Main.to_string(), "main");
+        assert_eq!(TestBranch::Satellite.to_string(), "satellite");
+    }
+
+    #[test]
+    fn closed_set_macro_members_follow_declaration_order() {
+        assert_eq!(
+            <TestActivityStatus as crate::ClosedSet>::MEMBERS,
+            &[
+                ("active", TestActivityStatus::Active),
+                ("inactive", TestActivityStatus::Inactive),
+            ],
+        );
+    }
+
+    #[test]
+    fn closed_set_macro_derives_ord_in_declaration_order() {
+        // The emitted derive set includes `PartialOrd`/`Ord` (and
+        // `Hash`), matching the standard forwarded set documented
+        // on `refinement!`.
+        assert!(TestActivityStatus::Active < TestActivityStatus::Inactive);
+        let mut branches = alloc::vec![TestBranch::Satellite, TestBranch::Main];
+        branches.sort();
+        assert_eq!(
+            branches,
+            alloc::vec![TestBranch::Main, TestBranch::Satellite]
         );
     }
 
