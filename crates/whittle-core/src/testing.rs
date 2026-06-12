@@ -540,18 +540,23 @@ pub fn prop_schema_cross_check<T, R>(
 }
 
 /// One row of a derived STRING boundary matrix: the schema's test
-/// point plus `refine`'s verdict. Non-generic so every string rule
-/// family shares one violation renderer
-/// ([`string_matrix_violations`]).
+/// point plus the carried-set verdict observed through `refine`.
+/// Non-generic so every string rule family shares one violation
+/// renderer ([`string_matrix_violations`]).
 struct StringMatrixRow {
     /// The schema-classified test point.
     boundary: crate::schema::StringBoundary,
-    /// Whether `R::refine` admitted the candidate.
-    refine_admits: bool,
+    /// Whether the candidate is in `range(R::refine)`: `refine`
+    /// accepted it AND returned it unchanged. For pure predicates
+    /// this is plain acceptance; for canonicalising rules it is the
+    /// carried-set membership the [`SchemaRule`] denotation speaks
+    /// about (an input `refine` rewrites is accepted but not
+    /// carried).
+    refine_carries: bool,
 }
 
 /// Derive the string boundary matrix from `R::schema()` and attach
-/// each row's `refine` verdict. Generic but branch-free: all
+/// each row's carried-set verdict. Generic but branch-light: all
 /// reporting decisions live in [`string_matrix_violations`].
 fn collect_string_matrix<R>() -> Vec<StringMatrixRow>
 where
@@ -561,10 +566,11 @@ where
         .string_boundaries()
         .into_iter()
         .map(|boundary| {
-            let refine_admits = R::refine(boundary.value.clone()).is_ok();
+            let refine_carries =
+                R::refine(boundary.value.clone()).is_ok_and(|carried| carried == boundary.value);
             StringMatrixRow {
                 boundary,
-                refine_admits,
+                refine_carries,
             }
         })
         .collect()
@@ -575,15 +581,15 @@ where
 fn string_matrix_violations(rows: &[StringMatrixRow]) -> Vec<alloc::string::String> {
     let mut violations: Vec<alloc::string::String> = Vec::new();
     for row in rows {
-        match (row.boundary.admitted, row.refine_admits) {
+        match (row.boundary.admitted, row.refine_carries) {
             (true, false) => violations.push(format!(
-                "schema admits {:?} at the boundary but refine rejects it: the \
-                 schema overclaims the admitted set",
+                "schema admits {:?} at the boundary but refine rejects it (or \
+                 rewrites it): the schema overclaims the carried set",
                 row.boundary.value,
             )),
             (false, true) => violations.push(format!(
-                "schema rejects {:?} at the boundary but refine admits it: the \
-                 schema underclaims the admitted set",
+                "schema rejects {:?} at the boundary but refine admits it \
+                 unchanged: the schema underclaims the carried set",
                 row.boundary.value,
             )),
             (true, true) | (false, false) => {}
@@ -608,10 +614,18 @@ fn string_matrix_violations(rows: &[StringMatrixRow]) -> Vec<alloc::string::Stri
 /// for the design (this is its string-carrier sibling; the same
 /// second-determinant removal, the same placement-only contract).
 ///
+/// The observable is CARRIED-SET membership, matching the
+/// [`SchemaRule`] denotation: a candidate agrees with an `admitted`
+/// verdict only when `refine` accepts it AND returns it unchanged.
+/// For pure predicates that is plain acceptance; for canonicalising
+/// rules it keeps the matrix honest about inputs `refine` accepts
+/// but rewrites (which are preimage members, not carried values).
+///
 /// # Panics
 ///
-/// Panics when `refine` disagrees with the schema's verdict on a
-/// candidate (in either direction), or when the matrix is vacuous.
+/// Panics when `refine`'s carried-set verdict disagrees with the
+/// schema's on a candidate (in either direction), or when the matrix
+/// is vacuous.
 ///
 /// # Examples
 ///
@@ -1343,6 +1357,50 @@ mod tests {
         fn arbitrary_strategy() -> Self::Strategy {
             proptest::strategy::Just("x".to_string())
         }
+    }
+
+    /// Canonicalising fixture: refine lowercases before testing
+    /// membership, and the schema says so with a `Canonicalized`
+    /// node. The boundary matrix agrees because its observable is
+    /// carried-set membership: the derived candidate "ON" is
+    /// ACCEPTED by refine (rewritten to "on") yet correctly a
+    /// schema non-member — under a plain acceptance observable this
+    /// fixture would be a false violation.
+    enum LoweredToggle {}
+
+    impl Rule<String> for LoweredToggle {
+        type Error = OutOfRange;
+        fn refine(raw: String) -> Result<String, Self::Error> {
+            let lowered = raw.to_ascii_lowercase();
+            if lowered == "on" {
+                Ok(lowered)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<String> for LoweredToggle {
+        fn schema() -> Schema {
+            Schema::canonicalized(
+                crate::schema::Morphism::AsciiLowercase,
+                Schema::enumerated(&["on"]),
+            )
+        }
+    }
+
+    /// The carried-set observable keeps canonicalising rules and
+    /// their `Canonicalized` schemas in agreement at every derived
+    /// boundary point.
+    #[test]
+    fn assert_string_boundary_matrix_passes_for_a_canonicalising_rule() {
+        // Pin the rewrite the matrix must tolerate: "ON" is accepted
+        // but not carried.
+        assert_eq!(
+            LoweredToggle::refine("ON".to_string()),
+            Ok("on".to_string()),
+        );
+        assert_string_boundary_matrix::<LoweredToggle>();
     }
 
     /// Matrix obligation, overclaim direction: the schema admits the

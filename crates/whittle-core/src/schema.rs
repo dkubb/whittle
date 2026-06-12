@@ -597,9 +597,15 @@ fn char_predecessor(c: char) -> char {
 /// A canonicalisation morphism recorded by [`SchemaView::Canonicalized`].
 ///
 /// The morphism is the transformation `refine` applies to raw input
-/// before the inner rule runs. The carried set is the inner schema's
-/// set (the morphism's fixed points within it); the morphism
-/// describes which raw inputs reach it.
+/// before the inner rule runs. The denoted (carried) set of a
+/// `Canonicalized` node is the morphism's FIXED POINTS within the
+/// inner schema's set: every value the composed `refine` returns has
+/// already been canonicalised, so a value the morphism would still
+/// rewrite (a padded string under [`Morphism::Trim`], a mixed-case
+/// string under [`Morphism::AsciiLowercase`]) is never carried, even
+/// when the inner rule would admit it. The morphism also describes
+/// the raw-input preimage: the inputs reaching the carried set are
+/// exactly the morphism's preimage of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Morphism {
     /// Leading/trailing-whitespace removal
@@ -611,6 +617,20 @@ pub enum Morphism {
     /// ASCII uppercasing
     /// ([`AsciiUppercase`](crate::transform::AsciiUppercase)).
     AsciiUppercase,
+}
+
+impl Morphism {
+    /// `true` iff `value` is one of this morphism's fixed points —
+    /// the canonicalisation would return it unchanged. Fixed points
+    /// are what a [`SchemaView::Canonicalized`] node denotes (within
+    /// its inner set), so this is the membership test's first gate.
+    fn is_fixed_point(self, value: &str) -> bool {
+        match self {
+            Self::Trim => value.trim() == value,
+            Self::AsciiLowercase => !value.bytes().any(|byte| byte.is_ascii_uppercase()),
+            Self::AsciiUppercase => !value.bytes().any(|byte| byte.is_ascii_lowercase()),
+        }
+    }
 }
 
 /// One scalar test point of a derived boundary matrix
@@ -799,13 +819,14 @@ pub enum SchemaView<'schema> {
     /// flattened, sorted, deduplicated, same-kind intervals fused,
     /// never a singleton.
     Intersection(&'schema [Schema]),
-    /// A canonicalising rule: the carried set is `inner`'s set; the
+    /// A canonicalising rule: the carried set is the morphism's
+    /// fixed points within `inner`'s set (see [`Morphism`]); the
     /// recorded morphism maps raw input onto it (so the raw-input
-    /// preimage is the morphism's preimage of the inner set).
+    /// preimage is the morphism's preimage of the carried set).
     Canonicalized {
         /// The canonicalisation applied to raw input.
         morphism: Morphism,
-        /// Schema of the carried (post-morphism) set.
+        /// Schema the carried (post-morphism) set refines.
         inner: &'schema Schema,
     },
 }
@@ -1131,9 +1152,9 @@ impl Schema {
         collapse_singleton(flat, SchemaRepr::Intersection)
     }
 
-    /// Build a canonicalised schema: the carried set is `inner`'s
-    /// set; `morphism` records the transformation applied to raw
-    /// input.
+    /// Build a canonicalised schema: the carried set is `morphism`'s
+    /// fixed points within `inner`'s set; `morphism` records the
+    /// transformation applied to raw input (see [`Morphism`]).
     ///
     /// # Examples
     ///
@@ -1362,6 +1383,9 @@ impl Schema {
                     .collect();
                 combine_membership(&answers, |decided| !decided.contains(&false))
             }
+            // The recorded morphisms are string canonicalisations;
+            // every scalar is vacuously a fixed point, so the carried
+            // set's scalar fragment is the inner schema's.
             SchemaRepr::Canonicalized { inner, .. } => inner.scalar_membership(kind, value),
             SchemaRepr::Str { .. }
             | SchemaRepr::Regex(_)
@@ -1380,8 +1404,10 @@ impl Schema {
     /// the string fragment. [`SchemaView::Regex`] is `None` by design:
     /// deciding it needs a regex engine, which the `no_std` kernel
     /// does not carry. [`SchemaView::Canonicalized`] decides membership
-    /// of the CARRIED set (its inner schema), matching the
-    /// [`SchemaRule`] denotation.
+    /// of the CARRIED set — the morphism's fixed points within its
+    /// inner schema, so a value the morphism would rewrite is
+    /// decidedly a non-member — matching the [`SchemaRule`]
+    /// denotation.
     ///
     /// # Examples
     ///
@@ -1425,7 +1451,16 @@ impl Schema {
                     .collect();
                 combine_membership(&answers, |decided| !decided.contains(&false))
             }
-            SchemaRepr::Canonicalized { inner, .. } => inner.string_membership(value),
+            SchemaRepr::Canonicalized { morphism, inner } => {
+                if morphism.is_fixed_point(value) {
+                    inner.string_membership(value)
+                } else {
+                    // Decided, not undecidable: a value the morphism
+                    // would rewrite is never carried, whatever the
+                    // inner schema says.
+                    Some(false)
+                }
+            }
             SchemaRepr::Interval { .. } | SchemaRepr::Regex(_) | SchemaRepr::Collection { .. } => {
                 None
             }
@@ -3498,6 +3533,42 @@ mod tests {
         let trimmed = Schema::canonicalized(Morphism::Trim, toggle);
         assert_eq!(trimmed.string_membership("on"), Some(true));
         assert_eq!(trimmed.string_membership(" on"), Some(false));
+    }
+
+    #[test]
+    fn string_membership_of_canonicalized_requires_a_fixed_point() {
+        // The inner Str node admits whitespace-padded and mixed-case
+        // strings, so the rejections below are decided by the
+        // fixed-point gate alone: a value the morphism would rewrite
+        // is never carried, whatever the inner schema says.
+        let anything = || {
+            Schema::string(
+                LenBound::new(0, 8),
+                LenUnit::Chars,
+                CharSet::from_ranges([('\0', char::MAX)]),
+                None,
+            )
+        };
+        let trimmed = Schema::canonicalized(Morphism::Trim, anything());
+        assert_eq!(trimmed.string_membership("a b"), Some(true));
+        assert_eq!(trimmed.string_membership(" a b "), Some(false));
+
+        let lowered = Schema::canonicalized(Morphism::AsciiLowercase, anything());
+        assert_eq!(lowered.string_membership("abc"), Some(true));
+        assert_eq!(lowered.string_membership("aBc"), Some(false));
+
+        let raised = Schema::canonicalized(Morphism::AsciiUppercase, anything());
+        assert_eq!(raised.string_membership("ABC"), Some(true));
+        assert_eq!(raised.string_membership("AbC"), Some(false));
+    }
+
+    #[test]
+    fn string_membership_of_canonicalized_stays_undecided_inside_fixed_points() {
+        // The gate decides non-fixed-points; a fixed point still
+        // defers to the inner schema, including its undecidability.
+        let trimmed_regex = Schema::canonicalized(Morphism::Trim, Schema::regex("^a$"));
+        assert_eq!(trimmed_regex.string_membership("a"), None);
+        assert_eq!(trimmed_regex.string_membership(" a"), Some(false));
     }
 
     #[test]
