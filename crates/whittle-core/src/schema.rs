@@ -32,7 +32,10 @@
 //!   sorted, and deduplicated, and a single operand collapses to the
 //!   operand itself;
 //! - [`Schema::intersection`] fuses same-kind intervals into one
-//!   interval;
+//!   interval, and fuses `Str` members (alphabets and
+//!   first-character sets intersect; length bounds fuse per unit;
+//!   an emptied character set collapses to the empty-string-only
+//!   node);
 //! - [`Schema::enumerated`] requires a non-empty, duplicate-free
 //!   label set.
 //!
@@ -525,6 +528,32 @@ impl CharSet {
         } else {
             Some(Self::from_ranges(out))
         }
+    }
+
+    /// The set intersection `self ∩ other`, in canonical form, or
+    /// `None` when the sets are disjoint (a `CharSet` cannot be
+    /// empty — an empty set admits nothing).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::CharSet;
+    ///
+    /// let letters = CharSet::from_ranges([('a', 'z')]);
+    /// let alnum = CharSet::from_ranges([('0', '9'), ('a', 'z')]);
+    /// assert_eq!(letters.intersection(&alnum), Some(letters.clone()));
+    ///
+    /// // Disjoint sets intersect to nothing.
+    /// let digits = CharSet::from_ranges([('0', '9')]);
+    /// assert_eq!(letters.intersection(&digits), None);
+    /// ```
+    #[must_use]
+    pub fn intersection(&self, other: &Self) -> Option<Self> {
+        // a ∩ b = a \ (a \ b): reuse the canonical difference
+        // machinery instead of adding a third range walker. An empty
+        // difference means a ⊆ b, so the intersection is a itself.
+        self.difference(other)
+            .map_or_else(|| Some(self.clone()), |outside| self.difference(&outside))
     }
 
     /// The smallest Unicode scalar value OUTSIDE the set, when one
@@ -1090,15 +1119,34 @@ impl Schema {
 
     /// Build the intersection of `members`' sets, canonicalising:
     /// nested intersections flatten, same-kind intervals fuse into
-    /// one interval, members sort and deduplicate, and a single
-    /// remaining member collapses to the member itself.
+    /// one interval, `Str` members fuse (see below), members sort
+    /// and deduplicate, and a single remaining member collapses to
+    /// the member itself.
+    ///
+    /// # `Str` fusion
+    ///
+    /// All `Str` members fuse jointly: alphabets intersect,
+    /// first-character sets intersect (and are reduced into the
+    /// fused alphabet — heads outside it are unusable anyway), and
+    /// length bounds fuse per [`LenUnit`]. The fused form is one
+    /// `Str` node per length-constrained unit (each carrying the
+    /// full fused alphabet and first set, so the conjunction is
+    /// preserved), or a single node in the smallest member unit when
+    /// no member constrains length. When the fused alphabet or first
+    /// set empties, only the empty string can satisfy the
+    /// conjunction: the fusion collapses to the canonical
+    /// `len 0..=0` node — provided every fused length range admits
+    /// length zero. All fusion steps are commutative and
+    /// associative, so the normal form is construction-order
+    /// independent (the confluence property tests pin this).
     ///
     /// # Panics
     ///
-    /// Panics when `members` is empty, or when fusing same-kind
-    /// intervals produces an empty interval (the intersection admits
-    /// nothing — the schema analogue of the compile-time
-    /// `MIN <= MAX` asserts on the rules themselves).
+    /// Panics when `members` is empty, or when fusion proves the
+    /// intersection admits nothing (an empty fused interval, an
+    /// empty fused length range, or an emptied alphabet whose length
+    /// bound excludes the empty string) — the schema analogue of the
+    /// compile-time `MIN <= MAX` asserts on the rules themselves.
     ///
     /// # Examples
     ///
@@ -1132,6 +1180,7 @@ impl Schema {
             "Schema::intersection: at least one member is required",
         );
         let mut intervals: Vec<(ScalarKind, Bound, Bound)> = Vec::new();
+        let mut strs: Vec<StrNodeParts> = Vec::new();
         let mut others: Vec<Self> = Vec::new();
         let mut queue: Vec<Self> = members;
         while let Some(member) = queue.pop() {
@@ -1145,6 +1194,19 @@ impl Schema {
                     }
                     None => intervals.push((kind, lo, hi)),
                 }
+            } else if let SchemaRepr::Str {
+                len,
+                unit,
+                alphabet,
+                first,
+            } = member.repr
+            {
+                strs.push(StrNodeParts {
+                    len,
+                    unit,
+                    alphabet,
+                    first,
+                });
             } else {
                 others.push(member);
             }
@@ -1156,6 +1218,7 @@ impl Schema {
             // non-empty contract named.
             flat.push(Self::interval(kind, lo, hi));
         }
+        flat.extend(fuse_str_nodes(strs));
         flat.sort_unstable();
         flat.dedup();
         collapse_singleton(flat, SchemaRepr::Intersection)
@@ -1946,6 +2009,141 @@ fn fuse_hi(a: Bound, b: Bound) -> Bound {
         (Some(_), None) => a,
         (None, _) => b,
     }
+}
+
+/// The deconstructed fields of one `SchemaRepr::Str` member queued
+/// for intersection fusion.
+struct StrNodeParts {
+    len: LenBound,
+    unit: LenUnit,
+    alphabet: CharSet,
+    first: Option<CharSet>,
+}
+
+/// The length bound that constrains nothing: every representable
+/// length is admitted, so a node carrying it imposes no length
+/// constraint in ANY unit (the widening `LenChars`-less rules use).
+const fn vacuous_len() -> LenBound {
+    LenBound::new(0, u64::MAX)
+}
+
+/// The canonical schema admitting exactly the empty string — the
+/// degenerate form `Str` fusion collapses to when the fused alphabet
+/// (or first-character set) empties: no non-empty string can satisfy
+/// the conjunction, but `""` still can. The alphabet is the full
+/// universe because a zero-length bound consults no character.
+fn empty_string_only() -> Schema {
+    Schema::string(
+        LenBound::new(0, 0),
+        LenUnit::Chars,
+        CharSet::from_ranges([('\0', char::MAX)]),
+        None,
+    )
+}
+
+/// Narrow `unit`'s fused length range by one member's bound,
+/// panicking when the conjunction empties: no string measures an
+/// impossible length, so an empty fused range proves an empty
+/// admitted set. A vacuous bound is skipped — it constrains nothing,
+/// so it must not pin its node's unit into the fused form.
+fn narrow_len(
+    lens: &mut alloc::collections::BTreeMap<LenUnit, (u64, u64)>,
+    unit: LenUnit,
+    len: LenBound,
+) {
+    if len == vacuous_len() {
+        return;
+    }
+    let entry = lens.entry(unit).or_insert((0, u64::MAX));
+    entry.0 = entry.0.max(len.lo());
+    entry.1 = entry.1.min(len.hi());
+    assert!(
+        entry.0 <= entry.1,
+        "Schema::intersection: fused string length range is empty (the \
+         intersection admits nothing)",
+    );
+}
+
+/// Fuse every `Str` member of an intersection into canonical form
+/// (see [`Schema::intersection`]'s `Str` fusion contract): alphabets
+/// and first-character sets intersect across ALL members, length
+/// bounds fuse per unit, and the result is one node per
+/// length-constrained unit — or a single unconstrained node, or the
+/// empty-string-only collapse when a character set empties. Every
+/// step is commutative and associative, so the output is independent
+/// of member order (confluence).
+///
+/// # Panics
+///
+/// Panics when fusion proves the conjunction admits nothing: an
+/// empty fused length range, or an emptied character set combined
+/// with a length bound that excludes the empty string.
+fn fuse_str_nodes(nodes: Vec<StrNodeParts>) -> Vec<Schema> {
+    let mut nodes = nodes.into_iter();
+    let Some(head) = nodes.next() else {
+        // No Str members: nothing to fuse, nothing to add.
+        return Vec::new();
+    };
+    let mut min_unit = head.unit;
+    let mut alphabet = head.alphabet;
+    let mut alphabet_emptied = false;
+    let mut first = head.first;
+    let mut first_emptied = false;
+    let mut lens: alloc::collections::BTreeMap<LenUnit, (u64, u64)> =
+        alloc::collections::BTreeMap::new();
+    narrow_len(&mut lens, head.unit, head.len);
+    for node in nodes {
+        min_unit = min_unit.min(node.unit);
+        match alphabet.intersection(&node.alphabet) {
+            Some(fused) => alphabet = fused,
+            None => alphabet_emptied = true,
+        }
+        if let Some(set) = node.first {
+            match &first {
+                None => first = Some(set),
+                Some(acc) => match acc.intersection(&set) {
+                    Some(fused) => first = Some(fused),
+                    None => first_emptied = true,
+                },
+            }
+        }
+        narrow_len(&mut lens, node.unit, node.len);
+    }
+    // Canonicalise the first set into the fused alphabet: membership
+    // requires the head to be in BOTH, so characters outside the
+    // alphabet are unusable as heads and would only bloat the form.
+    if !alphabet_emptied
+        && !first_emptied
+        && let Some(acc) = &first
+    {
+        match acc.intersection(&alphabet) {
+            Some(fused) => first = Some(fused),
+            None => first_emptied = true,
+        }
+    }
+    if alphabet_emptied || first_emptied {
+        // Only the empty string can satisfy the conjunction; it must
+        // also satisfy every fused length range.
+        for &(lo, _) in lens.values() {
+            assert!(
+                lo == 0,
+                "Schema::intersection: the fused string vocabulary admits \
+                 nothing (an emptied character set excludes every non-empty \
+                 string, and the fused length bound excludes the empty one)",
+            );
+        }
+        return alloc::vec![empty_string_only()];
+    }
+    if lens.is_empty() {
+        // No member constrains length: one node, in the smallest
+        // member unit (a deterministic, order-independent choice).
+        return alloc::vec![Schema::string(vacuous_len(), min_unit, alphabet, first)];
+    }
+    lens.into_iter()
+        .map(|(unit, (lo, hi))| {
+            Schema::string(LenBound::new(lo, hi), unit, alphabet.clone(), first.clone())
+        })
+        .collect()
 }
 
 /// A canonical n-ary node never holds a single member: collapse to
@@ -2806,6 +3004,178 @@ mod tests {
         let _schema = Schema::intersection(Vec::new());
     }
 
+    // ─── Str fusion inside intersections. ──────────────────────────
+
+    /// `Str` shorthand for the fusion tests.
+    fn str_node(
+        len: (u64, u64),
+        unit: LenUnit,
+        alphabet: &[(char, char)],
+        first: Option<&[(char, char)]>,
+    ) -> Schema {
+        Schema::string(
+            LenBound::new(len.0, len.1),
+            unit,
+            CharSet::from_ranges(alphabet.iter().copied()),
+            first.map(|ranges| CharSet::from_ranges(ranges.iter().copied())),
+        )
+    }
+
+    #[test]
+    fn intersection_fuses_same_unit_str_nodes() {
+        // The BoundedLine shape: a char-length bound ∧ an alphabet
+        // constraint fuse into ONE Str node — len from one member,
+        // alphabet from the other.
+        let len_only = str_node((1, 80), LenUnit::Chars, &[('\0', char::MAX)], None);
+        let alpha_only = str_node((0, u64::MAX), LenUnit::Chars, &[('a', 'z')], None);
+        assert_eq!(
+            Schema::intersection(vec![len_only, alpha_only]),
+            str_node((1, 80), LenUnit::Chars, &[('a', 'z')], None),
+        );
+    }
+
+    #[test]
+    fn intersection_fuses_str_alphabets_lengths_and_first_sets() {
+        let a = str_node((1, 10), LenUnit::Chars, &[('a', 'z')], Some(&[('a', 'm')]));
+        let b = str_node((5, 20), LenUnit::Chars, &[('f', 'q')], Some(&[('k', 'z')]));
+        assert_eq!(
+            Schema::intersection(vec![a, b]),
+            // len = [5, 10]; alphabet = f..q; first = (a..m ∩ k..z)
+            // ∩ alphabet = k..m.
+            str_node((5, 10), LenUnit::Chars, &[('f', 'q')], Some(&[('k', 'm')])),
+        );
+    }
+
+    #[test]
+    fn intersection_adopts_the_first_set_of_either_operand() {
+        // One-sided first sets survive fusion (reduced into the
+        // fused alphabet).
+        let plain = str_node((1, 8), LenUnit::Chars, &[('a', 'z')], None);
+        let headed = str_node(
+            (0, u64::MAX),
+            LenUnit::Chars,
+            &[('\0', char::MAX)],
+            Some(&[('0', '9'), ('a', 'f')]),
+        );
+        assert_eq!(
+            Schema::intersection(vec![plain, headed]),
+            str_node((1, 8), LenUnit::Chars, &[('a', 'z')], Some(&[('a', 'f')])),
+        );
+    }
+
+    #[test]
+    fn intersection_keeps_one_str_node_per_length_constrained_unit() {
+        // Both units carry real length bounds: chars and bytes are
+        // incomparable, so the fused form is one node per unit, each
+        // carrying the full fused alphabet.
+        let chars = str_node((1, 10), LenUnit::Chars, &[('a', 'z')], None);
+        let bytes = str_node((2, 40), LenUnit::Bytes, &[('f', 'q')], None);
+        assert_eq!(
+            Schema::intersection(vec![chars, bytes]),
+            Schema::intersection(vec![
+                str_node((1, 10), LenUnit::Chars, &[('f', 'q')], None),
+                str_node((2, 40), LenUnit::Bytes, &[('f', 'q')], None),
+            ]),
+        );
+    }
+
+    #[test]
+    fn intersection_fuses_a_vacuous_len_str_across_units() {
+        // The NonEmpty ∧ EachChar shape: the chars-unit member's
+        // length is vacuous, so it imposes no length constraint and
+        // the byte bound's unit wins.
+        let non_empty = str_node((1, u64::MAX), LenUnit::Bytes, &[('\0', char::MAX)], None);
+        let alpha = str_node((0, u64::MAX), LenUnit::Chars, &[('a', 'z')], None);
+        assert_eq!(
+            Schema::intersection(vec![non_empty, alpha]),
+            str_node((1, u64::MAX), LenUnit::Bytes, &[('a', 'z')], None),
+        );
+    }
+
+    #[test]
+    fn intersection_of_unconstrained_strs_keeps_the_smallest_unit() {
+        // No member constrains length: one fused node, in the
+        // smallest member unit (Chars < Bytes) — a deterministic
+        // choice the confluence tests rely on.
+        let bytes = str_node((0, u64::MAX), LenUnit::Bytes, &[('a', 'z')], None);
+        let chars = str_node(
+            (0, u64::MAX),
+            LenUnit::Chars,
+            &[('0', '9'), ('a', 'z')],
+            None,
+        );
+        assert_eq!(
+            Schema::intersection(vec![bytes, chars]),
+            str_node((0, u64::MAX), LenUnit::Chars, &[('a', 'z')], None),
+        );
+    }
+
+    #[test]
+    fn intersection_collapses_disjoint_alphabets_to_the_empty_string() {
+        // Disjoint alphabets exclude every non-empty string, but the
+        // length bounds admit length zero, so the conjunction is
+        // exactly {""} — the canonical len 0..=0 node.
+        let letters = str_node((0, 10), LenUnit::Chars, &[('a', 'z')], None);
+        let digits = str_node((0, 5), LenUnit::Chars, &[('0', '9')], None);
+        let fused = Schema::intersection(vec![letters, digits]);
+        assert_eq!(
+            fused,
+            str_node((0, 0), LenUnit::Chars, &[('\0', char::MAX)], None),
+        );
+        assert_eq!(fused.string_membership(""), Some(true));
+        assert_eq!(fused.string_membership("a"), Some(false));
+    }
+
+    #[test]
+    fn intersection_collapses_disjoint_first_sets_to_the_empty_string() {
+        // The alphabets agree but no head can satisfy both first
+        // sets, so only the empty string remains.
+        let a = str_node((0, 10), LenUnit::Chars, &[('a', 'z')], Some(&[('a', 'f')]));
+        let b = str_node((0, 10), LenUnit::Chars, &[('a', 'z')], Some(&[('k', 'z')]));
+        assert_eq!(
+            Schema::intersection(vec![a, b]),
+            str_node((0, 0), LenUnit::Chars, &[('\0', char::MAX)], None),
+        );
+    }
+
+    #[test]
+    fn intersection_collapses_a_first_set_outside_the_alphabet_to_the_empty_string() {
+        // The first sets intersect, but nothing in that intersection
+        // survives the fused alphabet: the canonicalisation into the
+        // alphabet empties it.
+        let headed = str_node(
+            (0, 10),
+            LenUnit::Chars,
+            &[('\0', char::MAX)],
+            Some(&[('0', '9')]),
+        );
+        let letters = str_node((0, u64::MAX), LenUnit::Chars, &[('a', 'z')], None);
+        assert_eq!(
+            Schema::intersection(vec![headed, letters]),
+            str_node((0, 0), LenUnit::Chars, &[('\0', char::MAX)], None),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "fused string length range is empty")]
+    fn intersection_rejects_empty_str_length_fusion() {
+        let _schema = Schema::intersection(vec![
+            str_node((1, 3), LenUnit::Chars, &[('a', 'z')], None),
+            str_node((5, 9), LenUnit::Chars, &[('a', 'z')], None),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "fused string vocabulary admits nothing")]
+    fn intersection_rejects_emptied_alphabet_with_non_zero_length() {
+        // Disjoint alphabets AND a length bound that excludes "":
+        // the conjunction admits nothing at all.
+        let _schema = Schema::intersection(vec![
+            str_node((1, 10), LenUnit::Chars, &[('a', 'z')], None),
+            str_node((0, 5), LenUnit::Chars, &[('0', '9')], None),
+        ]);
+    }
+
     // ─── Confluence: normal form independent of construction order.
 
     proptest::proptest! {
@@ -2891,6 +3261,51 @@ mod tests {
                 Schema::intersection(vec![at_least, at_most]),
                 int_interval(lo, hi),
             );
+        }
+
+        /// Str fusion is independent of member permutation and
+        /// nesting split point: every fusion step (alphabet ∩,
+        /// first ∩, per-unit length max/min, min-unit choice) is
+        /// commutative and associative. Alphabets share `'a'..='f'`
+        /// and lengths share `8..=10`, so fusion never empties.
+        #[test]
+        fn intersection_str_fusion_is_confluent(
+            parts in proptest::collection::vec(
+                (
+                    0_u64..=8,            // len.lo
+                    10_u64..=20,          // len.hi
+                    proptest::bool::ANY,  // unit: chars / bytes
+                    b'a'..=b'f',          // alphabet.lo (≤ 'f')
+                    b'f'..=b'z',          // alphabet.hi (≥ 'f')
+                ),
+                2..6,
+            ),
+            split in 1_usize..5,
+        ) {
+            let members: Vec<Schema> = parts
+                .iter()
+                .map(|&(lo, hi, bytes, alpha_lo, alpha_hi)| {
+                    str_node(
+                        (lo, hi),
+                        if bytes { LenUnit::Bytes } else { LenUnit::Chars },
+                        &[(char::from(alpha_lo), char::from(alpha_hi))],
+                        None,
+                    )
+                })
+                .collect();
+            let flat = Schema::intersection(members.clone());
+
+            let split = split.min(members.len() - 1);
+            let (left, right) = members.split_at(split);
+            let nested = Schema::intersection(vec![
+                Schema::intersection(left.to_vec()),
+                Schema::intersection(right.to_vec()),
+            ]);
+            proptest::prop_assert_eq!(&nested, &flat);
+
+            let mut reversed = members;
+            reversed.reverse();
+            proptest::prop_assert_eq!(&Schema::intersection(reversed), &flat);
         }
 
         /// CharSet normal form is independent of range order.
