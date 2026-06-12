@@ -15,6 +15,7 @@ use core::marker::PhantomData;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::schema::CharSet;
 use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 
 /// Inclusive bound on the number of Unicode scalar values: `MIN <=
@@ -275,6 +276,53 @@ pub trait ArbitraryChar: CharPredicate {
     fn arbitrary_char() -> Self::Strategy;
 }
 
+/// A [`CharPredicate`] whose admissible set is expressible as a
+/// constructive [`CharSet`].
+///
+/// The per-character analogue of
+/// [`SchemaRule`](crate::schema::SchemaRule), and the vocabulary the
+/// string schemas' `Str` nodes are built from.
+///
+/// # Soundness obligation
+///
+/// `⟦char_set()⟧ = {c | Self::test(c)}`: the set and the predicate
+/// must agree on every Unicode scalar value. The char universe is
+/// finite, so the obligation is checked by an EXACT oracle —
+/// `assert_schema_char` in `whittle_core::testing` walks every
+/// scalar value, no sampling gap — and every library impl is pinned
+/// by it.
+///
+/// # Absence is meaningful
+///
+/// A predicate without an impl has no constructive set, mirroring
+/// `SchemaRule`. [`PrintableChar`] is deliberately absent: its
+/// admissible set is determined by the Unicode general-category
+/// tables (thousands of ranges that move with Unicode versions);
+/// restating them as a `CharSet` would be a second determinant that
+/// silently drifts whenever the `unicode-general-category` tables
+/// update. Absence over contortion. [`NonControl`],
+/// [`PrintableLine`], and [`PrintableMultiline`] ARE expressible —
+/// their definitions are closed-form (the immutable `Cc` category
+/// plus a small fixed forbidden list), so their sets cannot drift.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::{AsciiDigit, SchemaChar};
+///
+/// let digits = <AsciiDigit as SchemaChar>::char_set();
+/// assert_eq!(digits.ranges(), &[('0', '9')]);
+/// assert!(digits.contains('7'));
+/// assert!(!digits.contains('a'));
+/// ```
+pub trait SchemaChar: CharPredicate {
+    /// The constructive form of this predicate's admissible set.
+    ///
+    /// See the trait docs for the soundness obligation relating the
+    /// returned set to [`CharPredicate::test`].
+    fn char_set() -> CharSet;
+}
+
 /// Predicate: exactly one character.
 ///
 /// Use this as the leaf for literal punctuation in exact ASCII token
@@ -302,6 +350,13 @@ impl<const CH: char> CharPredicate for CharLiteral<CH> {
     #[inline]
     fn test(ch: char) -> bool {
         ch == CH
+    }
+}
+
+impl<const CH: char> SchemaChar for CharLiteral<CH> {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([(CH, CH)])
     }
 }
 
@@ -358,6 +413,20 @@ where
     A: RejectsTrimWhitespace,
     B: RejectsTrimWhitespace,
 {
+}
+
+impl<A, B> SchemaChar for CharEither<A, B>
+where
+    A: SchemaChar,
+    B: SchemaChar,
+{
+    /// The union of the component sets; `from_ranges` canonicalises.
+    #[inline]
+    fn char_set() -> CharSet {
+        let a = A::char_set();
+        let b = B::char_set();
+        CharSet::from_ranges(a.ranges().iter().chain(b.ranges()).copied())
+    }
 }
 
 #[cfg(feature = "proptest")]
@@ -419,6 +488,27 @@ where
 {
 }
 
+impl<A, B> SchemaChar for CharExcept<A, B>
+where
+    A: SchemaChar,
+    B: SchemaChar,
+{
+    /// The difference of the component sets.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `B`'s set covers `A`'s: the predicate admits no
+    /// character, and empty admitted sets are unrepresentable by
+    /// construction (the `CharSet` analogue of the compile-time
+    /// `MIN <= MAX` asserts).
+    #[inline]
+    fn char_set() -> CharSet {
+        A::char_set()
+            .difference(&B::char_set())
+            .expect("CharExcept admits no character: B's set covers A's")
+    }
+}
+
 #[cfg(feature = "proptest")]
 impl<A, B> ArbitraryChar for CharExcept<A, B>
 where
@@ -466,6 +556,13 @@ impl CharPredicate for AsciiGraphic {
 }
 impl RejectsTrimWhitespace for AsciiGraphic {}
 
+impl SchemaChar for AsciiGraphic {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('!', '~')])
+    }
+}
+
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for AsciiGraphic {
     type Strategy = proptest::char::CharStrategy<'static>;
@@ -503,6 +600,13 @@ impl CharPredicate for AsciiAlphanumeric {
     }
 }
 impl RejectsTrimWhitespace for AsciiAlphanumeric {}
+
+impl SchemaChar for AsciiAlphanumeric {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('0', '9'), ('A', 'Z'), ('a', 'z')])
+    }
+}
 
 /// Build a `proptest::char::CharStrategy` from a set of inclusive
 /// `char` ranges. Used by the `ArbitraryChar` impls below to express
@@ -552,6 +656,13 @@ impl CharPredicate for AsciiAlphabetic {
 }
 impl RejectsTrimWhitespace for AsciiAlphabetic {}
 
+impl SchemaChar for AsciiAlphabetic {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('A', 'Z'), ('a', 'z')])
+    }
+}
+
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for AsciiAlphabetic {
     type Strategy = proptest::strategy::BoxedStrategy<char>;
@@ -589,6 +700,13 @@ impl CharPredicate for AsciiUppercase {
 }
 impl RejectsTrimWhitespace for AsciiUppercase {}
 
+impl SchemaChar for AsciiUppercase {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('A', 'Z')])
+    }
+}
+
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for AsciiUppercase {
     type Strategy = proptest::char::CharStrategy<'static>;
@@ -624,6 +742,13 @@ impl CharPredicate for AsciiLowercase {
     }
 }
 impl RejectsTrimWhitespace for AsciiLowercase {}
+
+impl SchemaChar for AsciiLowercase {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('a', 'z')])
+    }
+}
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for AsciiLowercase {
@@ -661,6 +786,13 @@ impl CharPredicate for AsciiDigit {
 }
 impl RejectsTrimWhitespace for AsciiDigit {}
 
+impl SchemaChar for AsciiDigit {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('0', '9')])
+    }
+}
+
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for AsciiDigit {
     type Strategy = proptest::char::CharStrategy<'static>;
@@ -697,6 +829,13 @@ impl CharPredicate for IdentChar {
     }
 }
 impl RejectsTrimWhitespace for IdentChar {}
+
+impl SchemaChar for IdentChar {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('0', '9'), ('A', 'Z'), ('_', '_'), ('a', 'z')])
+    }
+}
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentChar {
@@ -738,6 +877,13 @@ impl CharPredicate for IdentStart {
 }
 impl RejectsTrimWhitespace for IdentStart {}
 
+impl SchemaChar for IdentStart {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('A', 'Z'), ('_', '_'), ('a', 'z')])
+    }
+}
+
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentStart {
     type Strategy = proptest::strategy::BoxedStrategy<char>;
@@ -771,6 +917,16 @@ impl CharPredicate for NonControl {
     #[inline]
     fn test(ch: char) -> bool {
         !ch.is_control()
+    }
+}
+
+impl SchemaChar for NonControl {
+    /// `char::is_control` is the immutable Unicode `Cc` category:
+    /// C0 (`U+0000..=U+001F`), DEL (`U+007F`), and C1
+    /// (`U+0080..=U+009F`). The complement is three closed ranges.
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('\u{20}', '\u{7E}'), ('\u{A0}', char::MAX)])
     }
 }
 
@@ -838,6 +994,14 @@ impl CharPredicate for HexChar {
 #[cfg(feature = "hex")]
 impl RejectsTrimWhitespace for HexChar {}
 
+#[cfg(feature = "hex")]
+impl SchemaChar for HexChar {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('0', '9'), ('A', 'F'), ('a', 'f')])
+    }
+}
+
 #[cfg(all(feature = "hex", feature = "proptest"))]
 impl ArbitraryChar for HexChar {
     type Strategy = proptest::strategy::BoxedStrategy<char>;
@@ -904,6 +1068,23 @@ impl CharPredicate for PrintableLine {
     }
 }
 
+#[cfg(feature = "unicode")]
+impl SchemaChar for PrintableLine {
+    /// [`NonControl`]'s set minus the same fixed forbidden list the
+    /// predicate names — one determinant shape, two readings.
+    #[inline]
+    fn char_set() -> CharSet {
+        NonControl::char_set()
+            .difference(&CharSet::from_ranges([
+                ('\u{00AD}', '\u{00AD}'),
+                ('\u{200B}', '\u{200D}'),
+                ('\u{2060}', '\u{2060}'),
+                ('\u{FEFF}', '\u{FEFF}'),
+            ]))
+            .expect("the printable-line set is non-empty")
+    }
+}
+
 #[cfg(all(feature = "unicode", feature = "proptest"))]
 #[expect(
     clippy::trivially_copy_pass_by_ref,
@@ -965,6 +1146,21 @@ impl CharPredicate for PrintableMultiline {
     #[inline]
     fn test(ch: char) -> bool {
         ch == '\n' || PrintableLine::test(ch)
+    }
+}
+
+#[cfg(feature = "unicode")]
+impl SchemaChar for PrintableMultiline {
+    /// [`PrintableLine`]'s set plus the newline.
+    #[inline]
+    fn char_set() -> CharSet {
+        let line = PrintableLine::char_set();
+        CharSet::from_ranges(
+            line.ranges()
+                .iter()
+                .copied()
+                .chain(core::iter::once(('\n', '\n'))),
+        )
     }
 }
 
@@ -1199,6 +1395,13 @@ impl CharPredicate for IdentDashChar {
     }
 }
 impl RejectsTrimWhitespace for IdentDashChar {}
+
+impl SchemaChar for IdentDashChar {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('-', '-'), ('0', '9'), ('A', 'Z'), ('_', '_'), ('a', 'z')])
+    }
+}
 
 #[cfg(feature = "proptest")]
 impl ArbitraryChar for IdentDashChar {
@@ -3063,5 +3266,73 @@ mod tests {
         let (saw_min, saw_max) = saw_boundary_lengths::<LenBytes<2, 8>>(String::len, 2, 8);
         assert!(saw_min, "edge-biased LenBytes must emit MIN-length strings");
         assert!(saw_max, "edge-biased LenBytes must emit MAX-length strings");
+    }
+
+    // ─── SchemaChar: constructive admissible sets. ────────────────
+
+    #[cfg(feature = "proptest")]
+    mod schema_char {
+        use super::super::{
+            AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase,
+            AsciiUppercase, CharEither, CharExcept, CharLiteral, IdentChar, IdentDashChar,
+            IdentStart, NonControl, SchemaChar,
+        };
+        use crate::testing::assert_schema_char;
+
+        /// The exhaustive oracle: every library predicate's
+        /// `char_set` agrees with its `test` on all ~1.1M Unicode
+        /// scalar values — `⟦char_set()⟧` is decided, not sampled.
+        #[test]
+        fn library_predicate_sets_match_their_predicates_exhaustively() {
+            assert_schema_char::<AsciiAlphanumeric>();
+            assert_schema_char::<AsciiAlphabetic>();
+            assert_schema_char::<AsciiUppercase>();
+            assert_schema_char::<AsciiLowercase>();
+            assert_schema_char::<AsciiDigit>();
+            assert_schema_char::<AsciiGraphic>();
+            assert_schema_char::<IdentChar>();
+            assert_schema_char::<IdentStart>();
+            assert_schema_char::<IdentDashChar>();
+            assert_schema_char::<NonControl>();
+            assert_schema_char::<CharLiteral<'.'>>();
+            assert_schema_char::<CharEither<CharLiteral<'.'>, AsciiDigit>>();
+            assert_schema_char::<CharExcept<AsciiGraphic, CharLiteral<'"'>>>();
+        }
+
+        #[cfg(feature = "hex")]
+        #[test]
+        fn hex_char_set_matches_its_predicate_exhaustively() {
+            assert_schema_char::<super::super::HexChar>();
+        }
+
+        #[cfg(feature = "unicode")]
+        #[test]
+        fn printable_sets_match_their_predicates_exhaustively() {
+            assert_schema_char::<super::super::PrintableLine>();
+            assert_schema_char::<super::super::PrintableMultiline>();
+        }
+
+        /// Composite sets are canonical values, not just oracles:
+        /// pin the union and difference shapes directly.
+        #[test]
+        fn composite_sets_take_canonical_forms() {
+            assert_eq!(
+                <CharEither<CharLiteral<'.'>, AsciiDigit> as SchemaChar>::char_set().ranges(),
+                &[('.', '.'), ('0', '9')],
+            );
+            assert_eq!(
+                <CharExcept<AsciiGraphic, CharLiteral<'"'>> as SchemaChar>::char_set().ranges(),
+                &[('!', '!'), ('#', '~')],
+            );
+        }
+
+        /// `CharExcept` whose subtrahend covers the minuend admits
+        /// no character: an empty admissible set is unrepresentable
+        /// by construction.
+        #[test]
+        #[should_panic(expected = "admits no character")]
+        fn char_except_with_covering_subtrahend_panics() {
+            let _set = <CharExcept<AsciiDigit, AsciiAlphanumeric> as SchemaChar>::char_set();
+        }
     }
 }

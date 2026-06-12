@@ -403,6 +403,92 @@ impl CharSet {
     pub fn contains(&self, ch: char) -> bool {
         self.ranges.iter().any(|&(lo, hi)| lo <= ch && ch <= hi)
     }
+
+    /// The set difference `self \ other`, in canonical form, or
+    /// `None` when nothing remains (a `CharSet` cannot be empty —
+    /// an empty set admits nothing).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::CharSet;
+    ///
+    /// let letters = CharSet::from_ranges([('a', 'z')]);
+    /// let vowels = CharSet::from_ranges([('a', 'a'), ('e', 'e')]);
+    /// let consonants = letters.difference(&vowels).expect("non-empty");
+    /// assert_eq!(consonants.ranges(), &[('b', 'd'), ('f', 'z')]);
+    ///
+    /// // Subtracting a superset leaves nothing.
+    /// assert_eq!(vowels.difference(&letters), None);
+    /// ```
+    #[must_use]
+    pub fn difference(&self, other: &Self) -> Option<Self> {
+        let mut out: Vec<(char, char)> = Vec::new();
+        for &(lo, hi) in &self.ranges {
+            let mut cursor = lo;
+            let mut consumed = false;
+            for &(other_lo, other_hi) in &other.ranges {
+                if other_hi < cursor {
+                    continue;
+                }
+                if other_lo > hi {
+                    break;
+                }
+                if other_lo > cursor {
+                    out.push((cursor, char_predecessor(other_lo)));
+                }
+                if other_hi >= hi {
+                    consumed = true;
+                    break;
+                }
+                cursor = char_successor(other_hi);
+            }
+            if !consumed {
+                out.push((cursor, hi));
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(Self::from_ranges(out))
+        }
+    }
+
+    /// The smallest Unicode scalar value OUTSIDE the set, when one
+    /// exists (`None` when the set covers every scalar value). The
+    /// string boundary fold uses it as the canonical alphabet
+    /// near-miss character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::CharSet;
+    ///
+    /// let digits = CharSet::from_ranges([('0', '9')]);
+    /// assert_eq!(digits.complement_sample(), Some('\0'));
+    ///
+    /// let low = CharSet::from_ranges([('\0', '9')]);
+    /// assert_eq!(low.complement_sample(), Some(':'));
+    ///
+    /// let everything = CharSet::from_ranges([('\0', char::MAX)]);
+    /// assert_eq!(everything.complement_sample(), None);
+    /// ```
+    #[must_use]
+    pub fn complement_sample(&self) -> Option<char> {
+        // Non-empty by construction, so the first range exists.
+        let (lo, hi) = self.ranges[0];
+        if lo > '\0' {
+            Some('\0')
+        } else if hi == char::MAX {
+            // A canonical first range spanning the whole universe is
+            // necessarily the only range: full coverage.
+            None
+        } else {
+            // Canonical ranges are non-adjacent: the successor of
+            // the first range's end is in the gap before the next.
+            Some(char_successor(hi))
+        }
+    }
 }
 
 /// The next Unicode scalar value after `c`, skipping the surrogate
@@ -417,6 +503,21 @@ const fn char_successor(c: char) -> char {
             Some(next) => next,
             None => char::MAX,
         }
+    }
+}
+
+/// The previous Unicode scalar value before `c`, skipping the
+/// surrogate gap; saturates at `'\0'`. The mirror of
+/// [`char_successor`], used by [`CharSet::difference`] to close a
+/// kept run just below a subtracted range.
+fn char_predecessor(c: char) -> char {
+    if c as u32 == 0xE000 {
+        '\u{D7FF}'
+    } else {
+        // `wrapping_sub` turns the (unreachable) `'\0'` input into
+        // u32::MAX, which is not a scalar value, so the fallback
+        // saturates at NUL without a branch of its own.
+        char::from_u32((c as u32).wrapping_sub(1)).unwrap_or('\0')
     }
 }
 
@@ -2733,6 +2834,126 @@ mod tests {
         assert!(ident.contains('_'));
         assert!(!ident.contains('A'));
         assert!(!ident.contains('-'));
+    }
+
+    #[test]
+    fn char_set_difference_cuts_holes_and_trims_edges() {
+        let letters = CharSet::from_ranges([('a', 'z')]);
+        // Interior holes: each subtracted point splits the run.
+        let holes = CharSet::from_ranges([('e', 'e'), ('p', 'q')]);
+        assert_eq!(
+            letters.difference(&holes).expect("non-empty"),
+            CharSet::from_ranges([('a', 'd'), ('f', 'o'), ('r', 'z')]),
+        );
+        // Edge trims: overlapping the run's ends shrinks it.
+        let edges = CharSet::from_ranges([('W', 'c'), ('x', '~')]);
+        assert_eq!(
+            letters.difference(&edges).expect("non-empty"),
+            CharSet::from_ranges([('d', 'w')]),
+        );
+        // Disjoint subtraction is the identity.
+        let digits = CharSet::from_ranges([('0', '9')]);
+        assert_eq!(letters.difference(&digits), Some(letters.clone()));
+        // A covering subtraction leaves nothing.
+        assert_eq!(
+            letters.difference(&CharSet::from_ranges([('A', 'z')])),
+            None
+        );
+        // Self-subtraction leaves nothing.
+        assert_eq!(letters.difference(&letters), None);
+    }
+
+    #[test]
+    fn char_set_difference_skips_the_surrogate_gap() {
+        // Cutting a hole right at the gap edges exercises the
+        // predecessor/successor mirrors across U+D7FF / U+E000.
+        let wide = CharSet::from_ranges([('\u{D000}', '\u{F000}')]);
+        let hole = CharSet::from_ranges([('\u{E000}', '\u{E010}')]);
+        assert_eq!(
+            wide.difference(&hole).expect("non-empty"),
+            CharSet::from_ranges([('\u{D000}', '\u{D7FF}'), ('\u{E011}', '\u{F000}')]),
+        );
+        // The mirrored cut: subtracting up to the gap's low edge.
+        let low_cut = CharSet::from_ranges([('\u{D000}', '\u{D7FF}')]);
+        assert_eq!(
+            wide.difference(&low_cut).expect("non-empty"),
+            CharSet::from_ranges([('\u{E000}', '\u{F000}')]),
+        );
+    }
+
+    #[test]
+    fn char_set_difference_with_multiple_kept_ranges() {
+        let split = CharSet::from_ranges([('a', 'f'), ('m', 'r')]);
+        let cut = CharSet::from_ranges([('e', 'n')]);
+        assert_eq!(
+            split.difference(&cut).expect("non-empty"),
+            CharSet::from_ranges([('a', 'd'), ('o', 'r')]),
+        );
+        // A subtrahend entirely above every kept range never engages.
+        let high = CharSet::from_ranges([('x', 'z')]);
+        assert_eq!(split.difference(&high), Some(split));
+    }
+
+    proptest::proptest! {
+        /// Difference agrees with membership pointwise:
+        /// `(a \ b).contains(c) == a.contains(c) && !b.contains(c)`
+        /// for every probed character, including when the difference
+        /// is empty (`None`).
+        #[test]
+        fn char_set_difference_matches_pointwise_membership(
+            a_ranges in proptest::collection::vec(ascii_range(), 1..4),
+            b_ranges in proptest::collection::vec(ascii_range(), 1..4),
+        ) {
+            let a = CharSet::from_ranges(a_ranges);
+            let b = CharSet::from_ranges(b_ranges);
+            let difference = a.difference(&b);
+            for code in 0_u32..=0x7F {
+                let ch = char::from_u32(code).expect("ASCII is valid");
+                let expected = a.contains(ch) && !b.contains(ch);
+                let actual = difference
+                    .as_ref()
+                    .is_some_and(|set| set.contains(ch));
+                proptest::prop_assert_eq!(
+                    actual,
+                    expected,
+                    "difference disagrees at {:?}",
+                    ch,
+                );
+            }
+        }
+    }
+
+    /// Strategy: one inclusive ASCII range `(lo, hi)` with
+    /// `lo <= hi`.
+    fn ascii_range() -> impl proptest::strategy::Strategy<Value = (char, char)> {
+        use proptest::strategy::Strategy as _;
+        (0_u32..=0x7F, 0_u32..=0x7F).prop_map(|(a, b)| {
+            let lo = a.min(b);
+            let hi = a.max(b);
+            (
+                char::from_u32(lo).expect("ASCII is valid"),
+                char::from_u32(hi).expect("ASCII is valid"),
+            )
+        })
+    }
+
+    #[test]
+    fn char_set_complement_sample_finds_the_smallest_outsider() {
+        // First range starts above NUL: NUL is the sample.
+        assert_eq!(
+            CharSet::from_ranges([('0', '9')]).complement_sample(),
+            Some('\0'),
+        );
+        // First range starts at NUL: the gap after it is sampled.
+        assert_eq!(
+            CharSet::from_ranges([('\0', '9'), ('a', 'z')]).complement_sample(),
+            Some(':'),
+        );
+        // Full coverage: no outsider exists.
+        assert_eq!(
+            CharSet::from_ranges([('\0', char::MAX)]).complement_sample(),
+            None,
+        );
     }
 
     #[test]

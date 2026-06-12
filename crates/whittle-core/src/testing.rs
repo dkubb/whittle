@@ -535,6 +535,74 @@ pub fn prop_schema_cross_check<T, R>(
     finish_cross_check(core::any::type_name::<R>(), violations);
 }
 
+/// Cap on the disagreements [`assert_schema_char`] reports before
+/// truncating: a wildly wrong set would otherwise render up to ~1.1M
+/// code points.
+const SCHEMA_CHAR_MAX_VIOLATIONS: usize = 8;
+
+/// Walk every Unicode scalar value and collect the points where the
+/// predicate and the set disagree. Non-generic (fn-pointer
+/// parameter): every [`SchemaChar`](crate::primitive::SchemaChar)
+/// impl funnels through one function, so the agreeing path, the
+/// disagreement path, and the truncation cap share a single
+/// coverage surface.
+fn char_set_disagreements(
+    test: fn(char) -> bool,
+    set: &crate::schema::CharSet,
+) -> Vec<alloc::string::String> {
+    let mut violations: Vec<alloc::string::String> = Vec::new();
+    for ch in '\0'..=char::MAX {
+        let predicate_admits = test(ch);
+        let set_admits = set.contains(ch);
+        if predicate_admits != set_admits {
+            violations.push(format!(
+                "U+{:04X} {ch:?}: the predicate says {predicate_admits}, the \
+                 CharSet says {set_admits}",
+                u32::from(ch),
+            ));
+            if violations.len() >= SCHEMA_CHAR_MAX_VIOLATIONS {
+                violations.push(alloc::string::String::from(
+                    "… (further disagreements truncated)",
+                ));
+                break;
+            }
+        }
+    }
+    violations
+}
+
+/// Exhaustively verify a [`SchemaChar`](crate::primitive::SchemaChar)
+/// impl: the constructive `char_set()` must agree with the
+/// predicate's `test` on EVERY Unicode scalar value.
+///
+/// The char universe is finite (~1.1M points), so unlike the sampled
+/// cross-checks this oracle is *exact* — `⟦char_set()⟧ = {c |
+/// P::test(c)}` is decided, not probed.
+///
+/// # Panics
+///
+/// Panics with the disagreeing code points (capped at
+/// [`SCHEMA_CHAR_MAX_VIOLATIONS`]) when the two determinants
+/// diverge.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::AsciiDigit;
+/// use whittle_core::testing::assert_schema_char;
+///
+/// assert_schema_char::<AsciiDigit>();
+/// ```
+pub fn assert_schema_char<P>()
+where
+    P: crate::primitive::SchemaChar,
+{
+    finish_cross_check(
+        core::any::type_name::<P>(),
+        char_set_disagreements(P::test, &P::char_set()),
+    );
+}
+
 /// Cross-check a closed set's `Enumerated` schema against its
 /// [`ClosedSet::MEMBERS`] table:
 ///
@@ -1027,6 +1095,43 @@ mod tests {
     #[should_panic(expected = "parses but the schema rejects it")]
     fn assert_closed_set_schema_panics_when_a_rejected_near_miss_parses() {
         assert_closed_set_schema::<TestToggle>(&Schema::enumerated(&["onx"]));
+    }
+
+    // ─── SchemaChar exhaustive oracle. ─────────────────────────────
+
+    use super::assert_schema_char;
+
+    /// Fixture whose set is wildly wrong: the predicate admits
+    /// everything from 'b' upward, the set admits only 'a'. The
+    /// scalar values below 'a' agree (both reject), 'a' and onward
+    /// disagree — flooding past the truncation cap in one run, so a
+    /// single instantiation covers the agree, disagree, and truncate
+    /// paths of the shared walker.
+    struct WrongSet;
+
+    impl crate::primitive::CharPredicate for WrongSet {
+        fn test(ch: char) -> bool {
+            ch >= 'b'
+        }
+    }
+
+    impl crate::primitive::SchemaChar for WrongSet {
+        fn char_set() -> crate::schema::CharSet {
+            crate::schema::CharSet::from_ranges([('a', 'a')])
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "further disagreements truncated")]
+    fn assert_schema_char_panics_and_truncates_for_a_wrong_set() {
+        assert_schema_char::<WrongSet>();
+    }
+
+    /// The agreeing path to natural exhaustion: a correct library
+    /// impl walks the whole char universe without a violation.
+    #[test]
+    fn assert_schema_char_passes_for_a_sound_impl() {
+        assert_schema_char::<crate::primitive::AsciiLowercase>();
     }
 
     /// A schema missing a member's wire string is caught by the
