@@ -204,6 +204,13 @@ pub enum ScalarKind {
     Date,
     /// UTC datetimes, encoded as seconds since the Unix epoch
     /// (`chrono::DateTime::timestamp`).
+    ///
+    /// The encoding truncates sub-second precision, so a membership
+    /// verdict speaks for the whole-second representative, not for
+    /// every carrier value sharing its second: at an inclusive upper
+    /// endpoint, a datetime in the same second but with nanoseconds
+    /// past it is rejected by `refine` while its truncation is a
+    /// member. `refine` stays authoritative below one second.
     DateTime,
     /// Fixed-point decimals, encoded as `i128` mantissas at the
     /// recorded scale: the denoted value is `mantissa / 10^scale`.
@@ -604,9 +611,14 @@ pub enum Schema {
         /// distinguishes it ([`FirstChar`](crate::primitive::FirstChar)).
         first: Option<CharSet>,
     },
-    /// Strings matching a regular expression; the pattern is the
-    /// fragment ([`Pattern`](crate::primitive::Pattern)'s const
-    /// generic).
+    /// Strings the regular expression matches over their WHOLE span
+    /// — anchored semantics, exactly as
+    /// [`Pattern`](crate::primitive::Pattern)`::refine` checks them:
+    /// the match must start at byte 0 and end at the input's last
+    /// byte, even when the pattern itself carries no `^`/`$`
+    /// anchors. A substring reading would overclaim the carried set.
+    /// The payload is the pattern fragment (`Pattern`'s const
+    /// generic), kept verbatim.
     Regex(&'static str),
     /// A closed set of admitted wire strings: the
     /// [`ClosedSet::MEMBERS`](crate::ClosedSet::MEMBERS) labels in
@@ -750,6 +762,11 @@ impl Schema {
     }
 
     /// Build a regex schema; the pattern string is the fragment.
+    ///
+    /// The denoted set is the WHOLE-STRING language: a string is a
+    /// member only when the pattern matches its entire span (see
+    /// [`Schema::Regex`]). Producers whose `refine` performs a
+    /// substring search must not use this node.
     ///
     /// # Examples
     ///
@@ -1673,7 +1690,9 @@ fn fmt_schema_at(
             }
             f.write_str(")")
         }
-        Schema::Regex(pattern) => write!(f, "regex /{pattern}/"),
+        // "whole string" is part of the denotation, not decoration:
+        // the node admits exactly the full-span matches.
+        Schema::Regex(pattern) => write!(f, "whole string matches /{pattern}/"),
         Schema::Enumerated(labels) => {
             f.write_str("one of ")?;
             for (index, label) in labels.iter().enumerate() {
@@ -3473,7 +3492,10 @@ mod tests {
 
     #[test]
     fn display_renders_regex_and_enumerated_leaves() {
-        assert_eq!(Schema::regex("^[A-Z]$").to_string(), "regex /^[A-Z]$/");
+        assert_eq!(
+            Schema::regex("^[A-Z]$").to_string(),
+            "whole string matches /^[A-Z]$/",
+        );
         assert_eq!(
             Schema::enumerated(&["active", "in\"active"]).to_string(),
             "one of \"active\", \"in\\\"active\"",

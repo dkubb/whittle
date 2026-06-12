@@ -146,7 +146,9 @@ impl<const RE: &'static str> Rule<String> for Pattern<RE> {
 
 impl<const RE: &'static str> SchemaRule<String> for Pattern<RE> {
     /// The pattern IS the fragment: the schema carries `RE` itself
-    /// ([`Schema::Regex`]). Membership of a `Regex` node is
+    /// ([`Schema::Regex`]), and the node's whole-string denotation
+    /// is exactly `refine`'s full-span check — no anchoring is lost
+    /// in the schema. Membership of a `Regex` node is
     /// undecidable inside the kernel (deciding it needs the regex
     /// engine), so the string boundary fold yields no candidates for
     /// it — `refine` stays the only decision procedure, and the

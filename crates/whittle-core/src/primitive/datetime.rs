@@ -250,6 +250,15 @@ pub trait ArbitraryDateTime: Rule<DateTime<Utc>> {
 // SAME bound consts `refine` compares against (`MIN_DATETIME` /
 // `MAX_DATETIME`), so the compile-time range validation is forced
 // here exactly as it is in `refine`.
+//
+// The seconds encoding truncates sub-second precision (the
+// `ScalarKind::DateTime` caveat): `refine` compares full-precision
+// datetimes against nanosecond-zero bounds, so a value inside the
+// MAX bound's second but past its nanosecond is rejected even
+// though its truncated embedding is a schema member. Schema
+// verdicts are exact for whole-second values (everything the
+// boundary fold and `try_extract` produce); `refine` is the
+// decision procedure below one second.
 
 impl<const MIN_SECS_SINCE_EPOCH: i64> SchemaRule<DateTime<Utc>>
     for DateTimeAtLeast<MIN_SECS_SINCE_EPOCH>
