@@ -1,0 +1,1985 @@
+//! Schema reflection: a constructive, runtime-introspectable
+//! description of a rule's admitted set (IDEA §5.9).
+//!
+//! [`Rule::refine`] is the *predicative*
+//! description of a rule's admitted set — it tests membership.
+//! [`Schema`] is the *constructive* counterpart: a first-class value
+//! describing the same set, so derived views (generators, boundary
+//! matrices, residual-state reports, schema diffs) can read one
+//! determinant instead of restating the bounds.
+//!
+//! # The scalar universe
+//!
+//! Interval endpoints live in a single scalar universe ([`Scalar`]):
+//! integers (and integer-encoded carriers — days from CE, seconds
+//! since the Unix epoch, decimal mantissas) widen into `i128`; floats
+//! widen into `f64`. [`ScalarKind`] records which carrier domain an
+//! interval describes, so a date interval and a plain integer
+//! interval never compare equal even when their endpoint numbers
+//! coincide.
+//!
+//! # Canonical form
+//!
+//! Smart constructors maintain canonical form, so the set of
+//! constructor-built values approximates the set of canonical trees:
+//!
+//! - [`Schema::interval`] requires non-`NaN` endpoints with
+//!   `lo <= hi`, normalises `-0.0` to `0.0`, and reduces decimal
+//!   intervals to their smallest shared scale;
+//! - [`Schema::union`] and [`Schema::intersection`] are flattened,
+//!   sorted, and deduplicated, and a single operand collapses to the
+//!   operand itself;
+//! - [`Schema::intersection`] fuses same-kind intervals into one
+//!   interval;
+//! - [`Schema::enumerated`] requires a non-empty, duplicate-free
+//!   label set.
+//!
+//! Construction order does not affect the normal form (confluence);
+//! the property tests in this module pin that invariant.
+//!
+//! # Equality, ordering, and rendering are UNSTABLE
+//!
+//! `Eq`/`Ord` are *structural on the canonical form*. Equality is
+//! sound — canonically-equal schemas describe equal admitted sets —
+//! but incomplete: semantically equivalent schemas spelled through
+//! vocabulary the canonicalizer does not rewrite (equivalent regexes,
+//! unfused heterogeneous intersections) compare unequal. The exact
+//! canonical form, the `Ord` ordering, and the `Display` rendering
+//! are NOT stable across whittle versions; do not persist them or
+//! match on their text.
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
+use crate::rule::Rule;
+
+/// An endpoint value in the schema's scalar universe.
+///
+/// Integer-regime carriers (integers, dates as days from CE,
+/// datetimes as seconds since the Unix epoch, decimal mantissas)
+/// widen into [`Scalar::Int`]; floats widen into [`Scalar::Float`].
+///
+/// # Ordering vs membership
+///
+/// `Eq`/`Ord` are the *structural* total order used for canonical
+/// sorting: integers by value, floats by [`f64::total_cmp`], and
+/// `Int` before `Float` across variants. Denotational *membership*
+/// checks ([`Schema::scalar_membership`]) instead compare floats by
+/// IEEE-754 `partial_cmp` — the same comparison `refine` impls use —
+/// and never compare across variants.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::schema::Scalar;
+///
+/// assert!(Scalar::Int(1) < Scalar::Int(2));
+/// assert!(Scalar::Float(1.0) < Scalar::Float(f64::INFINITY));
+/// // Structural order: Int sorts before Float regardless of value.
+/// assert!(Scalar::Int(9) < Scalar::Float(0.0));
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub enum Scalar {
+    /// Integer-regime endpoint, widened losslessly into `i128`.
+    Int(i128),
+    /// Float endpoint, widened losslessly into `f64`.
+    Float(f64),
+}
+
+impl Scalar {
+    /// The integer payload, when this scalar is [`Scalar::Int`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::Scalar;
+    ///
+    /// assert_eq!(Scalar::Int(7).as_int(), Some(7));
+    /// assert_eq!(Scalar::Float(7.0).as_int(), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn as_int(&self) -> Option<i128> {
+        match *self {
+            Self::Int(value) => Some(value),
+            Self::Float(_) => None,
+        }
+    }
+
+    /// The float payload, when this scalar is [`Scalar::Float`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::Scalar;
+    ///
+    /// assert_eq!(Scalar::Float(0.5).as_float(), Some(0.5));
+    /// assert_eq!(Scalar::Int(1).as_float(), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn as_float(&self) -> Option<f64> {
+        match *self {
+            Self::Float(value) => Some(value),
+            Self::Int(_) => None,
+        }
+    }
+
+    /// Denotational comparison: integers by value, floats by IEEE-754
+    /// `partial_cmp` (`None` for NaN operands), `None` across
+    /// variants. This is the comparison membership uses; the `Ord`
+    /// impl is the structural total order for canonical sorting.
+    fn denotational_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        match (*self, *other) {
+            (Self::Int(a), Self::Int(b)) => Some(a.cmp(&b)),
+            (Self::Float(a), Self::Float(b)) => a.partial_cmp(&b),
+            (Self::Int(_), Self::Float(_)) | (Self::Float(_), Self::Int(_)) => None,
+        }
+    }
+
+    /// `true` iff this is a `NaN` float endpoint.
+    const fn is_nan(&self) -> bool {
+        match *self {
+            Self::Float(value) => value.is_nan(),
+            Self::Int(_) => false,
+        }
+    }
+
+    /// Canonicalise the scalar: `-0.0` becomes `0.0` so the two
+    /// IEEE-equal zeros share one structural form.
+    const fn canonicalized(self) -> Self {
+        if let Self::Float(value) = self
+            && value.to_bits() == (-0.0_f64).to_bits()
+        {
+            return Self::Float(0.0_f64);
+        }
+        self
+    }
+}
+
+impl PartialEq for Scalar {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == core::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Scalar {}
+
+impl PartialOrd for Scalar {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Scalar {
+    #[inline]
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        match (*self, *other) {
+            (Self::Int(a), Self::Int(b)) => a.cmp(&b),
+            (Self::Float(a), Self::Float(b)) => a.total_cmp(&b),
+            (Self::Int(_), Self::Float(_)) => core::cmp::Ordering::Less,
+            (Self::Float(_), Self::Int(_)) => core::cmp::Ordering::Greater,
+        }
+    }
+}
+
+/// The carrier domain an [`Schema::Interval`] describes.
+///
+/// The kind disambiguates integer-encoded carriers that share the
+/// `i128` widening: a date interval and a plain integer interval with
+/// the same endpoint numbers describe different admitted sets and
+/// must not compare equal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScalarKind {
+    /// Plain integers, widened into `i128` (the
+    /// [`Numeric`](crate::primitive::Numeric) widening).
+    Integer,
+    /// IEEE-754 floats, widened into `f64`.
+    Float,
+    /// Calendar dates, encoded as days from CE
+    /// (`chrono::NaiveDate::num_days_from_ce`).
+    Date,
+    /// UTC datetimes, encoded as seconds since the Unix epoch
+    /// (`chrono::DateTime::timestamp`).
+    DateTime,
+    /// Fixed-point decimals, encoded as `i128` mantissas at the
+    /// recorded scale: the denoted value is `mantissa / 10^scale`.
+    /// Canonical intervals carry the smallest scale that represents
+    /// both endpoints exactly (trailing zeros are stripped jointly).
+    Decimal {
+        /// Digits after the decimal point shared by both endpoints.
+        scale: u8,
+    },
+}
+
+impl ScalarKind {
+    /// `true` iff `scalar`'s variant matches this kind's regime:
+    /// [`Scalar::Float`] for [`ScalarKind::Float`], [`Scalar::Int`]
+    /// for every other kind.
+    const fn admits(self, scalar: Scalar) -> bool {
+        match self {
+            Self::Float => matches!(scalar, Scalar::Float(_)),
+            Self::Integer | Self::Date | Self::DateTime | Self::Decimal { .. } => {
+                matches!(scalar, Scalar::Int(_))
+            }
+        }
+    }
+}
+
+/// One end of an [`Schema::Interval`].
+///
+/// Only inclusive finite endpoints exist: every shipped rule's
+/// admitted set is closed at its finite ends (open integer bounds
+/// normalise to the adjacent inclusive bound; open float bounds have
+/// no producer). An exclusive variant would be representable state
+/// with no inhabitant — it is added when a producer needs it, as a
+/// deliberately loud enum extension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Bound {
+    /// No bound at this end: the admitted set extends to the
+    /// carrier's own limit.
+    Unbounded,
+    /// Inclusive endpoint: the value itself is admitted.
+    Inclusive(Scalar),
+}
+
+impl Bound {
+    /// The inclusive endpoint scalar, when present.
+    const fn scalar(&self) -> Option<Scalar> {
+        match *self {
+            Self::Inclusive(scalar) => Some(scalar),
+            Self::Unbounded => None,
+        }
+    }
+}
+
+/// Length unit for [`Schema::Str`] bounds.
+///
+/// `LenChars` counts Unicode scalar values; `LenBytes` counts UTF-8
+/// bytes. The two units admit different sets for the same numeric
+/// bounds, so the unit is part of the canonical form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LenUnit {
+    /// Unicode scalar values (`str::chars().count()`).
+    Chars,
+    /// UTF-8 bytes (`str::len()`).
+    Bytes,
+}
+
+/// Closed length range for [`Schema::Str`] and [`Schema::Collection`]
+/// nodes: `min <= length <= max`, both ends inclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LenBound {
+    /// Minimum admitted length (inclusive).
+    pub min: u64,
+    /// Maximum admitted length (inclusive).
+    pub max: u64,
+}
+
+impl LenBound {
+    /// Build a length bound.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `min > max`: an empty length range admits nothing,
+    /// and empty admitted sets are unrepresentable by construction
+    /// (the same posture as the compile-time `MIN <= MAX` asserts on
+    /// the rules themselves).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::LenBound;
+    ///
+    /// let len = LenBound::new(1, 64);
+    /// assert_eq!((len.min, len.max), (1, 64));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn new(min: u64, max: u64) -> Self {
+        assert!(
+            min <= max,
+            "LenBound: min must be <= max (an empty length range admits nothing)",
+        );
+        Self { min, max }
+    }
+}
+
+/// A set of characters, canonically represented as sorted, disjoint,
+/// non-adjacent inclusive ranges. The constructive form of a
+/// [`CharPredicate`](crate::primitive::CharPredicate)'s admitted set.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CharSet {
+    /// Sorted, disjoint, non-adjacent inclusive ranges.
+    ranges: Vec<(char, char)>,
+}
+
+impl CharSet {
+    /// Build a character set from inclusive ranges, normalising to
+    /// canonical form: ranges are sorted, and overlapping or adjacent
+    /// ranges are merged, so equal sets have equal representations
+    /// regardless of construction order.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a range is empty (`lo > hi`) or when the resulting
+    /// set is empty (no ranges): an empty character set admits
+    /// nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::CharSet;
+    ///
+    /// // Overlapping and adjacent ranges merge; order is irrelevant.
+    /// let a = CharSet::from_ranges([('a', 'm'), ('n', 'z')]);
+    /// let b = CharSet::from_ranges([('n', 'z'), ('a', 'p')]);
+    /// assert_eq!(a, b);
+    /// assert_eq!(a.ranges(), &[('a', 'z')]);
+    /// ```
+    #[must_use]
+    pub fn from_ranges<I>(ranges: I) -> Self
+    where
+        I: IntoIterator<Item = (char, char)>,
+    {
+        let mut ranges: Vec<(char, char)> = ranges.into_iter().collect();
+        for &(lo, hi) in &ranges {
+            assert!(
+                lo <= hi,
+                "CharSet: every range must satisfy lo <= hi (an empty range admits nothing)",
+            );
+        }
+        ranges.sort_unstable();
+        let mut merged: Vec<(char, char)> = Vec::with_capacity(ranges.len());
+        for (lo, hi) in ranges {
+            match merged.last_mut() {
+                Some(last) if lo <= char_successor(last.1) => {
+                    last.1 = last.1.max(hi);
+                }
+                _ => merged.push((lo, hi)),
+            }
+        }
+        assert!(
+            !merged.is_empty(),
+            "CharSet: at least one range is required (an empty set admits nothing)",
+        );
+        Self { ranges: merged }
+    }
+
+    /// The canonical ranges: sorted, disjoint, non-adjacent, each
+    /// inclusive at both ends.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::CharSet;
+    ///
+    /// let digits = CharSet::from_ranges([('0', '9')]);
+    /// assert_eq!(digits.ranges(), &[('0', '9')]);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn ranges(&self) -> &[(char, char)] {
+        &self.ranges
+    }
+}
+
+/// The next Unicode scalar value after `c`, skipping the surrogate
+/// gap; saturates at `char::MAX`. Used by [`CharSet`] adjacency
+/// merging: ranges `('a', 'm')` and `('n', 'z')` are adjacent because
+/// `'n'` is `'m'`'s successor.
+const fn char_successor(c: char) -> char {
+    if c as u32 == 0xD7FF {
+        '\u{E000}'
+    } else {
+        match char::from_u32(c as u32 + 1) {
+            Some(next) => next,
+            None => char::MAX,
+        }
+    }
+}
+
+/// A canonicalisation morphism recorded by [`Schema::Canonicalized`].
+///
+/// The morphism is the transformation `refine` applies to raw input
+/// before the inner rule runs. The carried set is the inner schema's
+/// set (the morphism's fixed points within it); the morphism
+/// describes which raw inputs reach it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Morphism {
+    /// Leading/trailing-whitespace removal
+    /// ([`Trim`](crate::transform::Trim)).
+    Trim,
+    /// ASCII lowercasing
+    /// ([`AsciiLowercase`](crate::transform::AsciiLowercase)).
+    AsciiLowercase,
+    /// ASCII uppercasing
+    /// ([`AsciiUppercase`](crate::transform::AsciiUppercase)).
+    AsciiUppercase,
+}
+
+/// Constructive description of an admitted set.
+///
+/// Build values through the smart constructors ([`Schema::interval`],
+/// [`Schema::union`], …), which maintain the canonical form the
+/// module docs describe; `Eq`/`Ord`/`Display` are only meaningful on
+/// canonically-constructed values. The enum is a deliberately closed
+/// sum: a new node kind is a breaking change that every consumer
+/// match must acknowledge.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Schema {
+    /// A scalar interval, closed at each finite end. The admitted set
+    /// is the interval intersected with the carrier's own
+    /// representable range under the kind's encoding.
+    Interval {
+        /// Carrier domain of the endpoints.
+        kind: ScalarKind,
+        /// Lower end (inclusive when finite).
+        lo: Bound,
+        /// Upper end (inclusive when finite).
+        hi: Bound,
+    },
+    /// A string constrained by length and alphabet.
+    Str {
+        /// Admitted length range.
+        len: LenBound,
+        /// Unit the length range counts.
+        unit: LenUnit,
+        /// Characters admitted at every position.
+        alphabet: CharSet,
+        /// Stricter set for the first character, when the rule
+        /// distinguishes it ([`FirstChar`](crate::primitive::FirstChar)).
+        first: Option<CharSet>,
+    },
+    /// Strings matching a regular expression; the pattern is the
+    /// fragment ([`Pattern`](crate::primitive::Pattern)'s const
+    /// generic).
+    Regex(&'static str),
+    /// A closed set of admitted wire strings: the
+    /// [`ClosedSet::MEMBERS`](crate::ClosedSet::MEMBERS) labels in
+    /// declaration order.
+    Enumerated(&'static [&'static str]),
+    /// A homogeneous collection constrained by length, element
+    /// schema, and ordering/uniqueness invariants.
+    Collection {
+        /// Admitted item-count range.
+        len: LenBound,
+        /// Schema every element satisfies.
+        element: Box<Self>,
+        /// Elements are sorted ascending
+        /// ([`Sorted`](crate::primitive::Sorted)).
+        sorted: bool,
+        /// Elements are pairwise distinct
+        /// ([`Distinct`](crate::primitive::Distinct)).
+        unique: bool,
+    },
+    /// The union of the members' sets. Canonical: flattened, sorted,
+    /// deduplicated, and never a singleton (a single member collapses
+    /// to the member itself), so at least two members are present.
+    Union(Vec<Self>),
+    /// The intersection of the members' sets — the residual symbolic
+    /// form for operands the canonicalizer cannot fuse. Canonical:
+    /// flattened, sorted, deduplicated, same-kind intervals fused,
+    /// never a singleton.
+    Intersection(Vec<Self>),
+    /// A canonicalising rule: the carried set is `inner`'s set; the
+    /// recorded morphism maps raw input onto it (so the raw-input
+    /// preimage is the morphism's preimage of the inner set).
+    Canonicalized {
+        /// The canonicalisation applied to raw input.
+        morphism: Morphism,
+        /// Schema of the carried (post-morphism) set.
+        inner: Box<Self>,
+    },
+}
+
+impl Schema {
+    /// Build a scalar interval, canonicalising the endpoints.
+    ///
+    /// Canonicalisation: float endpoints normalise `-0.0` to `0.0`;
+    /// decimal intervals reduce to the smallest scale representing
+    /// both endpoints exactly (trailing zeros stripped jointly, so
+    /// the same value set has one representation regardless of the
+    /// declared scale).
+    ///
+    /// # Panics
+    ///
+    /// Panics when an endpoint's scalar variant does not match the
+    /// kind's regime, when an endpoint is `NaN`, or when both ends
+    /// are finite with `lo > hi` (an empty interval admits nothing;
+    /// empty admitted sets are unrepresentable by construction).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema};
+    ///
+    /// // `Within<0, 100>`'s admitted set.
+    /// let percent = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Inclusive(Scalar::Int(100)),
+    /// );
+    ///
+    /// // Decimal scales reduce: 0.00..=100.00 at scale 2 is the same
+    /// // value set as 0..=100 at scale 0.
+    /// let wide = Schema::interval(
+    ///     ScalarKind::Decimal { scale: 2 },
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Inclusive(Scalar::Int(10_000)),
+    /// );
+    /// let narrow = Schema::interval(
+    ///     ScalarKind::Decimal { scale: 0 },
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Inclusive(Scalar::Int(100)),
+    /// );
+    /// assert_eq!(wide, narrow);
+    /// assert_ne!(percent, narrow); // kinds differ
+    /// ```
+    #[must_use]
+    pub fn interval(kind: ScalarKind, lo: Bound, hi: Bound) -> Self {
+        let lo = canonical_bound(lo);
+        let hi = canonical_bound(hi);
+        for bound in [&lo, &hi] {
+            if let Some(scalar) = bound.scalar() {
+                assert!(
+                    kind.admits(scalar),
+                    "Schema::interval: endpoint scalar variant must match the kind's regime",
+                );
+                assert!(
+                    !scalar.is_nan(),
+                    "Schema::interval: NaN is not an admissible endpoint",
+                );
+            }
+        }
+        if let (Some(lo_scalar), Some(hi_scalar)) = (lo.scalar(), hi.scalar()) {
+            assert!(
+                lo_scalar
+                    .denotational_cmp(&hi_scalar)
+                    .is_some_and(core::cmp::Ordering::is_le),
+                "Schema::interval: lo must be <= hi (an empty interval admits nothing)",
+            );
+        }
+        let (kind, lo, hi) = reduce_decimal_scale(kind, lo, hi);
+        Self::Interval { kind, lo, hi }
+    }
+
+    /// Build a string schema from its length bound, length unit,
+    /// alphabet, and optional first-character set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{CharSet, LenBound, LenUnit, Schema};
+    ///
+    /// let ident = Schema::string(
+    ///     LenBound::new(1, 64),
+    ///     LenUnit::Chars,
+    ///     CharSet::from_ranges([('a', 'z'), ('0', '9'), ('_', '_')]),
+    ///     Some(CharSet::from_ranges([('a', 'z'), ('_', '_')])),
+    /// );
+    /// assert_eq!(ident, ident.clone());
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn string(
+        len: LenBound,
+        unit: LenUnit,
+        alphabet: CharSet,
+        first: Option<CharSet>,
+    ) -> Self {
+        Self::Str {
+            len,
+            unit,
+            alphabet,
+            first,
+        }
+    }
+
+    /// Build a regex schema; the pattern string is the fragment.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::Schema;
+    ///
+    /// let name = Schema::regex(r"^[A-Z][a-z]*$");
+    /// assert_eq!(name, Schema::Regex(r"^[A-Z][a-z]*$"));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn regex(pattern: &'static str) -> Self {
+        Self::Regex(pattern)
+    }
+
+    /// Build an enumerated schema from a closed set's labels, in
+    /// declaration order.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `labels` is empty (an empty closed set admits
+    /// nothing) or contains a duplicate (the table injectivity that
+    /// [`ClosedSet::VALID`](crate::ClosedSet::VALID) enforces at
+    /// compile time).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::Schema;
+    ///
+    /// let status = Schema::enumerated(&["active", "inactive"]);
+    /// assert_eq!(status.as_enumerated(), Some(&["active", "inactive"][..]));
+    /// ```
+    #[must_use]
+    pub fn enumerated(labels: &'static [&'static str]) -> Self {
+        assert!(
+            !labels.is_empty(),
+            "Schema::enumerated: at least one label is required (an empty set admits nothing)",
+        );
+        for (index, label) in labels.iter().enumerate() {
+            assert!(
+                !labels[..index].contains(label),
+                "Schema::enumerated: labels must be duplicate-free",
+            );
+        }
+        Self::Enumerated(labels)
+    }
+
+    /// Build a collection schema from its length bound, element
+    /// schema, and ordering/uniqueness invariants.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Bound, LenBound, Scalar, ScalarKind, Schema};
+    ///
+    /// let bytes = Schema::collection(
+    ///     LenBound::new(1, 32),
+    ///     Schema::interval(
+    ///         ScalarKind::Integer,
+    ///         Bound::Inclusive(Scalar::Int(0)),
+    ///         Bound::Inclusive(Scalar::Int(255)),
+    ///     ),
+    ///     true,
+    ///     true,
+    /// );
+    /// assert_eq!(bytes, bytes.clone());
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn collection(len: LenBound, element: Self, sorted: bool, unique: bool) -> Self {
+        Self::Collection {
+            len,
+            element: Box::new(element),
+            sorted,
+            unique,
+        }
+    }
+
+    /// Build the union of `members`' sets, canonicalising: nested
+    /// unions flatten, members sort and deduplicate, and a single
+    /// remaining member collapses to the member itself.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `members` is empty: an empty union admits nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema};
+    ///
+    /// let below = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Unbounded,
+    ///     Bound::Inclusive(Scalar::Int(-1)),
+    /// );
+    /// let above = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Inclusive(Scalar::Int(1)),
+    ///     Bound::Unbounded,
+    /// );
+    ///
+    /// // `NonZero`'s admitted set; member order is irrelevant.
+    /// let non_zero = Schema::union([below.clone(), above.clone()].into());
+    /// assert_eq!(non_zero, Schema::union([above, below.clone()].into()));
+    ///
+    /// // A singleton union collapses to its member.
+    /// assert_eq!(Schema::union([below.clone()].into()), below);
+    /// ```
+    #[must_use]
+    pub fn union(members: Vec<Self>) -> Self {
+        assert!(
+            !members.is_empty(),
+            "Schema::union: at least one member is required (an empty union admits nothing)",
+        );
+        let mut flat: Vec<Self> = Vec::with_capacity(members.len());
+        for member in members {
+            if let Self::Union(inner) = member {
+                flat.extend(inner);
+            } else {
+                flat.push(member);
+            }
+        }
+        flat.sort_unstable();
+        flat.dedup();
+        collapse_singleton(flat, Self::Union)
+    }
+
+    /// Build the intersection of `members`' sets, canonicalising:
+    /// nested intersections flatten, same-kind intervals fuse into
+    /// one interval, members sort and deduplicate, and a single
+    /// remaining member collapses to the member itself.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `members` is empty, or when fusing same-kind
+    /// intervals produces an empty interval (the intersection admits
+    /// nothing — the schema analogue of the compile-time
+    /// `MIN <= MAX` asserts on the rules themselves).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema};
+    ///
+    /// let at_least = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Unbounded,
+    /// );
+    /// let at_most = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Unbounded,
+    ///     Bound::Inclusive(Scalar::Int(100)),
+    /// );
+    ///
+    /// // Same-kind intervals fuse: the result IS `Within<0, 100>`'s
+    /// // interval, not a symbolic intersection.
+    /// let within = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Inclusive(Scalar::Int(100)),
+    /// );
+    /// assert_eq!(Schema::intersection([at_least, at_most].into()), within);
+    /// ```
+    #[must_use]
+    pub fn intersection(members: Vec<Self>) -> Self {
+        assert!(
+            !members.is_empty(),
+            "Schema::intersection: at least one member is required",
+        );
+        let mut intervals: Vec<(ScalarKind, Bound, Bound)> = Vec::new();
+        let mut others: Vec<Self> = Vec::new();
+        let mut queue: Vec<Self> = members;
+        while let Some(member) = queue.pop() {
+            if let Self::Intersection(inner) = member {
+                queue.extend(inner);
+            } else if let Self::Interval { kind, lo, hi } = member {
+                match intervals.iter_mut().find(|(k, _, _)| *k == kind) {
+                    Some((_, fused_lo, fused_hi)) => {
+                        *fused_lo = fuse_lo(*fused_lo, lo);
+                        *fused_hi = fuse_hi(*fused_hi, hi);
+                    }
+                    None => intervals.push((kind, lo, hi)),
+                }
+            } else {
+                others.push(member);
+            }
+        }
+        let mut flat = others;
+        for (kind, lo, hi) in intervals {
+            // Re-canonicalise: fusion may expose a reducible decimal
+            // scale, and an empty fusion panics here with the
+            // non-empty contract named.
+            flat.push(Self::interval(kind, lo, hi));
+        }
+        flat.sort_unstable();
+        flat.dedup();
+        collapse_singleton(flat, Self::Intersection)
+    }
+
+    /// Build a canonicalised schema: the carried set is `inner`'s
+    /// set; `morphism` records the transformation applied to raw
+    /// input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Morphism, Schema};
+    ///
+    /// let trimmed = Schema::canonicalized(
+    ///     Morphism::Trim,
+    ///     Schema::enumerated(&["on", "off"]),
+    /// );
+    /// assert_eq!(trimmed, trimmed.clone());
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn canonicalized(morphism: Morphism, inner: Self) -> Self {
+        Self::Canonicalized {
+            morphism,
+            inner: Box::new(inner),
+        }
+    }
+
+    /// The enumerated labels, when this schema is
+    /// [`Schema::Enumerated`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::Schema;
+    ///
+    /// let status = Schema::enumerated(&["on", "off"]);
+    /// assert_eq!(status.as_enumerated(), Some(&["on", "off"][..]));
+    /// assert_eq!(Schema::regex("a").as_enumerated(), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn as_enumerated(&self) -> Option<&'static [&'static str]> {
+        if let Self::Enumerated(labels) = *self {
+            Some(labels)
+        } else {
+            None
+        }
+    }
+
+    /// Every finite interval endpoint in the tree, paired with its
+    /// kind: the boundary values a derived test matrix samples.
+    /// Recurses through unions, intersections, collections (element
+    /// endpoints), and canonicalised inners; non-interval leaves
+    /// contribute nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema};
+    ///
+    /// let percent = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Inclusive(Scalar::Int(100)),
+    /// );
+    /// assert_eq!(
+    ///     percent.interval_endpoints(),
+    ///     [
+    ///         (ScalarKind::Integer, Scalar::Int(0)),
+    ///         (ScalarKind::Integer, Scalar::Int(100)),
+    ///     ],
+    /// );
+    /// ```
+    #[must_use]
+    pub fn interval_endpoints(&self) -> Vec<(ScalarKind, Scalar)> {
+        let mut endpoints = Vec::new();
+        self.collect_interval_endpoints(&mut endpoints);
+        endpoints
+    }
+
+    fn collect_interval_endpoints(&self, endpoints: &mut Vec<(ScalarKind, Scalar)>) {
+        match self {
+            Self::Interval { kind, lo, hi } => {
+                for bound in [lo, hi] {
+                    if let Some(scalar) = bound.scalar() {
+                        endpoints.push((*kind, scalar));
+                    }
+                }
+            }
+            Self::Union(members) | Self::Intersection(members) => {
+                for member in members {
+                    member.collect_interval_endpoints(endpoints);
+                }
+            }
+            Self::Collection { element, .. } => {
+                element.collect_interval_endpoints(endpoints);
+            }
+            Self::Canonicalized { inner, .. } => {
+                inner.collect_interval_endpoints(endpoints);
+            }
+            Self::Str { .. } | Self::Regex(_) | Self::Enumerated(_) => {}
+        }
+    }
+
+    /// Decide membership of a scalar of carrier domain `kind` in this
+    /// schema's denoted set, where the vocabulary is scalar-decidable.
+    ///
+    /// Returns `Some(true)`/`Some(false)` when every node consulted
+    /// can decide, and `None` when the answer depends on a node
+    /// outside the scalar fragment (strings, regexes, enumerations,
+    /// collections) or on an interval of a different kind. Float
+    /// intervals compare by IEEE-754 semantics — the same comparison
+    /// `refine` impls use — so `NaN` is a member of no interval.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema};
+    ///
+    /// let percent = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Inclusive(Scalar::Int(100)),
+    /// );
+    ///
+    /// // Decided: in and out of range.
+    /// assert_eq!(
+    ///     percent.scalar_membership(ScalarKind::Integer, &Scalar::Int(50)),
+    ///     Some(true),
+    /// );
+    /// assert_eq!(
+    ///     percent.scalar_membership(ScalarKind::Integer, &Scalar::Int(101)),
+    ///     Some(false),
+    /// );
+    ///
+    /// // Undecidable: wrong carrier domain.
+    /// assert_eq!(
+    ///     percent.scalar_membership(ScalarKind::Date, &Scalar::Int(50)),
+    ///     None,
+    /// );
+    /// ```
+    #[must_use]
+    pub fn scalar_membership(&self, kind: ScalarKind, value: &Scalar) -> Option<bool> {
+        match self {
+            Self::Interval {
+                kind: interval_kind,
+                lo,
+                hi,
+            } => {
+                if *interval_kind != kind {
+                    return None;
+                }
+                Some(bound_admits_below(*lo, value) && bound_admits_above(*hi, value))
+            }
+            Self::Union(members) => {
+                fold_membership(members, kind, value, |decided| decided.contains(&true))
+            }
+            Self::Intersection(members) => {
+                fold_membership(members, kind, value, |decided| !decided.contains(&false))
+            }
+            Self::Canonicalized { inner, .. } => inner.scalar_membership(kind, value),
+            Self::Str { .. } | Self::Regex(_) | Self::Enumerated(_) | Self::Collection { .. } => {
+                None
+            }
+        }
+    }
+}
+
+/// `true` iff `value` satisfies the lower bound `lo` (IEEE semantics
+/// for floats: `NaN` satisfies no finite bound).
+fn bound_admits_below(lo: Bound, value: &Scalar) -> bool {
+    lo.scalar().is_none_or(|scalar| {
+        scalar
+            .denotational_cmp(value)
+            .is_some_and(core::cmp::Ordering::is_le)
+    })
+}
+
+/// `true` iff `value` satisfies the upper bound `hi`.
+fn bound_admits_above(hi: Bound, value: &Scalar) -> bool {
+    hi.scalar().is_none_or(|scalar| {
+        scalar
+            .denotational_cmp(value)
+            .is_some_and(core::cmp::Ordering::is_ge)
+    })
+}
+
+/// Combine member membership answers: short-circuits are decided by
+/// `decide` over the decided answers; any undecided member that could
+/// change the outcome makes the whole answer undecided.
+fn fold_membership(
+    members: &[Schema],
+    kind: ScalarKind,
+    value: &Scalar,
+    decide: fn(&[bool]) -> bool,
+) -> Option<bool> {
+    let mut decided: Vec<bool> = Vec::with_capacity(members.len());
+    let mut any_undecided = false;
+    for member in members {
+        match member.scalar_membership(kind, value) {
+            Some(answer) => decided.push(answer),
+            None => any_undecided = true,
+        }
+    }
+    let outcome = decide(&decided);
+    // For a union, a decided `true` wins regardless of undecided
+    // members; for an intersection, a decided `false` wins. In both
+    // cases `decide` returns the dominating answer; otherwise an
+    // undecided member leaves the question open.
+    let dominated = outcome != decide(&[]);
+    if any_undecided && !dominated {
+        return None;
+    }
+    Some(outcome)
+}
+
+/// Canonicalise one bound's scalar (`-0.0` to `0.0`).
+const fn canonical_bound(bound: Bound) -> Bound {
+    match bound {
+        Bound::Inclusive(scalar) => Bound::Inclusive(scalar.canonicalized()),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
+
+/// Reduce a decimal interval to the smallest scale that represents
+/// both endpoints exactly: trailing zeros are stripped jointly from
+/// every finite mantissa while the scale is positive. Non-decimal
+/// kinds pass through unchanged.
+#[expect(
+    clippy::integer_division_remainder_used,
+    reason = "scale reduction strips exact factors of ten: the divisibility check \
+              precedes every division, so no remainder is ever discarded"
+)]
+fn reduce_decimal_scale(kind: ScalarKind, lo: Bound, hi: Bound) -> (ScalarKind, Bound, Bound) {
+    let ScalarKind::Decimal { mut scale } = kind else {
+        return (kind, lo, hi);
+    };
+    let mut mantissas: Vec<i128> = [lo, hi]
+        .iter()
+        .filter_map(|bound| {
+            let scalar = bound.scalar()?;
+            scalar.as_int()
+        })
+        .collect();
+    while scale > 0 && mantissas.iter().all(|mantissa| mantissa % 10 == 0) {
+        for mantissa in &mut mantissas {
+            *mantissa /= 10;
+        }
+        scale -= 1;
+    }
+    let mut reduced = mantissas.into_iter();
+    let rebuild = |bound: Bound, reduced: &mut alloc::vec::IntoIter<i128>| match bound {
+        Bound::Inclusive(_) => Bound::Inclusive(Scalar::Int(
+            reduced.next().expect("one mantissa per finite bound"),
+        )),
+        Bound::Unbounded => Bound::Unbounded,
+    };
+    let lo = rebuild(lo, &mut reduced);
+    let hi = rebuild(hi, &mut reduced);
+    (ScalarKind::Decimal { scale }, lo, hi)
+}
+
+/// Fuse two lower bounds: the larger wins (`Unbounded` is the
+/// identity, negative infinity).
+fn fuse_lo(a: Bound, b: Bound) -> Bound {
+    match (a.scalar(), b.scalar()) {
+        (Some(sa), Some(sb)) => {
+            if sa.cmp(&sb).is_ge() {
+                a
+            } else {
+                b
+            }
+        }
+        (Some(_), None) => a,
+        (None, _) => b,
+    }
+}
+
+/// Fuse two upper bounds: the smaller wins (`Unbounded` is the
+/// identity, positive infinity).
+fn fuse_hi(a: Bound, b: Bound) -> Bound {
+    match (a.scalar(), b.scalar()) {
+        (Some(sa), Some(sb)) => {
+            if sa.cmp(&sb).is_le() {
+                a
+            } else {
+                b
+            }
+        }
+        (Some(_), None) => a,
+        (None, _) => b,
+    }
+}
+
+/// A canonical n-ary node never holds a single member: collapse to
+/// the member itself, otherwise wrap with `node`.
+fn collapse_singleton(mut members: Vec<Schema>, node: fn(Vec<Schema>) -> Schema) -> Schema {
+    if members.len() == 1 {
+        members.remove(0)
+    } else {
+        node(members)
+    }
+}
+
+/// A rule whose admitted set has a constructive [`Schema`]
+/// description.
+///
+/// # Soundness obligation
+///
+/// `⟦Self::schema()⟧ = range(Self::refine)` — the schema denotes the
+/// post-canonicalisation CARRIED set (the values a
+/// [`Refined`](crate::Refined) can hold), not the accepted raw-input
+/// preimage. The two readings coincide for pure predicates, whose
+/// `refine` is the identity on admissible input (IDEA §5.12
+/// idempotence); for canonicalising rules the
+/// [`Schema::Canonicalized`] node's inner schema denotes the carried
+/// set and the recorded [`Morphism`] describes how raw input reaches
+/// it (the accepted preimage is the morphism's preimage of the inner
+/// set).
+///
+/// The schema is interpreted *within the carrier's embedding* into
+/// the scalar universe: `⟦schema()⟧ ∩ ⟦T⟧ = range(refine)`. A bound
+/// wider than `T`'s own range (an `AtMost<300>` carried by `u8`)
+/// still describes the admitted set exactly, because the values
+/// outside `T` are outside the embedding.
+///
+/// Like [`Rule::refine`]'s own soundness obligation, implementers
+/// discharge this by reading the SAME const generics `refine` reads;
+/// the cross-check helpers in [`crate::testing`] are the mechanical
+/// oracle.
+///
+/// # Absence is meaningful
+///
+/// A rule without a `SchemaRule` impl has no schema — there is no
+/// `Opaque` node. Hand-written `refine` logic stays visibly distinct
+/// (IDEA §5.10), and composite rules can only have schemas when every
+/// operand does.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Rule;
+/// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+///
+/// /// Accepts only non-negative `i32`.
+/// enum NonNeg {}
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// struct Negative;
+///
+/// impl Rule<i32> for NonNeg {
+///     type Error = Negative;
+///     fn refine(raw: i32) -> Result<i32, Self::Error> {
+///         if raw >= 0 { Ok(raw) } else { Err(Negative) }
+///     }
+/// }
+///
+/// impl SchemaRule<i32> for NonNeg {
+///     fn schema() -> Schema {
+///         Schema::interval(
+///             ScalarKind::Integer,
+///             Bound::Inclusive(Scalar::Int(0)),
+///             Bound::Unbounded,
+///         )
+///     }
+/// }
+///
+/// // The schema decides membership the same way `refine` does.
+/// let schema = <NonNeg as SchemaRule<i32>>::schema();
+/// assert_eq!(
+///     schema.scalar_membership(ScalarKind::Integer, &Scalar::Int(7)),
+///     Some(true),
+/// );
+/// assert_eq!(
+///     schema.scalar_membership(ScalarKind::Integer, &Scalar::Int(-1)),
+///     Some(false),
+/// );
+/// ```
+pub trait SchemaRule<T>: Rule<T>
+where
+    T: 'static,
+{
+    /// The constructive description of this rule's admitted set.
+    ///
+    /// See the trait docs for the soundness obligation relating the
+    /// returned schema to [`Rule::refine`].
+    fn schema() -> Schema;
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    reason = "explicit in test code"
+)]
+mod tests {
+    use alloc::boxed::Box;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::{Bound, CharSet, LenBound, LenUnit, Morphism, Scalar, ScalarKind, Schema};
+
+    fn int_interval(lo: i128, hi: i128) -> Schema {
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(lo)),
+            Bound::Inclusive(Scalar::Int(hi)),
+        )
+    }
+
+    // ─── Scalar: structural order vs denotational comparison. ─────
+
+    #[test]
+    fn scalar_orders_ints_by_value_and_floats_by_total_order() {
+        assert!(Scalar::Int(1) < Scalar::Int(2));
+        assert!(Scalar::Float(-0.5) < Scalar::Float(0.5));
+        assert!(Scalar::Float(f64::NEG_INFINITY) < Scalar::Float(f64::MIN));
+        assert!(Scalar::Float(f64::MAX) < Scalar::Float(f64::INFINITY));
+        // NaN sits above +inf in the total order.
+        assert!(Scalar::Float(f64::INFINITY) < Scalar::Float(f64::NAN));
+    }
+
+    #[test]
+    fn scalar_orders_across_variants_structurally() {
+        assert!(Scalar::Int(i128::MAX) < Scalar::Float(f64::NEG_INFINITY));
+        assert!(Scalar::Float(0.0) > Scalar::Int(0));
+        assert_ne!(Scalar::Int(0), Scalar::Float(0.0));
+    }
+
+    #[test]
+    fn scalar_eq_follows_the_total_order() {
+        assert_eq!(Scalar::Int(7), Scalar::Int(7));
+        assert_eq!(Scalar::Float(0.5), Scalar::Float(0.5));
+        // total_cmp equality: NaN equals NaN structurally.
+        assert_eq!(Scalar::Float(f64::NAN), Scalar::Float(f64::NAN));
+        // partial_cmp (PartialOrd) routes through the total order.
+        assert_eq!(
+            Scalar::Int(1).partial_cmp(&Scalar::Int(2)),
+            Some(core::cmp::Ordering::Less),
+        );
+    }
+
+    #[test]
+    fn scalar_accessors_select_the_matching_variant() {
+        assert_eq!(Scalar::Int(3).as_int(), Some(3));
+        assert_eq!(Scalar::Float(3.0).as_int(), None);
+        assert_eq!(Scalar::Float(3.0).as_float(), Some(3.0));
+        assert_eq!(Scalar::Int(3).as_float(), None);
+    }
+
+    // ─── Interval canonical invariants. ───────────────────────────
+
+    #[test]
+    fn interval_accepts_degenerate_singleton() {
+        let point = int_interval(42, 42);
+        assert_eq!(
+            point,
+            Schema::Interval {
+                kind: ScalarKind::Integer,
+                lo: Bound::Inclusive(Scalar::Int(42)),
+                hi: Bound::Inclusive(Scalar::Int(42)),
+            },
+        );
+    }
+
+    #[test]
+    fn interval_accepts_unbounded_ends() {
+        let everything = Schema::interval(ScalarKind::Integer, Bound::Unbounded, Bound::Unbounded);
+        assert_eq!(
+            everything.scalar_membership(ScalarKind::Integer, &Scalar::Int(i128::MIN)),
+            Some(true),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lo must be <= hi")]
+    fn interval_rejects_empty_range() {
+        let _schema = int_interval(1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "endpoint scalar variant must match")]
+    fn interval_rejects_regime_mismatch() {
+        let _schema = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Float(0.0)),
+            Bound::Unbounded,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "endpoint scalar variant must match")]
+    fn interval_rejects_int_endpoint_for_float_kind() {
+        let _schema = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Unbounded,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN is not an admissible endpoint")]
+    fn interval_rejects_nan_endpoint() {
+        let _schema = Schema::interval(
+            ScalarKind::Float,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Float(f64::NAN)),
+        );
+    }
+
+    #[test]
+    fn interval_normalizes_negative_zero_endpoint() {
+        let negative = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(-0.0)),
+            Bound::Inclusive(Scalar::Float(1.0)),
+        );
+        let positive = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(0.0)),
+            Bound::Inclusive(Scalar::Float(1.0)),
+        );
+        assert_eq!(negative, positive);
+    }
+
+    #[test]
+    fn interval_reduces_decimal_scale_jointly() {
+        let wide = Schema::interval(
+            ScalarKind::Decimal { scale: 2 },
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Inclusive(Scalar::Int(10_000)),
+        );
+        let narrow = Schema::interval(
+            ScalarKind::Decimal { scale: 0 },
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Inclusive(Scalar::Int(100)),
+        );
+        assert_eq!(wide, narrow);
+    }
+
+    #[test]
+    fn interval_keeps_irreducible_decimal_scale() {
+        // 0.5..=2.5 at scale 1: 5 and 25 are not both divisible by
+        // 10, so the scale stays.
+        let interval = Schema::interval(
+            ScalarKind::Decimal { scale: 1 },
+            Bound::Inclusive(Scalar::Int(5)),
+            Bound::Inclusive(Scalar::Int(25)),
+        );
+        assert_eq!(
+            interval,
+            Schema::Interval {
+                kind: ScalarKind::Decimal { scale: 1 },
+                lo: Bound::Inclusive(Scalar::Int(5)),
+                hi: Bound::Inclusive(Scalar::Int(25)),
+            },
+        );
+    }
+
+    #[test]
+    fn interval_reduces_decimal_scale_with_unbounded_end() {
+        let half_open = Schema::interval(
+            ScalarKind::Decimal { scale: 2 },
+            Bound::Inclusive(Scalar::Int(100)),
+            Bound::Unbounded,
+        );
+        let reduced = Schema::interval(
+            ScalarKind::Decimal { scale: 0 },
+            Bound::Inclusive(Scalar::Int(1)),
+            Bound::Unbounded,
+        );
+        assert_eq!(half_open, reduced);
+    }
+
+    #[test]
+    fn interval_reduces_fully_unbounded_decimal_to_scale_zero() {
+        let any_scale = Schema::interval(
+            ScalarKind::Decimal { scale: 7 },
+            Bound::Unbounded,
+            Bound::Unbounded,
+        );
+        let zero_scale = Schema::interval(
+            ScalarKind::Decimal { scale: 0 },
+            Bound::Unbounded,
+            Bound::Unbounded,
+        );
+        assert_eq!(any_scale, zero_scale);
+    }
+
+    // ─── LenBound / CharSet / leaf constructors. ───────────────────
+
+    #[test]
+    fn len_bound_accepts_degenerate_and_ordered_ranges() {
+        assert_eq!(LenBound::new(0, 0), LenBound { min: 0, max: 0 });
+        assert_eq!(LenBound::new(1, 64), LenBound { min: 1, max: 64 });
+    }
+
+    #[test]
+    #[should_panic(expected = "min must be <= max")]
+    fn len_bound_rejects_inverted_range() {
+        let _len = LenBound::new(2, 1);
+    }
+
+    #[test]
+    fn char_set_merges_overlapping_and_adjacent_ranges() {
+        let merged = CharSet::from_ranges([('n', 'z'), ('a', 'p'), ('0', '4'), ('5', '9')]);
+        assert_eq!(merged.ranges(), &[('0', '9'), ('a', 'z')]);
+    }
+
+    #[test]
+    fn char_set_keeps_disjoint_ranges_sorted() {
+        let set = CharSet::from_ranges([('x', 'z'), ('a', 'c')]);
+        assert_eq!(set.ranges(), &[('a', 'c'), ('x', 'z')]);
+    }
+
+    #[test]
+    fn char_set_merges_across_the_surrogate_gap() {
+        // U+D7FF's successor is U+E000: the two ranges are adjacent.
+        let set = CharSet::from_ranges([('\u{0}', '\u{D7FF}'), ('\u{E000}', char::MAX)]);
+        assert_eq!(set.ranges(), &[('\u{0}', char::MAX)]);
+    }
+
+    #[test]
+    fn char_set_saturates_at_char_max() {
+        // char::MAX's successor saturates, so a range ending at
+        // char::MAX merges with anything starting at or below it.
+        let set = CharSet::from_ranges([('\u{E000}', char::MAX), (char::MAX, char::MAX)]);
+        assert_eq!(set.ranges(), &[('\u{E000}', char::MAX)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "every range must satisfy lo <= hi")]
+    fn char_set_rejects_inverted_range() {
+        let _set = CharSet::from_ranges([('z', 'a')]);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one range is required")]
+    fn char_set_rejects_empty_set() {
+        let _set = CharSet::from_ranges([]);
+    }
+
+    #[test]
+    fn enumerated_keeps_declaration_order() {
+        let schema = Schema::enumerated(&["zulu", "alpha"]);
+        assert_eq!(schema.as_enumerated(), Some(&["zulu", "alpha"][..]));
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one label is required")]
+    fn enumerated_rejects_empty_label_set() {
+        let _schema = Schema::enumerated(&[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "labels must be duplicate-free")]
+    fn enumerated_rejects_duplicate_labels() {
+        let _schema = Schema::enumerated(&["same", "same"]);
+    }
+
+    #[test]
+    fn string_and_collection_and_canonicalized_round_trip_structurally() {
+        let ident = Schema::string(
+            LenBound::new(1, 64),
+            LenUnit::Chars,
+            CharSet::from_ranges([('a', 'z')]),
+            Some(CharSet::from_ranges([('_', '_')])),
+        );
+        assert_eq!(
+            ident,
+            Schema::Str {
+                len: LenBound::new(1, 64),
+                unit: LenUnit::Chars,
+                alphabet: CharSet::from_ranges([('a', 'z')]),
+                first: Some(CharSet::from_ranges([('_', '_')])),
+            },
+        );
+        let list = Schema::collection(LenBound::new(0, 8), ident.clone(), false, true);
+        assert_eq!(
+            list,
+            Schema::Collection {
+                len: LenBound::new(0, 8),
+                element: Box::new(ident),
+                sorted: false,
+                unique: true,
+            },
+        );
+        let trimmed = Schema::canonicalized(Morphism::Trim, list.clone());
+        assert_eq!(
+            trimmed,
+            Schema::Canonicalized {
+                morphism: Morphism::Trim,
+                inner: Box::new(list),
+            },
+        );
+        // Support types are ordered for canonical sorting.
+        assert!(LenUnit::Chars < LenUnit::Bytes);
+        assert!(Morphism::Trim < Morphism::AsciiLowercase);
+        assert_eq!(Schema::regex("^a$"), Schema::Regex("^a$"));
+    }
+
+    // ─── Union canonical invariants. ───────────────────────────────
+
+    #[test]
+    fn union_flattens_sorts_and_dedupes() {
+        let a = int_interval(0, 1);
+        let b = int_interval(5, 9);
+        let c = int_interval(20, 30);
+        let nested = Schema::union(vec![
+            Schema::union(vec![b.clone(), a.clone()]),
+            c.clone(),
+            a.clone(),
+        ]);
+        let flat = Schema::union(vec![a, b, c]);
+        assert_eq!(nested, flat);
+        // The canonical form is the sorted, deduplicated member list.
+        assert_eq!(
+            flat,
+            Schema::Union(vec![
+                int_interval(0, 1),
+                int_interval(5, 9),
+                int_interval(20, 30),
+            ]),
+        );
+    }
+
+    #[test]
+    fn union_collapses_singleton_to_member() {
+        let only = int_interval(0, 9);
+        assert_eq!(Schema::union(vec![only.clone()]), only);
+    }
+
+    #[test]
+    fn union_collapses_duplicates_to_member() {
+        let only = int_interval(0, 9);
+        assert_eq!(Schema::union(vec![only.clone(), only.clone()]), only);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one member is required")]
+    fn union_rejects_empty_member_list() {
+        let _schema = Schema::union(Vec::new());
+    }
+
+    // ─── Intersection canonical invariants. ────────────────────────
+
+    #[test]
+    fn intersection_fuses_same_kind_intervals() {
+        let at_least = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Unbounded,
+        );
+        let at_most = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(100)),
+        );
+        assert_eq!(
+            Schema::intersection(vec![at_least, at_most]),
+            int_interval(0, 100),
+        );
+    }
+
+    #[test]
+    fn intersection_fuses_same_kind_intervals_in_either_member_order() {
+        // Covers all four fusion arms: a finite bound meeting an
+        // unbounded one in both argument positions.
+        let at_least = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Unbounded,
+        );
+        let at_most = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(100)),
+        );
+        assert_eq!(
+            Schema::intersection(vec![at_most.clone(), at_least.clone()]),
+            int_interval(0, 100),
+        );
+        assert_eq!(
+            Schema::intersection(vec![at_least, at_most]),
+            int_interval(0, 100),
+        );
+    }
+
+    #[test]
+    fn intersection_fusion_picks_tightest_bounds() {
+        let fused = Schema::intersection(vec![int_interval(0, 100), int_interval(10, 200)]);
+        assert_eq!(fused, int_interval(10, 100));
+    }
+
+    #[test]
+    fn intersection_flattens_nested_symbolic_intersections() {
+        // A mixed-kind intersection stays symbolic, so nesting it
+        // inside another intersection exercises the flattening path.
+        let int = int_interval(0, 100);
+        let float = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(0.0)),
+            Bound::Inclusive(Scalar::Float(1.0)),
+        );
+        let date = Schema::interval(
+            ScalarKind::Date,
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Inclusive(Scalar::Int(9)),
+        );
+        let nested = Schema::intersection(vec![
+            Schema::intersection(vec![int.clone(), float.clone()]),
+            date.clone(),
+        ]);
+        assert_eq!(nested, Schema::intersection(vec![int, float, date]));
+    }
+
+    #[test]
+    fn intersection_keeps_different_kind_intervals_symbolic() {
+        let int = int_interval(0, 100);
+        let float = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(0.0)),
+            Bound::Inclusive(Scalar::Float(1.0)),
+        );
+        let mixed = Schema::intersection(vec![int.clone(), float.clone()]);
+        // The canonical residual form is the sorted symbolic pair.
+        assert_eq!(
+            mixed,
+            Schema::Intersection(vec![int.clone(), float.clone()]),
+        );
+        // Construction order is irrelevant.
+        assert_eq!(mixed, Schema::intersection(vec![float, int]));
+    }
+
+    #[test]
+    fn intersection_keeps_non_interval_members_symbolic() {
+        let interval = int_interval(0, 9);
+        let regex = Schema::regex("^[0-9]$");
+        let mixed = Schema::intersection(vec![regex.clone(), interval.clone()]);
+        assert_eq!(mixed, Schema::intersection(vec![interval, regex]));
+    }
+
+    #[test]
+    fn intersection_collapses_singleton_to_member() {
+        let only = int_interval(0, 9);
+        assert_eq!(Schema::intersection(vec![only.clone()]), only);
+    }
+
+    #[test]
+    fn intersection_fuses_decimal_intervals_and_re_reduces_scale() {
+        // [1.0, 99.9] ∩ [0.3, 2.0] at scale 1 → [1.0, 2.0] → scale 0.
+        let a = Schema::interval(
+            ScalarKind::Decimal { scale: 1 },
+            Bound::Inclusive(Scalar::Int(10)),
+            Bound::Inclusive(Scalar::Int(999)),
+        );
+        let b = Schema::interval(
+            ScalarKind::Decimal { scale: 1 },
+            Bound::Inclusive(Scalar::Int(3)),
+            Bound::Inclusive(Scalar::Int(20)),
+        );
+        let fused = Schema::intersection(vec![a, b]);
+        assert_eq!(
+            fused,
+            Schema::interval(
+                ScalarKind::Decimal { scale: 0 },
+                Bound::Inclusive(Scalar::Int(1)),
+                Bound::Inclusive(Scalar::Int(2)),
+            ),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lo must be <= hi")]
+    fn intersection_rejects_empty_fusion() {
+        let _schema = Schema::intersection(vec![int_interval(5, 9), int_interval(0, 3)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one member is required")]
+    fn intersection_rejects_empty_member_list() {
+        let _schema = Schema::intersection(Vec::new());
+    }
+
+    // ─── Confluence: normal form independent of construction order.
+
+    proptest::proptest! {
+        /// Union normal form is independent of member permutation and
+        /// nesting split point.
+        #[test]
+        fn union_is_confluent(
+            mut bounds in proptest::collection::vec((-100_i128..=100, 0_i128..=100), 2..6),
+            split in 1_usize..5,
+            permute in proptest::bool::ANY,
+        ) {
+            let members: Vec<Schema> = bounds
+                .iter()
+                .map(|&(lo, span)| int_interval(lo, lo + span))
+                .collect();
+            let flat = Schema::union(members.clone());
+
+            // Nest at an arbitrary split point.
+            let split = split.min(members.len() - 1);
+            let (left, right) = members.split_at(split);
+            let nested = Schema::union(vec![
+                Schema::union(left.to_vec()),
+                Schema::union(right.to_vec()),
+            ]);
+            proptest::prop_assert_eq!(&nested, &flat);
+
+            // Permute (reverse is enough to change every position).
+            if permute {
+                bounds.reverse();
+            }
+            let permuted = Schema::union(
+                bounds.iter().map(|&(lo, span)| int_interval(lo, lo + span)).collect(),
+            );
+            proptest::prop_assert_eq!(&permuted, &flat);
+        }
+
+        /// Intersection normal form is independent of member
+        /// permutation and nesting split point. Every generated
+        /// interval contains zero, so fusion never empties.
+        #[test]
+        fn intersection_is_confluent(
+            bounds in proptest::collection::vec((-100_i128..=0, 0_i128..=100), 2..6),
+            split in 1_usize..5,
+        ) {
+            let members: Vec<Schema> = bounds
+                .iter()
+                .map(|&(lo, hi)| int_interval(lo, hi))
+                .collect();
+            let flat = Schema::intersection(members.clone());
+
+            let split = split.min(members.len() - 1);
+            let (left, right) = members.split_at(split);
+            let nested = Schema::intersection(vec![
+                Schema::intersection(left.to_vec()),
+                Schema::intersection(right.to_vec()),
+            ]);
+            proptest::prop_assert_eq!(&nested, &flat);
+
+            let mut reversed = members;
+            reversed.reverse();
+            proptest::prop_assert_eq!(&Schema::intersection(reversed), &flat);
+        }
+
+        /// Fused intersections agree with the directly-constructed
+        /// interval: `And<AtLeast<MIN>, AtMost<MAX>>` ≡
+        /// `Within<MIN, MAX>` at the schema level.
+        #[test]
+        fn intersection_fusion_matches_direct_interval(
+            lo in -100_i128..=0,
+            hi in 0_i128..=100,
+        ) {
+            let at_least = Schema::interval(
+                ScalarKind::Integer,
+                Bound::Inclusive(Scalar::Int(lo)),
+                Bound::Unbounded,
+            );
+            let at_most = Schema::interval(
+                ScalarKind::Integer,
+                Bound::Unbounded,
+                Bound::Inclusive(Scalar::Int(hi)),
+            );
+            proptest::prop_assert_eq!(
+                Schema::intersection(vec![at_least, at_most]),
+                int_interval(lo, hi),
+            );
+        }
+
+        /// CharSet normal form is independent of range order.
+        #[test]
+        fn char_set_is_confluent(
+            mut offsets in proptest::collection::vec((0_u8..=12, 0_u8..=13), 1..5),
+        ) {
+            let to_range = |&(lo_offset, span): &(u8, u8)| {
+                let lo_code = u32::from(b'a') + u32::from(lo_offset);
+                let hi_code = (lo_code + u32::from(span)).min(u32::from(b'z'));
+                (
+                    char::from_u32(lo_code).unwrap(),
+                    char::from_u32(hi_code).unwrap(),
+                )
+            };
+            let forward = CharSet::from_ranges(offsets.iter().map(to_range));
+            offsets.reverse();
+            let backward = CharSet::from_ranges(offsets.iter().map(to_range));
+            proptest::prop_assert_eq!(forward, backward);
+        }
+    }
+
+    // ─── Membership and endpoint queries. ──────────────────────────
+
+    #[test]
+    fn membership_decides_int_interval_inclusively() {
+        let percent = int_interval(0, 100);
+        let kind = ScalarKind::Integer;
+        assert_eq!(percent.scalar_membership(kind, &Scalar::Int(0)), Some(true));
+        assert_eq!(
+            percent.scalar_membership(kind, &Scalar::Int(100)),
+            Some(true),
+        );
+        assert_eq!(
+            percent.scalar_membership(kind, &Scalar::Int(-1)),
+            Some(false),
+        );
+        assert_eq!(
+            percent.scalar_membership(kind, &Scalar::Int(101)),
+            Some(false),
+        );
+    }
+
+    #[test]
+    fn membership_uses_ieee_semantics_for_floats() {
+        let unit = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(0.0)),
+            Bound::Inclusive(Scalar::Float(1.0)),
+        );
+        let kind = ScalarKind::Float;
+        // -0.0 is IEEE-equal to the 0.0 endpoint: a member, exactly
+        // as `refine`'s `(lo..=hi).contains` sees it.
+        assert_eq!(
+            unit.scalar_membership(kind, &Scalar::Float(-0.0)),
+            Some(true),
+        );
+        // NaN is a member of no interval.
+        assert_eq!(
+            unit.scalar_membership(kind, &Scalar::Float(f64::NAN)),
+            Some(false),
+        );
+        assert_eq!(
+            unit.scalar_membership(kind, &Scalar::Float(1.5)),
+            Some(false),
+        );
+    }
+
+    #[test]
+    fn membership_decides_false_for_regime_mismatched_value() {
+        // The query kind matches the interval, but the value's scalar
+        // variant is from the other regime: denotationally not a
+        // member (the comparison itself is undefined, so no bound
+        // admits it).
+        let percent = int_interval(0, 100);
+        assert_eq!(
+            percent.scalar_membership(ScalarKind::Integer, &Scalar::Float(50.0)),
+            Some(false),
+        );
+    }
+
+    #[test]
+    fn as_enumerated_is_none_for_other_nodes() {
+        assert_eq!(int_interval(0, 1).as_enumerated(), None);
+    }
+
+    #[test]
+    fn membership_is_undecided_for_kind_mismatch_and_non_scalar_nodes() {
+        let percent = int_interval(0, 100);
+        assert_eq!(
+            percent.scalar_membership(ScalarKind::Date, &Scalar::Int(50)),
+            None,
+        );
+        let regex = Schema::regex("^a$");
+        assert_eq!(
+            regex.scalar_membership(ScalarKind::Integer, &Scalar::Int(0)),
+            None,
+        );
+        let string = Schema::string(
+            LenBound::new(0, 9),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('a', 'z')]),
+            None,
+        );
+        assert_eq!(
+            string.scalar_membership(ScalarKind::Integer, &Scalar::Int(0)),
+            None,
+        );
+        let enumerated = Schema::enumerated(&["on"]);
+        assert_eq!(
+            enumerated.scalar_membership(ScalarKind::Integer, &Scalar::Int(0)),
+            None,
+        );
+        let collection = Schema::collection(LenBound::new(0, 1), percent, false, false);
+        assert_eq!(
+            collection.scalar_membership(ScalarKind::Integer, &Scalar::Int(50)),
+            None,
+        );
+    }
+
+    #[test]
+    fn membership_folds_unions_with_dominating_true() {
+        let kind = ScalarKind::Integer;
+        let union = Schema::union(vec![int_interval(0, 9), int_interval(20, 30)]);
+        assert_eq!(union.scalar_membership(kind, &Scalar::Int(5)), Some(true));
+        assert_eq!(union.scalar_membership(kind, &Scalar::Int(15)), Some(false),);
+
+        // A decided `true` dominates an undecided sibling; a decided
+        // `false` does not.
+        let with_regex = Schema::union(vec![int_interval(0, 9), Schema::regex("^a$")]);
+        assert_eq!(
+            with_regex.scalar_membership(kind, &Scalar::Int(5)),
+            Some(true),
+        );
+        assert_eq!(with_regex.scalar_membership(kind, &Scalar::Int(15)), None);
+    }
+
+    #[test]
+    fn membership_folds_intersections_with_dominating_false() {
+        let kind = ScalarKind::Integer;
+        // Same-kind intervals fuse, so mix kinds to keep a symbolic
+        // intersection with decidable integer members.
+        let date = Schema::interval(
+            ScalarKind::Date,
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Inclusive(Scalar::Int(9)),
+        );
+        let mixed = Schema::intersection(vec![int_interval(0, 9), date]);
+        // The integer member decides false: dominating.
+        assert_eq!(mixed.scalar_membership(kind, &Scalar::Int(15)), Some(false),);
+        // The integer member decides true, the date member is
+        // undecided for an Integer query: open.
+        assert_eq!(mixed.scalar_membership(kind, &Scalar::Int(5)), None);
+    }
+
+    #[test]
+    fn membership_recurses_through_canonicalized() {
+        let kind = ScalarKind::Integer;
+        let trimmed = Schema::canonicalized(Morphism::Trim, int_interval(0, 9));
+        assert_eq!(trimmed.scalar_membership(kind, &Scalar::Int(5)), Some(true));
+        assert_eq!(
+            trimmed.scalar_membership(kind, &Scalar::Int(10)),
+            Some(false),
+        );
+    }
+
+    #[test]
+    fn interval_endpoints_collects_finite_ends_recursively() {
+        let lo_only = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(1)),
+            Bound::Unbounded,
+        );
+        let union = Schema::union(vec![lo_only, int_interval(5, 9)]);
+        let date = Schema::interval(
+            ScalarKind::Date,
+            Bound::Inclusive(Scalar::Int(700_000)),
+            Bound::Inclusive(Scalar::Int(800_000)),
+        );
+        let tree = Schema::canonicalized(
+            Morphism::AsciiLowercase,
+            Schema::intersection(vec![
+                union,
+                date,
+                Schema::collection(LenBound::new(0, 3), int_interval(0, 255), false, false),
+                Schema::regex("^x$"),
+            ]),
+        );
+        let mut endpoints = tree.interval_endpoints();
+        endpoints.sort_unstable();
+        assert_eq!(
+            endpoints,
+            [
+                (ScalarKind::Integer, Scalar::Int(0)),
+                (ScalarKind::Integer, Scalar::Int(1)),
+                (ScalarKind::Integer, Scalar::Int(5)),
+                (ScalarKind::Integer, Scalar::Int(9)),
+                (ScalarKind::Integer, Scalar::Int(255)),
+                (ScalarKind::Date, Scalar::Int(700_000)),
+                (ScalarKind::Date, Scalar::Int(800_000)),
+            ],
+        );
+        // Non-interval leaves contribute nothing.
+        assert!(Schema::enumerated(&["on"]).interval_endpoints().is_empty());
+        assert!(
+            Schema::string(
+                LenBound::new(0, 1),
+                LenUnit::Chars,
+                CharSet::from_ranges([('a', 'a')]),
+                None,
+            )
+            .interval_endpoints()
+            .is_empty()
+        );
+    }
+}

@@ -27,6 +27,7 @@ pub mod implies;
 mod macros;
 pub mod primitive;
 mod rule;
+pub mod schema;
 #[cfg(feature = "proptest")]
 pub mod testing;
 pub mod transform;
@@ -40,6 +41,7 @@ pub use rule::ArbitraryRule;
 #[cfg(feature = "serde")]
 pub use rule::{DeserializeRule, parse_then_refine};
 pub use rule::{Refined, Rule};
+pub use schema::{Schema, SchemaRule};
 /// Re-export of `serde` so [`deserialize_rule!`] expansions resolve
 /// serde paths through `$crate` without requiring downstream crates
 /// to depend on `serde` directly.
