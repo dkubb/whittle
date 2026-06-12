@@ -1201,6 +1201,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "vacuous")]
     fn assert_schema_boundary_matrix_panics_when_vacuous() {
+        // A vacuous matrix never calls refine: pin the fixture's
+        // trivially-accepting refine before the panicking act.
+        assert_eq!(RegexOnly::refine(7), Ok(7));
         assert_schema_boundary_matrix::<i32, RegexOnly>(embed_i32, extract_i32);
     }
 
@@ -1360,6 +1363,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "vacuous")]
     fn assert_string_boundary_matrix_panics_when_vacuous() {
+        // A vacuous matrix never calls refine: pin the fixture's
+        // trivially-accepting refine before the panicking act.
+        assert_eq!(Regexish::refine("x".to_string()), Ok("x".to_string()));
         assert_string_boundary_matrix::<Regexish>();
     }
 

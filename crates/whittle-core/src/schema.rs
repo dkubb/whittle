@@ -3285,6 +3285,25 @@ mod tests {
     }
 
     #[test]
+    fn string_boundaries_recurse_intersections_keeping_dominating_rejects() {
+        // The intersection mirror of the union test: candidates are
+        // collected through the Intersection arm, and only the
+        // dominating rejects survive classification (the member "on"
+        // is left undecided by the regex sibling).
+        let with_regex =
+            Schema::intersection(vec![Schema::enumerated(&["on"]), Schema::regex("^x$")]);
+        assert_eq!(
+            with_regex.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("ON", false),
+                string_boundary("o", false),
+                string_boundary("onx", false),
+            ],
+        );
+    }
+
+    #[test]
     fn string_boundaries_recurse_composites_and_skip_non_string_trees() {
         let trimmed = Schema::canonicalized(Morphism::Trim, Schema::enumerated(&["on"]));
         assert_eq!(
