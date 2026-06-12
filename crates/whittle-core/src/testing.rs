@@ -738,14 +738,104 @@ struct CollectionMatrixRow {
     refine_admits: bool,
 }
 
-/// Render a collection matrix's violations plus the flag-probe
-/// outcomes. Non-generic: one function serves every collection rule
-/// family. Each probe is `Some((description, refine_admits))` when
-/// the schema vocabulary called for it; a probe `refine` ADMITS is a
-/// violation (every probe is a schema-derived reject).
+/// One planned reject probe for a collection matrix: the elements to
+/// lay down (as `make_element` indices) plus an optional trailing
+/// outsider in the scalar universe. Computed entirely by the
+/// NON-generic [`collection_probe_plan`], so the generic helper
+/// carries no schema-dependent branches (the coverage gate scores
+/// generics by their best single instantiation, and a schema-shaped
+/// branch can never take both sides within one instantiation).
+struct CollectionProbe {
+    /// Names the probe in violation reports.
+    description: &'static str,
+    /// `make_element` indices laid down in order.
+    indices: Vec<u64>,
+    /// A trailing element-outsider to extract into the carrier, when
+    /// the probe needs one.
+    outsider: Option<(ScalarKind, Scalar)>,
+}
+
+/// Fn-pointer predicate for the outsider search: a named function
+/// rather than a closure, so every planner call funnels through one
+/// coverage surface (the same fn-pointer pattern the pass/fail test
+/// pairs use).
+const fn boundary_row_rejected(row: &crate::schema::ScalarBoundary) -> bool {
+    !row.admitted
+}
+
+/// Derive every reject probe a Collection schema's constraints call
+/// for — a duplicate pair when `unique`, a descending pair when
+/// `sorted`, an element outsider when the element schema yields a
+/// rejected boundary row — with all bounds checks (pair length within
+/// the node's bound and the cap, outsider length hostable) decided
+/// here, non-generically.
+fn collection_probe_plan(schema: &Schema) -> Vec<CollectionProbe> {
+    use crate::schema::{COLLECTION_BOUNDARY_LEN_CAP, SchemaView};
+
+    let mut plan: Vec<CollectionProbe> = Vec::new();
+    let SchemaView::Collection {
+        len,
+        element,
+        sorted,
+        unique,
+    } = schema.view()
+    else {
+        return plan;
+    };
+    // The shortest admissible length that can host a violating pair,
+    // when one exists below the cap.
+    let pair_len = len.lo().max(2);
+    let pair_fits = pair_len <= len.hi() && pair_len <= COLLECTION_BOUNDARY_LEN_CAP;
+    if unique && pair_fits {
+        // A duplicate at the front, ascending afterwards: sorted
+        // (non-strict) stays satisfied, distinctness breaks.
+        let mut indices = alloc::vec![0, 0];
+        indices.extend(1..pair_len - 1);
+        plan.push(CollectionProbe {
+            description: "a duplicate pair",
+            indices,
+            outsider: None,
+        });
+    }
+    if sorted && pair_fits {
+        // A descending pair at the front, ascending afterwards: all
+        // elements distinct, order breaks.
+        let mut indices = alloc::vec![1, 0];
+        indices.extend(2..pair_len);
+        plan.push(CollectionProbe {
+            description: "a descending pair",
+            indices,
+            outsider: None,
+        });
+    }
+    // An element outsider in place of the candidate's last element,
+    // at the shortest non-empty admissible length.
+    let outsider_len = len.lo().max(1);
+    if let Some(element_schema) = element
+        && outsider_len <= len.hi()
+        && outsider_len <= COLLECTION_BOUNDARY_LEN_CAP
+        && let Some(row) = element_schema
+            .scalar_boundaries()
+            .into_iter()
+            .find(boundary_row_rejected)
+    {
+        plan.push(CollectionProbe {
+            description: "an element outsider",
+            indices: (0..outsider_len - 1).collect(),
+            outsider: Some((row.kind, row.value)),
+        });
+    }
+    plan
+}
+
+/// Render a collection matrix's violations plus the probe outcomes.
+/// Non-generic: one function serves every collection rule family.
+/// A probe verdict of `None` means the probe was skipped (its
+/// outsider was not extractable into the carrier); `Some(true)`
+/// means `refine` ADMITTED a schema-derived reject — a violation.
 fn collection_matrix_violations(
     rows: &[CollectionMatrixRow],
-    probes: &[Option<(&'static str, bool)>],
+    probes: &[(&'static str, Option<bool>)],
 ) -> Vec<alloc::string::String> {
     let mut violations: Vec<alloc::string::String> = Vec::new();
     for row in rows {
@@ -769,9 +859,8 @@ fn collection_matrix_violations(
              Collection root, or every length edge was skipped",
         ));
     }
-    for probe in probes.iter().flatten() {
-        let (description, refine_admits) = probe;
-        if *refine_admits {
+    for (description, refine_admits) in probes {
+        if *refine_admits == Some(true) {
             violations.push(format!(
                 "refine admits {description}, which the schema rejects: the \
                  schema underclaims the admitted set",
@@ -833,8 +922,6 @@ pub fn assert_collection_boundary_matrix<T, R>(
     T: core::fmt::Debug + 'static,
     R: SchemaRule<Vec<T>>,
 {
-    use crate::schema::{COLLECTION_BOUNDARY_LEN_CAP, SchemaView};
-
     let schema = R::schema();
 
     // (1) Length rows, materialised through the element contract.
@@ -850,52 +937,32 @@ pub fn assert_collection_boundary_matrix<T, R>(
         })
         .collect();
 
-    // (2) Schema-derived reject probes, one per carried constraint.
-    let mut probes: [Option<(&'static str, bool)>; 3] = [None, None, None];
-    if let SchemaView::Collection {
-        len,
-        element,
-        sorted,
-        unique,
-    } = schema.view()
-    {
-        // The shortest admissible length that can host a violating
-        // pair, when one exists below the cap.
-        let pair_len = len.lo().max(2);
-        let pair_fits = pair_len <= len.hi() && pair_len <= COLLECTION_BOUNDARY_LEN_CAP;
-        if unique && pair_fits {
-            // A duplicate at the front, ascending afterwards: sorted
-            // (non-strict) stays satisfied, distinctness breaks.
-            let mut candidate = alloc::vec![make_element(0), make_element(0)];
-            candidate.extend((1..pair_len - 1).map(make_element));
-            probes[0] = Some(("a duplicate pair", R::refine(candidate).is_ok()));
-        }
-        if sorted && pair_fits {
-            // A descending pair at the front, ascending afterwards:
-            // all elements distinct, order breaks.
-            let mut candidate = alloc::vec![make_element(1), make_element(0)];
-            candidate.extend((2..pair_len).map(make_element));
-            probes[1] = Some(("a descending pair", R::refine(candidate).is_ok()));
-        }
-        if let Some(element_schema) = element {
-            // An element outsider in place of the candidate's last
-            // element, at the shortest non-empty admissible length.
-            let outsider_len = len.lo().max(1);
-            let outsider = element_schema
-                .scalar_boundaries()
-                .into_iter()
-                .find(|row| !row.admitted)
-                .and_then(|row| try_extract(row.kind, row.value));
-            if let Some(outsider) = outsider
-                && outsider_len <= len.hi()
-                && outsider_len <= COLLECTION_BOUNDARY_LEN_CAP
-            {
-                let mut candidate: Vec<T> = (0..outsider_len - 1).map(make_element).collect();
-                candidate.push(outsider);
-                probes[2] = Some(("an element outsider", R::refine(candidate).is_ok()));
-            }
-        }
-    }
+    // (2) Schema-derived reject probes: planned non-generically (the
+    // schema-shaped branching lives in [`collection_probe_plan`]),
+    // materialised here. The only branch below depends on the
+    // RUNTIME `try_extract` outcome — an outsider the carrier cannot
+    // hold skips its probe — so one instantiation covers every arm
+    // across calls.
+    let probes: Vec<(&'static str, Option<bool>)> = collection_probe_plan(&schema)
+        .into_iter()
+        .map(|probe| {
+            let mut candidate: Vec<T> = probe.indices.into_iter().map(make_element).collect();
+            let extracted = probe
+                .outsider
+                .map(|(kind, scalar)| try_extract(kind, scalar));
+            let verdict = match extracted {
+                // Outsider wanted but not representable in the
+                // carrier: skip, never force an off-target probe.
+                Some(None) => None,
+                Some(Some(outsider)) => {
+                    candidate.push(outsider);
+                    Some(R::refine(candidate).is_ok())
+                }
+                None => Some(R::refine(candidate).is_ok()),
+            };
+            (probe.description, verdict)
+        })
+        .collect();
 
     finish_cross_check(
         core::any::type_name::<R>(),
@@ -1721,6 +1788,137 @@ mod tests {
     #[should_panic(expected = "refine admits an element outsider")]
     fn assert_collection_boundary_matrix_panics_when_outsider_is_admitted() {
         assert_collection_boundary_matrix::<i32, VecWildly>(make_i32, extract_i32);
+    }
+
+    /// Element schema without an extractable outsider (an unbounded
+    /// interval yields no boundary rows): the outsider probe is
+    /// skipped, the length rows still decide.
+    enum VecAnyElement {}
+
+    impl Rule<Vec<i32>> for VecAnyElement {
+        type Error = OutOfRange;
+        fn refine(raw: Vec<i32>) -> Result<Vec<i32>, Self::Error> {
+            if raw.len() <= 2 {
+                Ok(raw)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<Vec<i32>> for VecAnyElement {
+        fn schema() -> Schema {
+            Schema::collection(
+                crate::schema::LenBound::new(0, 2),
+                Some(Schema::interval(
+                    ScalarKind::Integer,
+                    Bound::Unbounded,
+                    Bound::Unbounded,
+                )),
+                false,
+                false,
+            )
+        }
+    }
+
+    /// Empty-only collection with an element schema: the outsider
+    /// probe needs one item, which the length bound refuses — the
+    /// probe is skipped, never forced.
+    enum VecEmptyOnly {}
+
+    impl Rule<Vec<i32>> for VecEmptyOnly {
+        type Error = OutOfRange;
+        fn refine(raw: Vec<i32>) -> Result<Vec<i32>, Self::Error> {
+            if raw.is_empty() {
+                Ok(raw)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<Vec<i32>> for VecEmptyOnly {
+        fn schema() -> Schema {
+            Schema::collection(
+                crate::schema::LenBound::new(0, 0),
+                Some(Schema::interval(
+                    ScalarKind::Integer,
+                    Bound::Inclusive(Scalar::Int(0)),
+                    Bound::Inclusive(Scalar::Int(10)),
+                )),
+                false,
+                false,
+            )
+        }
+    }
+
+    /// The outsider probe's skip paths: no extractable outsider, and
+    /// a length bound that cannot host one. Both fixtures pass on
+    /// their length rows alone.
+    #[test]
+    fn assert_collection_boundary_matrix_skips_unbuildable_outsider_probes() {
+        assert_collection_boundary_matrix::<i32, VecAnyElement>(make_i32, extract_i32);
+        assert_collection_boundary_matrix::<i32, VecEmptyOnly>(make_i32, extract_i32);
+    }
+
+    /// Extractor that can hold no schema point: the outsider probe
+    /// is skipped at materialisation time (the carrier cannot
+    /// represent the point), while every other violation in the
+    /// fixture still fires.
+    fn extract_none(_kind: ScalarKind, _scalar: Scalar) -> Option<i32> {
+        None
+    }
+
+    /// An inextractable outsider skips ITS probe only: the length
+    /// rows and remaining probes still report through the same run.
+    #[test]
+    #[should_panic(expected = "refine admits a duplicate pair")]
+    fn assert_collection_boundary_matrix_skips_inextractable_outsiders() {
+        assert_collection_boundary_matrix::<i32, VecWildly>(make_i32, extract_none);
+    }
+
+    /// Bounds entirely above the probe cap: every length edge and
+    /// probe is skipped, and the matrix reports its vacuity.
+    enum VecHugeMin {}
+
+    impl Rule<Vec<i32>> for VecHugeMin {
+        type Error = OutOfRange;
+        fn refine(raw: Vec<i32>) -> Result<Vec<i32>, Self::Error> {
+            if raw.len() >= 5000 {
+                Ok(raw)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<Vec<i32>> for VecHugeMin {
+        fn schema() -> Schema {
+            Schema::collection(
+                crate::schema::LenBound::new(5000, 6000),
+                Some(Schema::interval(
+                    ScalarKind::Integer,
+                    Bound::Inclusive(Scalar::Int(0)),
+                    Bound::Inclusive(Scalar::Int(10)),
+                )),
+                true,
+                true,
+            )
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "every length edge was skipped")]
+    fn assert_collection_boundary_matrix_panics_when_every_edge_is_capped() {
+        // The capped fixture's refine is never consulted by the
+        // matrix: pin both of its arms directly before the
+        // panicking act.
+        assert_eq!(
+            VecHugeMin::refine(alloc::vec![0; 5000]).map(|v| v.len()),
+            Ok(5000)
+        );
+        assert_eq!(VecHugeMin::refine(alloc::vec![0]), Err(OutOfRange));
+        assert_collection_boundary_matrix::<i32, VecHugeMin>(make_i32, extract_i32);
     }
 
     /// A non-Collection schema yields no length row: vacuity is

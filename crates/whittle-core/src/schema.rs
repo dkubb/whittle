@@ -3463,18 +3463,20 @@ mod tests {
     #[test]
     fn intersection_adopts_the_first_set_of_either_operand() {
         // One-sided first sets survive fusion (reduced into the
-        // fused alphabet).
-        let plain = str_node((1, 8), LenUnit::Chars, &[('a', 'z')], None);
-        let headed = str_node(
-            (0, u64::MAX),
-            LenUnit::Chars,
-            &[('\0', char::MAX)],
-            Some(&[('0', '9'), ('a', 'f')]),
-        );
-        assert_eq!(
-            Schema::intersection(vec![plain, headed]),
-            str_node((1, 8), LenUnit::Chars, &[('a', 'z')], Some(&[('a', 'f')])),
-        );
+        // fused alphabet) — from either accumulator position, since
+        // member order must not matter (confluence).
+        let plain = || str_node((1, 8), LenUnit::Chars, &[('a', 'z')], None);
+        let headed = || {
+            str_node(
+                (0, u64::MAX),
+                LenUnit::Chars,
+                &[('\0', char::MAX)],
+                Some(&[('0', '9'), ('a', 'f')]),
+            )
+        };
+        let expected = str_node((1, 8), LenUnit::Chars, &[('a', 'z')], Some(&[('a', 'f')]));
+        assert_eq!(Schema::intersection(vec![plain(), headed()]), expected);
+        assert_eq!(Schema::intersection(vec![headed(), plain()]), expected);
     }
 
     #[test]
@@ -3717,6 +3719,15 @@ mod tests {
             Bound::Unbounded,
         );
         assert_eq!(uncapped(half_open), 5);
+        let lower_open = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(0)),
+        );
+        assert_eq!(uncapped(lower_open), 5);
+        // Width exactly one past i128::MAX: the +1 step overflows.
+        let saturating = int_interval(-1, i128::MAX - 1);
+        assert_eq!(uncapped(saturating), 5);
         let float = Schema::interval(
             ScalarKind::Float,
             Bound::Inclusive(Scalar::Float(0.0)),
