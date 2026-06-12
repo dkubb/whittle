@@ -58,6 +58,8 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use core::marker::PhantomData;
+
 use crate::rule::Rule;
 
 /// An endpoint value in the schema's scalar universe.
@@ -2754,6 +2756,124 @@ pub(crate) fn integer_interval_from_bounds(bounds: (Option<i128>, Option<i128>))
     Schema::interval(ScalarKind::Integer, endpoint(bounds.0), endpoint(bounds.1))
 }
 
+// ─── R-S2: the residual-states report. ─────────────────────────────
+//
+// The reviewer-facing artifact: a per-type rendering of
+// `Refined<T, R>`'s admitted set, derived from `R::schema()` where
+// one exists and reading "opaque (hand-written refine)" FROM THE
+// ABSENCE of a `SchemaRule` impl. The dispatch is dtolnay's
+// autoref-specialization pattern (stable, no `Opaque` schema node,
+// no runtime flag): the schema-backed trait is implemented on the
+// probe VALUE, the opaque fallback on the probe REFERENCE, and
+// method resolution on `(&probe).describe_admitted()` prefers the
+// value impl whenever its `SchemaRule` bound holds. The
+// `admitted_set!` macro packages the call so report sites never
+// spell the dance.
+
+/// Type-level probe for one `Refined<T, R>`'s residual-states entry.
+///
+/// Carries the carrier and rule types into the [`DescribeAdmitted`]
+/// / [`DescribeOpaque`] dispatch. Construct it through
+/// [`crate::admitted_set!`], which performs the autoref method
+/// resolution.
+pub struct AdmittedSet<T, R>(PhantomData<fn() -> (T, R)>);
+
+impl<T, R> AdmittedSet<T, R> {
+    /// Build the probe (no data — the types are the payload).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<T, R> Default for AdmittedSet<T, R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The schema-backed arm of the residual-states dispatch: renders
+/// `R::schema()`'s `Display` tree. Selected by method resolution
+/// whenever `R: SchemaRule<T>` — see [`crate::admitted_set!`].
+pub trait DescribeAdmitted {
+    /// Render the admitted set's constructive description.
+    fn describe_admitted(&self) -> String;
+}
+
+impl<T, R> DescribeAdmitted for AdmittedSet<T, R>
+where
+    T: 'static,
+    R: SchemaRule<T>,
+{
+    fn describe_admitted(&self) -> String {
+        use alloc::string::ToString as _;
+        R::schema().to_string()
+    }
+}
+
+/// The fallback arm of the residual-states dispatch.
+///
+/// A rule WITHOUT a [`SchemaRule`] impl has no constructive
+/// description, and the report says so honestly — the text is
+/// produced from the impl's absence (autoref method resolution
+/// falls through to this reference-receiver impl), never from an
+/// `Opaque` schema node.
+pub trait DescribeOpaque {
+    /// Render the absence marker for a hand-written `refine`.
+    fn describe_admitted(&self) -> String {
+        String::from("opaque (hand-written refine)")
+    }
+}
+
+impl<T, R> DescribeOpaque for &AdmittedSet<T, R> {}
+
+/// Render one `Refined<T, R>`'s admitted set for the residual-states
+/// report (R-S2).
+///
+/// The rendering is the rule's [`Schema`] `Display` tree when
+/// `R: SchemaRule<T>`, or `"opaque (hand-written refine)"` from the
+/// impl's ABSENCE otherwise — decided at compile time by autoref
+/// method resolution, with no `Opaque` node anywhere in the schema
+/// language.
+///
+/// The rendered text is UNSTABLE across whittle versions (the same
+/// posture as [`Schema`]'s `Display`): render for reviewers, never
+/// parse.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::admitted_set;
+/// use whittle_core::primitive::Within;
+///
+/// // Schema-backed: the constructive description.
+/// assert_eq!(admitted_set!(i32, Within<0, 100>), "int in 0..=100");
+///
+/// // Hand-written refine, no SchemaRule impl: absence renders.
+/// use whittle_core::Rule;
+/// enum Even {}
+/// #[derive(Debug)]
+/// struct Odd;
+/// impl Rule<i32> for Even {
+///     type Error = Odd;
+///     fn refine(raw: i32) -> Result<i32, Self::Error> {
+///         if raw % 2 == 0 { Ok(raw) } else { Err(Odd) }
+///     }
+/// }
+/// assert_eq!(admitted_set!(i32, Even), "opaque (hand-written refine)");
+/// ```
+#[macro_export]
+macro_rules! admitted_set {
+    ($T:ty, $R:ty) => {{
+        #[expect(
+            unused_imports,
+            reason = "exactly one of the two dispatch traits resolves per call site"
+        )]
+        use $crate::schema::{DescribeAdmitted as _, DescribeOpaque as _};
+        (&$crate::schema::AdmittedSet::<$T, $R>::new()).describe_admitted()
+    }};
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
@@ -2776,6 +2896,52 @@ mod tests {
             Bound::Inclusive(Scalar::Int(lo)),
             Bound::Inclusive(Scalar::Int(hi)),
         )
+    }
+
+    // ─── R-S2: the residual-states rendering. ──────────────────────
+
+    /// Test rule with a hand-written refine and NO `SchemaRule`
+    /// impl: the report must render its absence.
+    enum HandWritten {}
+
+    impl crate::Rule<i32> for HandWritten {
+        type Error = ();
+        fn refine(raw: i32) -> Result<i32, Self::Error> {
+            if raw.is_positive() { Ok(raw) } else { Err(()) }
+        }
+    }
+
+    #[test]
+    fn admitted_set_renders_the_schema_tree_for_schema_rules() {
+        assert_eq!(
+            crate::admitted_set!(i32, crate::primitive::Within<0, 100>),
+            "int in 0..=100",
+        );
+        // Composites render their full tree (the NonZero union).
+        assert_eq!(
+            crate::admitted_set!(i32, crate::primitive::NonZero),
+            "any of\n  int in ..=-1\n  int in 1..",
+        );
+    }
+
+    #[test]
+    fn admitted_set_renders_absence_for_hand_written_refines() {
+        // Pin the fixture's refine on both sides first: the report
+        // text speaks for the rule, not instead of it.
+        assert_eq!(<HandWritten as crate::Rule<i32>>::refine(2), Ok(2));
+        assert_eq!(<HandWritten as crate::Rule<i32>>::refine(0), Err(()));
+        assert_eq!(
+            crate::admitted_set!(i32, HandWritten),
+            "opaque (hand-written refine)",
+        );
+    }
+
+    #[test]
+    fn admitted_set_probe_constructs_via_default_too() {
+        use super::DescribeAdmitted as _;
+        let probe: super::AdmittedSet<i32, crate::primitive::Within<0, 1>> =
+            super::AdmittedSet::default();
+        assert_eq!(probe.describe_admitted(), "int in 0..=1");
     }
 
     // ─── Scalar: structural order vs denotational comparison. ─────
