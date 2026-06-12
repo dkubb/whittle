@@ -62,6 +62,12 @@ use crate::rule::Rule;
 /// datetimes as seconds since the Unix epoch, decimal mantissas)
 /// widen into [`Scalar::Int`]; floats widen into [`Scalar::Float`].
 ///
+/// Deliberately transparent: every `Scalar` is valid data (`NaN`
+/// included — the structural order places it above `+inf`). The
+/// interval-level invariants (no `NaN` endpoint, `-0.0`
+/// canonicalisation, regime match) belong to [`Schema::interval`],
+/// which asserts them on construction.
+///
 /// # Ordering vs membership
 ///
 /// `Eq`/`Ord` are the *structural* total order used for canonical
@@ -239,6 +245,11 @@ impl ScalarKind {
 }
 
 /// One end of an [`SchemaView::Interval`].
+///
+/// Deliberately transparent: any `Bound` is valid data on its own;
+/// the endpoint invariants (`lo <= hi`, no `NaN`, regime match) are
+/// relations between bounds and a kind, asserted by
+/// [`Schema::interval`] where the relation exists.
 ///
 /// Only inclusive finite endpoints exist: every shipped rule's
 /// admitted set is closed at its finite ends (open integer bounds
@@ -594,7 +605,10 @@ pub enum Morphism {
 ///
 /// The verdict is read off the schema itself — the single
 /// constructive determinant — so a test consuming the matrix never
-/// restates the bounds.
+/// restates the bounds. Deliberately transparent: the struct is a
+/// descriptive output record with no internal invariant (tests
+/// construct expected rows literally); `admitted` is only
+/// authoritative in rows the folds return.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScalarBoundary {
     /// Carrier domain of the test point.
@@ -610,6 +624,9 @@ pub struct ScalarBoundary {
 /// ([`Schema::string_boundaries`]): a label, near-miss, or
 /// length/alphabet edge case, paired with the schema's own
 /// membership verdict.
+///
+/// Transparent for the same reason as [`ScalarBoundary`]: a
+/// descriptive output record with no internal invariant.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StringBoundary {
     /// The candidate string.
@@ -2869,6 +2886,75 @@ mod tests {
         assert_eq!(
             percent.scalar_membership(ScalarKind::Integer, &Scalar::Float(50.0)),
             Some(false),
+        );
+    }
+
+    #[test]
+    fn view_exposes_every_node_shape() {
+        // One canonical tree per node kind; the view mirrors each
+        // shape with borrowed payloads and recurses through children.
+        let interval = int_interval(0, 9);
+        assert_eq!(
+            interval.view(),
+            SchemaView::Interval {
+                kind: ScalarKind::Integer,
+                lo: Bound::Inclusive(Scalar::Int(0)),
+                hi: Bound::Inclusive(Scalar::Int(9)),
+            },
+        );
+
+        let alphabet = CharSet::from_ranges([('0', '9')]);
+        let string = Schema::string(LenBound::new(1, 8), LenUnit::Bytes, alphabet.clone(), None);
+        assert_eq!(
+            string.view(),
+            SchemaView::Str {
+                len: LenBound::new(1, 8),
+                unit: LenUnit::Bytes,
+                alphabet: &alphabet,
+                first: None,
+            },
+        );
+
+        assert_eq!(Schema::regex("^a$").view(), SchemaView::Regex("^a$"),);
+        assert_eq!(
+            Schema::enumerated(&["on", "off"]).view(),
+            SchemaView::Enumerated(&["on", "off"]),
+        );
+
+        let collection = Schema::collection(LenBound::new(0, 3), interval.clone(), true, false);
+        assert_eq!(
+            collection.view(),
+            SchemaView::Collection {
+                len: LenBound::new(0, 3),
+                element: &interval,
+                sorted: true,
+                unique: false,
+            },
+        );
+
+        let low = int_interval(0, 1);
+        let high = int_interval(5, 9);
+        let union = Schema::union(vec![low.clone(), high.clone()]);
+        assert_eq!(
+            union.view(),
+            SchemaView::Union(&[low.clone(), high.clone()]),
+        );
+
+        let date = Schema::interval(
+            ScalarKind::Date,
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Inclusive(Scalar::Int(9)),
+        );
+        let intersection = Schema::intersection(vec![low.clone(), date.clone()]);
+        assert_eq!(intersection.view(), SchemaView::Intersection(&[low, date]),);
+
+        let trimmed = Schema::canonicalized(Morphism::Trim, high.clone());
+        assert_eq!(
+            trimmed.view(),
+            SchemaView::Canonicalized {
+                morphism: Morphism::Trim,
+                inner: &high,
+            },
         );
     }
 
