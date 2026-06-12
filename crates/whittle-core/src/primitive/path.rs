@@ -141,6 +141,13 @@ impl Rule<String> for RelativePath {
     }
 }
 
+// ─── `PureFilter` impl. ───────────────────────────────────────────
+//
+// SOUNDNESS: `refine` inspects the path's segments and returns the
+// input String itself on acceptance — no canonicalisation.
+
+impl crate::rule::PureFilter for RelativePath {}
+
 // ─── Serde `DeserializeRule` impl: default parse-then-refine. ─────
 
 #[cfg(feature = "serde")]

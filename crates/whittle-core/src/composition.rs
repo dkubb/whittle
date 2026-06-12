@@ -681,6 +681,61 @@ where
 {
 }
 
+// ─── `PureFilter` propagation. ────────────────────────────────────
+//
+// SOUNDNESS: `And` / `Or` / `All` / `Any` / `MapErr` only forward
+// their operands' `refine` outputs, so they are the identity on
+// admissible input exactly when every operand is — the marker
+// propagates through operand bounds. `Not` and `Xor` are pure
+// UNCONDITIONALLY: their accept path returns
+// `T::from_i128(raw.into_i128())`, the lossless widening round-trip
+// of the input itself, regardless of what the (rejecting or
+// accepting) operands would have produced.
+
+impl<A, B> crate::rule::PureFilter for And<A, B>
+where
+    A: crate::rule::PureFilter,
+    B: crate::rule::PureFilter,
+{
+}
+
+impl<A, B> crate::rule::PureFilter for Or<A, B>
+where
+    A: crate::rule::PureFilter,
+    B: crate::rule::PureFilter,
+{
+}
+
+impl<R> crate::rule::PureFilter for Not<R> {}
+
+impl<A, B> crate::rule::PureFilter for Xor<A, B> {}
+
+impl<R, M> crate::rule::PureFilter for MapErr<R, M> where R: crate::rule::PureFilter {}
+
+macro_rules! impl_pure_filter_for_arity {
+    ($($Ri:ident),+ $(,)?) => {
+        impl<$($Ri),+> crate::rule::PureFilter for All<($($Ri,)+)>
+        where
+            $($Ri: crate::rule::PureFilter,)+
+        {
+        }
+
+        impl<$($Ri),+> crate::rule::PureFilter for Any<($($Ri,)+)>
+        where
+            $($Ri: crate::rule::PureFilter,)+
+        {
+        }
+    };
+}
+
+impl_pure_filter_for_arity!(R1, R2);
+impl_pure_filter_for_arity!(R1, R2, R3);
+impl_pure_filter_for_arity!(R1, R2, R3, R4);
+impl_pure_filter_for_arity!(R1, R2, R3, R4, R5);
+impl_pure_filter_for_arity!(R1, R2, R3, R4, R5, R6);
+impl_pure_filter_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+impl_pure_filter_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
 // `And<A, B>` samples both operands together and keeps whichever

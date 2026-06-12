@@ -1680,6 +1680,24 @@ impl<const LEN: usize> Rule<String> for HexFixedAny<LEN> {
     }
 }
 
+// ─── `PureFilter` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: every string rule below measures length or inspects
+// characters and returns the input String itself on acceptance — no
+// canonicalisation anywhere in this module (the canonicalising
+// adapters live in `crate::transform` and are deliberately NOT pure
+// filters).
+
+impl<const MIN: usize, const MAX: usize> crate::rule::PureFilter for LenChars<MIN, MAX> {}
+impl<const MIN: usize, const MAX: usize> crate::rule::PureFilter for LenBytes<MIN, MAX> {}
+impl crate::rule::PureFilter for NonEmpty {}
+impl<P: CharPredicate> crate::rule::PureFilter for EachChar<P> {}
+impl<P: CharPredicate> crate::rule::PureFilter for FirstChar<P> {}
+#[cfg(feature = "hex")]
+impl<const LEN: usize> crate::rule::PureFilter for HexFixedLower<LEN> {}
+#[cfg(feature = "hex")]
+impl<const LEN: usize> crate::rule::PureFilter for HexFixedAny<LEN> {}
+
 // ─── `SchemaRule` impls. ──────────────────────────────────────────
 //
 // Each schema reads the SAME const generics and predicate sets

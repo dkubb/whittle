@@ -235,6 +235,19 @@ pub trait ArbitraryDate: Rule<NaiveDate> {
     fn arbitrary_date() -> Self::Strategy;
 }
 
+// ─── `PureFilter` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: every date rule's `refine` compares against compile-
+// time `NaiveDate` bounds and returns the input itself on
+// acceptance — no canonicalisation anywhere in the family.
+
+impl<const MIN_DAYS_FROM_CE: i32> crate::rule::PureFilter for DateAtLeast<MIN_DAYS_FROM_CE> {}
+impl<const MAX_DAYS_FROM_CE: i32> crate::rule::PureFilter for DateAtMost<MAX_DAYS_FROM_CE> {}
+impl<const MIN_DAYS_FROM_CE: i32, const MAX_DAYS_FROM_CE: i32> crate::rule::PureFilter
+    for DateInRange<MIN_DAYS_FROM_CE, MAX_DAYS_FROM_CE>
+{
+}
+
 // ─── `SchemaRule` impls. ──────────────────────────────────────────
 //
 // Date schemas are integer intervals of kind `Date` whose endpoints

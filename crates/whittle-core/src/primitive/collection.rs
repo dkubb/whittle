@@ -949,6 +949,21 @@ where
     }
 }
 
+// ─── `PureFilter` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: the length, key-uniqueness, ordering, and predicate
+// rules inspect the vector and return it unchanged on acceptance.
+// `AllItems<R>` rebuilds the vector from each element's
+// `R::refine` output, so it is the identity exactly when `R` is —
+// the marker propagates through the operand bound.
+
+impl<const MIN: usize, const MAX: usize> crate::rule::PureFilter for LenItems<MIN, MAX> {}
+impl<R: crate::rule::PureFilter> crate::rule::PureFilter for AllItems<R> {}
+impl<T, K> crate::rule::PureFilter for UniqueByKey<T, K> {}
+impl<T, K> crate::rule::PureFilter for Sorted<T, K> {}
+impl<P> crate::rule::PureFilter for NoneOf<P> {}
+impl<P> crate::rule::PureFilter for AnyOf<P> {}
+
 // ─── Serde `DeserializeRule` impls. ───────────────────────────────
 //
 // `LenItems<MIN, MAX>` overrides the hook to enforce its length

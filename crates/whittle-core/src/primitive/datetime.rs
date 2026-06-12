@@ -243,6 +243,25 @@ pub trait ArbitraryDateTime: Rule<DateTime<Utc>> {
     fn arbitrary_datetime() -> Self::Strategy;
 }
 
+// ─── `PureFilter` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: every datetime rule's `refine` compares against
+// compile-time `DateTime<Utc>` bounds and returns the input itself
+// on acceptance — no canonicalisation anywhere in the family.
+
+impl<const MIN_SECS_SINCE_EPOCH: i64> crate::rule::PureFilter
+    for DateTimeAtLeast<MIN_SECS_SINCE_EPOCH>
+{
+}
+impl<const MAX_SECS_SINCE_EPOCH: i64> crate::rule::PureFilter
+    for DateTimeAtMost<MAX_SECS_SINCE_EPOCH>
+{
+}
+impl<const MIN_SECS_SINCE_EPOCH: i64, const MAX_SECS_SINCE_EPOCH: i64> crate::rule::PureFilter
+    for DateTimeInRange<MIN_SECS_SINCE_EPOCH, MAX_SECS_SINCE_EPOCH>
+{
+}
+
 // ─── `SchemaRule` impls. ──────────────────────────────────────────
 //
 // Datetime schemas are integer intervals of kind `DateTime` whose

@@ -142,6 +142,13 @@ impl<const RE: &'static str> Rule<String> for Pattern<RE> {
     }
 }
 
+// ─── `PureFilter` impl. ───────────────────────────────────────────
+//
+// SOUNDNESS: `refine` is a whole-string match test returning the
+// input itself on acceptance — no canonicalisation.
+
+impl<const RE: &'static str> crate::rule::PureFilter for Pattern<RE> {}
+
 // ─── `SchemaRule` impl. ───────────────────────────────────────────
 
 impl<const RE: &'static str> SchemaRule<String> for Pattern<RE> {

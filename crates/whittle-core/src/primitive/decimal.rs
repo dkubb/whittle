@@ -365,6 +365,21 @@ pub trait ArbitraryDecimal: Rule<Decimal> {
     fn arbitrary_decimal() -> Self::Strategy;
 }
 
+// ─── `PureFilter` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: every decimal rule's `refine` inspects sign, scale,
+// precision, or range and returns the input itself on acceptance —
+// no canonicalisation (DecimalScale notably VALIDATES the scale, it
+// never rescales).
+
+impl crate::rule::PureFilter for DecimalPositive {}
+impl<const S: u8> crate::rule::PureFilter for DecimalScale<S> {}
+impl<const P: u8> crate::rule::PureFilter for DecimalPrecision<P> {}
+impl<const MIN_REPR: i128, const MAX_REPR: i128, const SCALE: u8> crate::rule::PureFilter
+    for DecimalInRange<MIN_REPR, MAX_REPR, SCALE>
+{
+}
+
 // ─── `SchemaRule` impls. ──────────────────────────────────────────
 //
 // `DecimalInRange` is the decimal range rule: its schema is an

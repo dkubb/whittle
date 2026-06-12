@@ -69,6 +69,72 @@ where
     fn refine(raw: T) -> Result<T, Self::Error>;
 }
 
+/// Marker: rules whose `refine` is the IDENTITY on admissible input.
+///
+/// A pure predicate returns `Ok(raw)` unchanged, never a
+/// canonicalisation (IDEA §5.1; the planned artifact named in
+/// ARCHITECTURE §15.5, landed with its first consumer: composition
+/// schemas).
+///
+/// For a pure filter the accepted set and the carried set
+/// (`range(refine)`) coincide, which is what lets derived
+/// integrations compose: the combinator
+/// [`SchemaRule`](crate::SchemaRule) impls
+/// (`And`/`All` as `Intersection`, `Or`/`Any` as `Union`) are sound
+/// only over pure operands — a canonicalising operand can move a
+/// value out of (or fail to produce a value inside) the other
+/// operand's set, so the set algebra stops describing
+/// `range(refine)`. `And<LenChars<3, 3>, Trim<NonEmpty>>` is the
+/// counterexample: `"a  "` is in both operands' sets, but the
+/// composition carries `"a"`, which is in neither intersection
+/// claim. Bounding the combinator schemas on this marker makes the
+/// unsound composition ABSENT rather than wrong.
+///
+/// # Implementor obligation
+///
+/// Implement only when, for EVERY input `x`, `Self::refine(x)` is
+/// either `Err(_)` or `Ok(x)` with `x` returned bit-for-bit
+/// unchanged. The obligation must hold for every admissible input,
+/// not only for the shapes a particular caller produces. Follows
+/// the same capability-marker pattern as
+/// [`StableUnderTrim`](crate::transform::StableUnderTrim) (see its
+/// four-step audit recipe). Transformers
+/// ([`Trim`](crate::transform::Trim) and the case foldings) are
+/// deliberately NOT pure filters: rewriting input is their purpose.
+///
+/// For composed rules the marker propagates: `And` / `Or` / `All` /
+/// `Any` / `MapErr` are pure iff their operands are (the kernel
+/// provides those impls); `Not` / `Xor` are pure unconditionally
+/// (their accept path returns the numeric input's own widened
+/// round-trip).
+///
+/// # Examples
+///
+/// The marker propagates through compositions of pure rules:
+///
+/// ```
+/// use whittle_core::{And, PureFilter};
+/// use whittle_core::primitive::{AtLeast, AtMost};
+///
+/// fn assert_pure<R: PureFilter>() {}
+/// assert_pure::<AtLeast<0>>();
+/// assert_pure::<And<AtLeast<0>, AtMost<100>>>();
+/// ```
+///
+/// Transformers are deliberately absent — and the absence
+/// propagates, so a composition containing one is not pure either:
+///
+/// ```compile_fail
+/// use whittle_core::PureFilter;
+/// use whittle_core::primitive::NonEmpty;
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_pure<R: PureFilter>() {}
+/// // error[E0277]: Trim<NonEmpty> does not implement PureFilter
+/// assert_pure::<Trim<NonEmpty>>();
+/// ```
+pub trait PureFilter {}
+
 /// A refined value: a `T` whose inner contents satisfy rule `R`.
 ///
 /// `#[repr(transparent)]` plus a zero-sized phantom guarantees the

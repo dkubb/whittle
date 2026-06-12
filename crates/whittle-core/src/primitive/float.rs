@@ -538,6 +538,25 @@ impl<
     }
 }
 
+// ─── `PureFilter` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: every float rule's `refine` is an IEEE-754 class or
+// range test returning the input itself on acceptance — no
+// canonicalisation anywhere in the family.
+
+impl crate::rule::PureFilter for NotNan {}
+impl crate::rule::PureFilter for NotInfinite {}
+impl crate::rule::PureFilter for Finite {}
+impl<
+    const MIN_NUMERATOR: i64,
+    const MIN_DENOMINATOR: i64,
+    const MAX_NUMERATOR: i64,
+    const MAX_DENOMINATOR: i64,
+> crate::rule::PureFilter
+    for InClosedRange<MIN_NUMERATOR, MIN_DENOMINATOR, MAX_NUMERATOR, MAX_DENOMINATOR>
+{
+}
+
 // ─── `SchemaRule` impls. ──────────────────────────────────────────
 //
 // Float schemas are closed intervals over `f64` whose membership is

@@ -822,6 +822,19 @@ crate::deserialize_rule! {
     where [T: Numeric]
 }
 
+// ─── `PureFilter` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: every numeric rule's `refine` compares the widened
+// input against const-generic bounds and returns the input itself
+// on acceptance — no canonicalisation anywhere in the family.
+
+impl<const MIN: i128, const MAX: i128> crate::rule::PureFilter for Within<MIN, MAX> {}
+impl<const MIN: i128> crate::rule::PureFilter for AtLeast<MIN> {}
+impl<const MAX: i128> crate::rule::PureFilter for AtMost<MAX> {}
+impl<const MIN: i128> crate::rule::PureFilter for GreaterThan<MIN> {}
+impl<const MAX: i128> crate::rule::PureFilter for LessThan<MAX> {}
+impl<const N: i128> crate::rule::PureFilter for EqualTo<N> {}
+
 // ─── `SchemaRule` impls. ──────────────────────────────────────────
 //
 // Each schema reads the SAME const generics `refine` reads — the
