@@ -8,6 +8,7 @@
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::{Refined, Rule};
+use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
 
 /// Inclusive numeric range: `MIN <= value <= MAX`.
 ///
@@ -821,6 +822,146 @@ crate::deserialize_rule! {
     where [T: Numeric]
 }
 
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// Each schema reads the SAME const generics `refine` reads — the
+// bound itself is the single determinant — and is interpreted within
+// the carrier's embedding (`AtMost<300>` over `u8` still describes
+// the admitted set exactly; values above `u8::MAX` are outside the
+// embedding). Open bounds normalise to the adjacent inclusive bound,
+// exactly as `refine`'s `<`/`>` comparisons admit them.
+
+impl<T, const MIN: i128, const MAX: i128> SchemaRule<T> for Within<MIN, MAX>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(MIN)),
+            Bound::Inclusive(Scalar::Int(MAX)),
+        )
+    }
+}
+
+impl<T, const MIN: i128> SchemaRule<T> for AtLeast<MIN>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(MIN)),
+            Bound::Unbounded,
+        )
+    }
+}
+
+impl<T, const MAX: i128> SchemaRule<T> for AtMost<MAX>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(MAX)),
+        )
+    }
+}
+
+impl<T, const MIN: i128> SchemaRule<T> for GreaterThan<MIN>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        // `MIN + 1` is the smallest admitted integer; VALID
+        // guarantees the addition does not overflow (the same
+        // invariant the strategy relies on).
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(MIN + 1)),
+            Bound::Unbounded,
+        )
+    }
+}
+
+impl<T, const MAX: i128> SchemaRule<T> for LessThan<MAX>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        // `MAX - 1` is the largest admitted integer; VALID
+        // guarantees the subtraction does not underflow.
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(MAX - 1)),
+        )
+    }
+}
+
+impl<T, const N: i128> SchemaRule<T> for EqualTo<N>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(N)),
+            Bound::Inclusive(Scalar::Int(N)),
+        )
+    }
+}
+
+// `NotEqualTo<N>` is `Not<EqualTo<N>>`: the complement of a point is
+// the union of the two adjacent half-bounded intervals. At an i128
+// extreme one side is empty and the union collapses to the single
+// remaining interval. The bounds mirror `Not<R>`'s `Rule` impl
+// (`T: Numeric + Copy`, operand error `NumericError`).
+impl<T, const N: i128> SchemaRule<T> for crate::composition::Not<EqualTo<N>>
+where
+    T: Numeric + Copy,
+{
+    #[inline]
+    fn schema() -> Schema {
+        point_complement_schema(N)
+    }
+}
+
+/// The complement of the single integer `point`: the union of the
+/// two adjacent half-bounded intervals, with an empty side dropped
+/// at the `i128` extremes. Non-generic so every `NotEqualTo<N>`
+/// instantiation shares one function (the per-`N` branches could
+/// never both be taken inside a single monomorphisation).
+fn point_complement_schema(point: i128) -> Schema {
+    let mut members = alloc::vec::Vec::with_capacity(2);
+    if point > i128::MIN {
+        members.push(Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(point - 1)),
+        ));
+    }
+    if point < i128::MAX {
+        members.push(Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(point + 1)),
+            Bound::Unbounded,
+        ));
+    }
+    Schema::union(members)
+}
+
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
 //
 // Each rule's strategy emits values that are admissible by
@@ -940,7 +1081,8 @@ mod tests {
     use alloc::string::ToString;
 
     use super::{
-        AtLeast, AtMost, GreaterThan, LessThan, Negative, NonZero, NumericError, Positive, Within,
+        AtLeast, AtMost, EqualTo, GreaterThan, LessThan, Negative, NonZero, NotEqualTo,
+        NumericError, Positive, Within,
     };
     use crate::rule::{Refined, Rule};
 
@@ -1620,6 +1762,166 @@ mod tests {
         }
         assert!(saw_min, "edge-biased Within must emit MIN");
         assert!(saw_max, "edge-biased Within must emit MAX");
+    }
+
+    // ─── SchemaRule: the constructive descriptions. ────────────────
+    //
+    // Each schema must read the same const generics `refine` reads;
+    // the structural asserts pin the shape, and the cross-checks
+    // (behind `proptest`) are the mechanical oracle between the two
+    // determinants.
+
+    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+
+    fn closed(lo: i128, hi: i128) -> Schema {
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(lo)),
+            Bound::Inclusive(Scalar::Int(hi)),
+        )
+    }
+
+    fn at_least(lo: i128) -> Schema {
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(lo)),
+            Bound::Unbounded,
+        )
+    }
+
+    fn at_most(hi: i128) -> Schema {
+        Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(hi)),
+        )
+    }
+
+    #[test]
+    fn schema_reads_the_same_bounds_refine_reads() {
+        // Two carrier instantiations per impl: the schema is a
+        // property of the rule's const generics, not the carrier.
+        assert_eq!(
+            <Within<0, 100> as SchemaRule<i32>>::schema(),
+            closed(0, 100)
+        );
+        assert_eq!(<Within<0, 100> as SchemaRule<u8>>::schema(), closed(0, 100));
+        assert_eq!(<AtLeast<10> as SchemaRule<i32>>::schema(), at_least(10));
+        assert_eq!(<AtLeast<10> as SchemaRule<i64>>::schema(), at_least(10));
+        assert_eq!(<AtMost<10> as SchemaRule<i32>>::schema(), at_most(10));
+        assert_eq!(<AtMost<10> as SchemaRule<u16>>::schema(), at_most(10));
+        // Open bounds normalise to the adjacent inclusive bound.
+        assert_eq!(<GreaterThan<10> as SchemaRule<i32>>::schema(), at_least(11));
+        assert_eq!(<GreaterThan<10> as SchemaRule<u32>>::schema(), at_least(11));
+        assert_eq!(<LessThan<100> as SchemaRule<i32>>::schema(), at_most(99));
+        assert_eq!(<LessThan<100> as SchemaRule<i8>>::schema(), at_most(99));
+        // The singleton rule is the degenerate interval.
+        assert_eq!(<EqualTo<42> as SchemaRule<i32>>::schema(), closed(42, 42));
+        assert_eq!(<EqualTo<42> as SchemaRule<u8>>::schema(), closed(42, 42));
+    }
+
+    #[test]
+    fn schema_not_equal_to_is_the_two_interval_union() {
+        let expected = Schema::union(alloc::vec![at_most(-1), at_least(1)]);
+        assert_eq!(<NotEqualTo<0> as SchemaRule<i32>>::schema(), expected);
+        assert_eq!(
+            <NotEqualTo<0> as SchemaRule<i16>>::schema(),
+            Schema::union(alloc::vec![at_most(-1), at_least(1)]),
+        );
+    }
+
+    #[test]
+    fn schema_not_equal_to_collapses_at_the_i128_extremes() {
+        // The empty side of the complement drops out and the union
+        // collapses to the single remaining interval.
+        assert_eq!(
+            <NotEqualTo<{ i128::MIN }> as SchemaRule<i128>>::schema(),
+            at_least(i128::MIN + 1),
+        );
+        assert_eq!(
+            <NotEqualTo<{ i128::MAX }> as SchemaRule<i128>>::schema(),
+            at_most(i128::MAX - 1),
+        );
+    }
+
+    #[test]
+    fn schema_aliases_inherit_their_alias_definitions() {
+        assert_eq!(<Positive as SchemaRule<i32>>::schema(), at_least(1));
+        assert_eq!(<Negative as SchemaRule<i32>>::schema(), at_most(-1));
+        assert_eq!(
+            <NonZero as SchemaRule<i32>>::schema(),
+            Schema::union(alloc::vec![at_most(-1), at_least(1)]),
+        );
+    }
+
+    #[cfg(feature = "proptest")]
+    mod schema_cross_checks {
+        use super::super::{AtLeast, AtMost, EqualTo, GreaterThan, LessThan, NonZero, Within};
+        use crate::schema::{Scalar, ScalarKind};
+        use crate::testing::prop_schema_cross_check;
+
+        #[expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+        )]
+        fn embed_i32(value: &i32) -> (ScalarKind, Scalar) {
+            (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
+        }
+
+        fn extract_i32(_kind: ScalarKind, scalar: Scalar) -> i32 {
+            i32::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits i32")
+        }
+
+        #[expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+        )]
+        fn embed_u8(value: &u8) -> (ScalarKind, Scalar) {
+            (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
+        }
+
+        fn extract_u8(_kind: ScalarKind, scalar: Scalar) -> u8 {
+            u8::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits u8")
+        }
+
+        #[expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+        )]
+        fn embed_i16(value: &i16) -> (ScalarKind, Scalar) {
+            (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
+        }
+
+        fn extract_i16(_kind: ScalarKind, scalar: Scalar) -> i16 {
+            i16::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits i16")
+        }
+
+        /// Schema endpoints pass refine and strategy samples are
+        /// schema members, for every numeric rule over `i32`.
+        #[test]
+        fn schema_cross_checks_numeric_rules_over_i32() {
+            prop_schema_cross_check::<i32, Within<0, 100>>(embed_i32, extract_i32);
+            prop_schema_cross_check::<i32, AtLeast<10>>(embed_i32, extract_i32);
+            prop_schema_cross_check::<i32, AtMost<10>>(embed_i32, extract_i32);
+            prop_schema_cross_check::<i32, GreaterThan<10>>(embed_i32, extract_i32);
+            prop_schema_cross_check::<i32, LessThan<100>>(embed_i32, extract_i32);
+            prop_schema_cross_check::<i32, EqualTo<42>>(embed_i32, extract_i32);
+            prop_schema_cross_check::<i32, NonZero>(embed_i32, extract_i32);
+        }
+
+        /// Second carrier monomorphisations per impl. `NonZero`'s
+        /// schema endpoint `-1` needs a signed carrier, so it pairs
+        /// with `i16` instead of `u8`.
+        #[test]
+        fn schema_cross_checks_numeric_rules_over_second_carriers() {
+            prop_schema_cross_check::<u8, Within<0, 100>>(embed_u8, extract_u8);
+            prop_schema_cross_check::<u8, AtLeast<10>>(embed_u8, extract_u8);
+            prop_schema_cross_check::<u8, AtMost<10>>(embed_u8, extract_u8);
+            prop_schema_cross_check::<u8, GreaterThan<10>>(embed_u8, extract_u8);
+            prop_schema_cross_check::<u8, LessThan<100>>(embed_u8, extract_u8);
+            prop_schema_cross_check::<u8, EqualTo<42>>(embed_u8, extract_u8);
+            prop_schema_cross_check::<i16, NonZero>(embed_i16, extract_i16);
+        }
     }
 
     #[cfg(feature = "proptest")]

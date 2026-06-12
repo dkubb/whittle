@@ -21,6 +21,7 @@
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
 
 /// `f32` / `f64` extras shared by every float rule below.
 ///
@@ -87,6 +88,21 @@ pub trait Float: Copy + PartialOrd + 'static + sealed::Sealed {
     /// assert_eq!(<f32 as Float>::into_f64(0.25_f32), 0.25_f64);
     /// ```
     fn into_f64(self) -> f64;
+
+    /// This float type's largest finite value, widened losslessly to
+    /// `f64`. [`Finite`]'s schema reads it so the described interval
+    /// is the carrier's own finite range (`f32::MAX` for `f32`), not
+    /// `f64`'s.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Float;
+    ///
+    /// assert_eq!(<f64 as Float>::FINITE_MAX, f64::MAX);
+    /// assert_eq!(<f32 as Float>::FINITE_MAX, f64::from(f32::MAX));
+    /// ```
+    const FINITE_MAX: f64;
 }
 
 mod sealed {
@@ -130,6 +146,8 @@ impl Float for f32 {
     fn into_f64(self) -> f64 {
         f64::from(self)
     }
+
+    const FINITE_MAX: f64 = Self::MAX as f64;
 }
 
 impl Float for f64 {
@@ -139,6 +157,12 @@ impl Float for f64 {
     fn into_f64(self) -> f64 {
         self
     }
+
+    #[expect(
+        clippy::use_self,
+        reason = "the trait declares the const as f64; Self happens to be f64 here"
+    )]
+    const FINITE_MAX: f64 = Self::MAX;
 }
 
 /// `Float` types that expose `proptest` strategies for the float
@@ -511,6 +535,75 @@ impl<
             });
         }
         Ok(raw)
+    }
+}
+
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// Float schemas are closed intervals over `f64` whose membership is
+// decided by IEEE-754 comparisons — the same comparisons `refine`
+// uses — so NaN (which compares false against every bound) is a
+// member of no interval, and NaN exclusion needs no dedicated node:
+//
+// - `NotNan` is `[-inf, +inf]`: every non-NaN value, including the
+//   infinities.
+// - `Finite` is `[-FINITE_MAX, FINITE_MAX]` for the carrier's own
+//   largest finite value: the infinities fall outside, and NaN is
+//   outside every interval.
+// - `InClosedRange` reads its endpoints through the same
+//   `F::from_ratio` conversion `refine` uses (single determinant).
+//
+// `NotInfinite` has NO schema, deliberately: its admitted set
+// (every finite value AND NaN, excluding exactly the two infinities)
+// is not a closed interval under IEEE comparisons — NaN membership
+// cannot be expressed by bounds that exclude the infinities. It
+// stays schema-less until a node can describe it honestly (absence
+// of impl is the design's "no schema" state; there is no Opaque
+// node).
+
+impl<F: Float> SchemaRule<F> for NotNan {
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(f64::NEG_INFINITY)),
+            Bound::Inclusive(Scalar::Float(f64::INFINITY)),
+        )
+    }
+}
+
+impl<F: Float> SchemaRule<F> for Finite {
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(-F::FINITE_MAX)),
+            Bound::Inclusive(Scalar::Float(F::FINITE_MAX)),
+        )
+    }
+}
+
+impl<
+    F: Float,
+    const MIN_NUMERATOR: i64,
+    const MIN_DENOMINATOR: i64,
+    const MAX_NUMERATOR: i64,
+    const MAX_DENOMINATOR: i64,
+> SchemaRule<F> for InClosedRange<MIN_NUMERATOR, MIN_DENOMINATOR, MAX_NUMERATOR, MAX_DENOMINATOR>
+{
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        // The same `from_ratio` lift `refine` performs, widened to
+        // the schema's f64 universe, so the endpoints are bitwise
+        // the values the rule compares against.
+        let lo = F::from_ratio(MIN_NUMERATOR, MIN_DENOMINATOR).into_f64();
+        let hi = F::from_ratio(MAX_NUMERATOR, MAX_DENOMINATOR).into_f64();
+        Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(lo)),
+            Bound::Inclusive(Scalar::Float(hi)),
+        )
     }
 }
 
@@ -934,6 +1027,111 @@ mod tests {
         let strategy_neg = <f64 as ArbitraryFloat>::arbitrary_in_closed_range(-1.0_f64, -1.0_f64);
         let tree = strategy_neg.new_tree(&mut runner).unwrap();
         assert_eq!(tree.current(), -1.0_f64);
+    }
+
+    // ─── SchemaRule: the constructive descriptions. ────────────────
+
+    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+
+    fn float_interval(lo: f64, hi: f64) -> Schema {
+        Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(lo)),
+            Bound::Inclusive(Scalar::Float(hi)),
+        )
+    }
+
+    #[test]
+    fn schema_not_nan_is_the_full_extended_interval() {
+        // [-inf, +inf] under IEEE membership: every non-NaN value,
+        // the infinities included, NaN excluded (it compares false
+        // against both bounds). Same schema for both carriers.
+        let expected = float_interval(f64::NEG_INFINITY, f64::INFINITY);
+        assert_eq!(<NotNan as SchemaRule<f64>>::schema(), expected);
+        assert_eq!(
+            <NotNan as SchemaRule<f32>>::schema(),
+            float_interval(f64::NEG_INFINITY, f64::INFINITY),
+        );
+    }
+
+    #[test]
+    fn schema_finite_is_the_carrier_finite_range() {
+        // Per-carrier: f32's finite range is narrower than f64's.
+        assert_eq!(
+            <Finite as SchemaRule<f64>>::schema(),
+            float_interval(f64::MIN, f64::MAX),
+        );
+        assert_eq!(
+            <Finite as SchemaRule<f32>>::schema(),
+            float_interval(-f64::from(f32::MAX), f64::from(f32::MAX)),
+        );
+    }
+
+    #[test]
+    fn schema_in_closed_range_reads_the_same_ratios_refine_reads() {
+        // 1/2 ..= 3/4, lifted through the same from_ratio path.
+        assert_eq!(
+            <InClosedRange<1, 2, 3, 4> as SchemaRule<f64>>::schema(),
+            float_interval(0.5, 0.75),
+        );
+        assert_eq!(
+            <InClosedRange<1, 2, 3, 4> as SchemaRule<f32>>::schema(),
+            float_interval(f64::from(0.5_f32), f64::from(0.75_f32)),
+        );
+    }
+
+    #[cfg(feature = "proptest")]
+    mod schema_cross_checks {
+        use super::super::{Finite, InClosedRange, NotNan};
+        use crate::schema::{Scalar, ScalarKind};
+        use crate::testing::prop_schema_cross_check;
+
+        #[expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+        )]
+        fn embed_f64(value: &f64) -> (ScalarKind, Scalar) {
+            (ScalarKind::Float, Scalar::Float(*value))
+        }
+
+        fn extract_f64(_kind: ScalarKind, scalar: Scalar) -> f64 {
+            scalar.as_float().expect("float schema")
+        }
+
+        #[expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+        )]
+        fn embed_f32(value: &f32) -> (ScalarKind, Scalar) {
+            (ScalarKind::Float, Scalar::Float(f64::from(*value)))
+        }
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "float schema endpoints for f32 rules originate from f32 values \
+                      widened to f64, so the narrowing cast is lossless"
+        )]
+        fn extract_f32(_kind: ScalarKind, scalar: Scalar) -> f32 {
+            scalar.as_float().expect("float schema") as f32
+        }
+
+        /// Schema endpoints pass refine and strategy samples are
+        /// schema members, for every float rule over `f64`.
+        #[test]
+        fn schema_cross_checks_float_rules_over_f64() {
+            prop_schema_cross_check::<f64, NotNan>(embed_f64, extract_f64);
+            prop_schema_cross_check::<f64, Finite>(embed_f64, extract_f64);
+            prop_schema_cross_check::<f64, InClosedRange<0, 1, 1, 1>>(embed_f64, extract_f64);
+        }
+
+        /// Second carrier monomorphisations: the f32 schemas'
+        /// endpoints all round-trip through the f32 carrier.
+        #[test]
+        fn schema_cross_checks_float_rules_over_f32() {
+            prop_schema_cross_check::<f32, NotNan>(embed_f32, extract_f32);
+            prop_schema_cross_check::<f32, Finite>(embed_f32, extract_f32);
+            prop_schema_cross_check::<f32, InClosedRange<0, 1, 1, 1>>(embed_f32, extract_f32);
+        }
     }
 
     #[cfg(feature = "proptest")]
