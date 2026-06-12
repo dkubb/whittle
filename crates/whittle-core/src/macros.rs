@@ -3,19 +3,26 @@
 /// Define a refined newtype whose only construction path is
 /// `try_new` and whose inner field is private.
 ///
-/// The macro expands to a tuple struct wrapping
-/// `Refined<Inner, Rule>` and three inherent methods:
+/// The macro has two forms.
 ///
-/// - `try_new(raw: Inner) -> Result<Self, <Rule as Rule<Inner>>::Error>`
+/// - The **simple form** — `pub Name: Inner, Rule;` — expands to a
+///   tuple struct wrapping `Refined<Inner, Rule>` whose `try_new`
+///   surfaces the rule's `Error` unchanged.
+/// - The **error-block form** — the same declaration followed by an
+///   `error SourceErr => pub DomainErr { ... }` block — additionally
+///   generates a flat domain error enum and maps the rule's error
+///   into it, so callers never see the rules' shared primitive enum.
+///
+/// Both forms generate three inherent methods:
+///
+/// - `try_new(raw: Inner) -> Result<Self, Error>`
 /// - `as_inner(&self) -> &Inner`
 /// - `into_inner(self) -> Inner`
 ///
 /// Standard trait impls — `Debug`, `Clone`, `Hash`, `PartialEq`,
 /// `Eq`, `PartialOrd`, `Ord`, and `Copy` — are forwarded from
 /// `Refined` and selected by the user-supplied `#[derive(...)]`
-/// attribute. `Display`, `AsRef`, `From`, Serde, and so on stay
-/// hand-written: the macro covers the construction surface
-/// without dictating what the carrier looks like beyond it.
+/// attribute.
 ///
 /// The macro wraps an existing `Inner` type and any Serde
 /// `Deserialize` impl is forwarded to `Inner`. If `Inner` is a
@@ -25,31 +32,7 @@
 /// attribute. See [`crate::Refined`]'s `Deserialize` impl for the full
 /// rationale.
 ///
-/// # Design limit: composed rules and domain error shape
-///
-/// The macro's generated `try_new` returns the rule's `Error`
-/// **unchanged**. Whittle's binary composition operators require
-/// both rules to share an `Error` type, so:
-///
-/// - `And<A, B>` where `A::Error = B::Error = E` produces `E`.
-/// - `Or<A, B>` where `A::Error = B::Error = E` produces `[E; 2]`.
-///
-/// When the inner rule is a single primitive (`NonEmpty`,
-/// `Within<MIN, MAX>`, `RelativePath`, and so on) the error is the
-/// primitive's flat domain enum (`StringError`, `NumericError`,
-/// `PathError`) and the macro is the right tool.
-///
-/// When the inner rule is an `And<...>` chain whose rules share an
-/// error type, the macro is still fine: callers see the shared flat
-/// enum directly.
-///
-/// When the inner rule is `Or<...>`, the macro's `try_new` returns
-/// `[E; 2]`. That is informationally complete but rarely the shape a
-/// public domain API wants; hand-write the newtype and collapse the
-/// pair into a named variant inside `try_new`. See
-/// `tests/composition-or.rs` for the pattern.
-///
-/// # Syntax
+/// # Simple form
 ///
 /// ```text
 /// refinement! {
@@ -64,10 +47,94 @@
 /// (Rust's macro follow-set rules forbid it). The `:` separates
 /// the new type's name from its underlying definition.
 ///
-/// # Example
+/// The generated `try_new` returns the rule's `Error` **unchanged**.
+/// When the inner rule is a single primitive (`NonEmpty`,
+/// `Within<MIN, MAX>`, `RelativePath`, and so on) the error is the
+/// primitive's flat domain enum (`StringError`, `NumericError`,
+/// `PathError`) and the simple form is the right tool. `Display`,
+/// `AsRef`, `From`, Serde, and so on stay hand-written in this form:
+/// it covers the construction surface without dictating what the
+/// carrier looks like beyond it.
 ///
-/// Single-primitive rule — the error is the rule's flat enum
-/// (`StringError`), no composition tree is exposed.
+/// # Error-block form
+///
+/// ```text
+/// refinement! {
+///     #[derive(...)]
+///     /// doc comment, attributes, etc.
+///     pub Name: InnerType, Rule;
+///     impl Display;                        // optional, see below
+///
+///     /// doc comment, attributes, etc.
+///     error SourceError => pub NameError {
+///         /// per-variant doc comment
+///         SourcePattern => Variant {
+///             /// per-field doc comment
+///             field: Ty,
+///         }: "display text {field}",
+///         /// unit variants omit the braces
+///         SourcePattern => Variant: "display text",
+///         // explicit residual list; omit when the mapping is total
+///         unreachable ResidualPattern | ResidualPattern,
+///     }
+/// }
+/// ```
+///
+/// `SourceError` must be the rule's `Error` type (for an `And<...>`
+/// or `All<(...)>` chain, the operands' shared flat enum). Each arm
+/// pairs a source pattern with a domain variant: the pattern's
+/// bindings must match the variant's declared field names, and the
+/// field types are restated on the right because the generated enum
+/// needs them. Doc comments pass through per variant **and per
+/// field** — the enum is public API, so `missing_docs` applies to
+/// both. The string literal after `:` is the variant's `Display`
+/// text; inline format captures (`{field}`) bind the variant's
+/// fields.
+///
+/// The expansion emits:
+///
+/// - the newtype wrapping
+///   `Refined<Inner, MapErr<Rule, NameError>>`, with the same three
+///   inherent methods as the simple form — `try_new` returns
+///   `Result<Self, NameError>` and contains **no** mapping match;
+/// - the domain error enum, with `#[derive(Debug, PartialEq, Eq)]`
+///   plus the attribute passthrough (add `Clone`, `Hash`, ... there;
+///   do **not** add `thiserror::Error` — `Display` and `Error` impls
+///   are already emitted, so a thiserror derive is a conflict);
+/// - hand-rolled `impl Display` (the per-arm literals) and
+///   `impl core::error::Error` for the enum;
+/// - `impl ErrorMapper<SourceError> for NameError` with
+///   `type Error = Self` — **the enum is its own mapper**, and this
+///   impl is the single place the mapping match lives. `try_new`
+///   and every other path through the rule (`Refined::try_new`,
+///   serde deserialisation, proptest's `ArbitraryRule`) inherit it
+///   through the `MapErr` rule;
+/// - `impl AsRef<Inner>` borrowing the inner value;
+/// - with the optional `impl Display;` token, a carrier `Display`
+///   forwarding to `Inner`'s. It is opt-in because not every
+///   carrier is `Display` (`Vec<i32>` is not).
+///
+/// # The `unreachable` arm
+///
+/// A composed rule usually produces only a subset of its error
+/// enum's variants. The residual variants must still be matched —
+/// whittle's error enums are closed sums — and the `unreachable`
+/// arm names them **explicitly**. There is no `_` catch-all, by
+/// design: when a source enum gains a variant, every declaration
+/// that maps it fails to compile, which is the intended ratchet. A
+/// `_` residual is rejected at expansion time, and a residual
+/// pattern that repeats a variant already mapped above is a compile
+/// error (`unreachable_patterns` is denied inside the generated
+/// mapper). When the mapping is total (every source variant has an
+/// arm), omit the `unreachable` arm entirely.
+///
+/// At runtime the residual arm panics; it is unreachable as long as
+/// the declared residual list is accurate for the composed rule.
+///
+/// # Examples
+///
+/// Simple form: single-primitive rule — the error is the rule's
+/// flat enum (`StringError`), no composition tree is exposed.
 ///
 /// ```
 /// use whittle_core::primitive::NonEmpty;
@@ -91,8 +158,416 @@
 /// let bad = Identifier::try_new(String::new());
 /// bad.unwrap_err();
 /// ```
+///
+/// Error-block form: a composed rule with a flat domain error.
+///
+/// ```
+/// use whittle_core::primitive::{AsciiAlphanumeric, EachChar, LenChars, StringError};
+/// use whittle_core::{And, refinement};
+///
+/// refinement! {
+///     /// IATA-ish flight code: 3..=8 ASCII alphanumeric chars.
+///     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///     pub FlightCode: String, And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>;
+///     impl Display;
+///
+///     /// Flat domain error for [`FlightCode`].
+///     error StringError => pub FlightCodeError {
+///         /// Length (in characters) outside `3..=8`.
+///         StringError::CharCountOutOfRange { actual } => Length {
+///             /// Observed character count.
+///             actual: usize,
+///         }: "flight code length {actual} not in 3..=8",
+///         /// Character at the offset is not ASCII alphanumeric.
+///         StringError::BadChar { offset } => BadChar {
+///             /// UTF-8 byte offset of the rejected character.
+///             offset: usize,
+///         }: "flight code character at byte offset {offset} is not ASCII alphanumeric",
+///         unreachable StringError::ByteLenOutOfRange { .. }
+///             | StringError::Empty
+///             | StringError::BadFirstChar
+///             | StringError::BadHexLength { .. },
+///     }
+/// }
+///
+/// // Admit: `try_new` returns the newtype; `Display` is opt-in.
+/// let code = FlightCode::try_new("BA2490".to_string()).unwrap();
+/// assert_eq!(code.to_string(), "BA2490");
+/// assert_eq!(<FlightCode as AsRef<String>>::as_ref(&code), "BA2490");
+///
+/// // Reject: the domain enum, never `StringError`.
+/// let err = FlightCode::try_new("AB".to_string()).unwrap_err();
+/// assert_eq!(err, FlightCodeError::Length { actual: 2 });
+/// assert_eq!(err.to_string(), "flight code length 2 not in 3..=8");
+/// ```
+///
+/// Two arms cannot target the same domain variant — the macro
+/// generates the enum, so the duplicate is a duplicate definition
+/// (**compile error**):
+///
+/// ```compile_fail,E0428
+/// use whittle_core::primitive::{NonEmpty, StringError};
+///
+/// whittle_core::refinement! {
+///     /// Newtype under test.
+///     #[derive(Debug, Clone, PartialEq, Eq)]
+///     pub Dup: String, NonEmpty;
+///
+///     /// Two arms claim the variant `Bad`.
+///     error StringError => pub DupError {
+///         /// First claimant.
+///         StringError::Empty => Bad: "first",
+///         /// Second claimant.
+///         StringError::CharCountOutOfRange { .. } => Bad: "second",
+///         unreachable StringError::ByteLenOutOfRange { .. }
+///             | StringError::BadChar { .. }
+///             | StringError::BadFirstChar
+///             | StringError::BadHexLength { .. },
+///     }
+/// }
+/// ```
+///
+/// A residual pattern that repeats a variant already mapped above
+/// trips the denied `unreachable_patterns` lint (**compile error**):
+///
+/// ```compile_fail
+/// use whittle_core::primitive::{NonEmpty, StringError};
+///
+/// whittle_core::refinement! {
+///     /// Newtype under test.
+///     #[derive(Debug, Clone, PartialEq, Eq)]
+///     pub Re: String, NonEmpty;
+///
+///     /// `Empty` is mapped above AND listed as residual.
+///     error StringError => pub ReError {
+///         /// Mapped arm.
+///         StringError::Empty => Empty: "empty",
+///         unreachable StringError::Empty
+///             | StringError::CharCountOutOfRange { .. }
+///             | StringError::ByteLenOutOfRange { .. }
+///             | StringError::BadChar { .. }
+///             | StringError::BadFirstChar
+///             | StringError::BadHexLength { .. },
+///     }
+/// }
+/// ```
+///
+/// A source variant that is neither mapped nor listed as residual
+/// leaves the generated match non-exhaustive (**compile error**) —
+/// this is the ratchet that fires when a source enum gains a
+/// variant:
+///
+/// ```compile_fail,E0004
+/// use whittle_core::primitive::{NonEmpty, StringError};
+///
+/// whittle_core::refinement! {
+///     /// Newtype under test.
+///     #[derive(Debug, Clone, PartialEq, Eq)]
+///     pub Gap: String, NonEmpty;
+///
+///     /// Maps `Empty` only; the other variants are unhandled.
+///     error StringError => pub GapError {
+///         /// Mapped arm.
+///         StringError::Empty => Empty: "empty",
+///     }
+/// }
+/// ```
+///
+/// A `_` catch-all residual is rejected at expansion time
+/// (**compile error**) — it would silently absorb new source
+/// variants:
+///
+/// ```compile_fail
+/// use whittle_core::primitive::{NonEmpty, StringError};
+///
+/// whittle_core::refinement! {
+///     /// Newtype under test.
+///     #[derive(Debug, Clone, PartialEq, Eq)]
+///     pub Wild: String, NonEmpty;
+///
+///     /// `unreachable _` defeats the closed-sum ratchet.
+///     error StringError => pub WildError {
+///         /// Mapped arm.
+///         StringError::Empty => Empty: "empty",
+///         unreachable _,
+///     }
+/// }
+/// ```
 #[macro_export]
 macro_rules! refinement {
+    // ─── Error-block form, with opt-in carrier `Display`. ────────
+    //
+    // Delegates to the plain error-block rule below and adds the
+    // carrier-forwarding `Display` impl.
+    (
+        $(#[$attr:meta])*
+        $vis:vis $name:ident : $inner:ty, $rule:ty ;
+        impl Display ;
+        $(#[$eattr:meta])*
+        error $source:ty => $evis:vis $error:ident {
+            $($body:tt)+
+        }
+    ) => {
+        $crate::refinement! {
+            $(#[$attr])*
+            $vis $name : $inner, $rule ;
+            $(#[$eattr])*
+            error $source => $evis $error { $($body)+ }
+        }
+
+        impl ::core::fmt::Display for $name {
+            #[inline]
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                ::core::fmt::Display::fmt(self.0.as_inner(), f)
+            }
+        }
+    };
+
+    // ─── Error-block form. ────────────────────────────────────────
+    //
+    // The newtype wraps `Refined<Inner, MapErr<Rule, Error>>`, so
+    // `try_new` needs no mapping match: the `ErrorMapper` impl
+    // emitted by the `@error_block` muncher is the single
+    // determinant of the rule-to-domain mapping, and every path
+    // through the rule inherits it.
+    (
+        $(#[$attr:meta])*
+        $vis:vis $name:ident : $inner:ty, $rule:ty ;
+        $(#[$eattr:meta])*
+        error $source:ty => $evis:vis $error:ident {
+            $($body:tt)+
+        }
+    ) => {
+        $(#[$attr])*
+        $vis struct $name($crate::Refined<$inner, $crate::MapErr<$rule, $error>>);
+
+        impl $name {
+            /// Validate `raw` against the rule and wrap.
+            ///
+            /// # Errors
+            ///
+            /// Returns the domain error the declaration's `error`
+            /// block maps the rule's rejection into.
+            #[inline]
+            pub fn try_new(raw: $inner) -> ::core::result::Result<Self, $error> {
+                $crate::Refined::try_new(raw).map(Self)
+            }
+
+            /// Borrow the inner value.
+            #[inline]
+            #[must_use]
+            pub const fn as_inner(&self) -> &$inner {
+                self.0.as_inner()
+            }
+
+            /// Consume the wrapper and return the inner value.
+            #[inline]
+            #[must_use]
+            pub fn into_inner(self) -> $inner {
+                self.0.into_inner()
+            }
+        }
+
+        impl ::core::convert::AsRef<$inner> for $name {
+            #[inline]
+            fn as_ref(&self) -> &$inner {
+                self.0.as_inner()
+            }
+        }
+
+        $crate::refinement! {
+            @error_block
+            attrs = [$(#[$eattr])*],
+            vis = [$evis],
+            error = [$error],
+            source = [$source],
+            formatter = [f],
+            variants = [],
+            displays = [],
+            maps = [],
+            $($body)+
+        }
+    };
+
+    // ─── Internal: error-block muncher. ───────────────────────────
+    //
+    // Walks the arm list, accumulating the enum variants, the
+    // `Display` match arms, and the `ErrorMapper` match arms in
+    // parallel, then hands the three streams to `@error_items`.
+    // `formatter` threads the `f` ident from a single transcription
+    // so the accumulated `write!` arms and the eventual `fmt`
+    // signature share one hygiene context.
+
+    // Reject a `_` catch-all residual: it would silently absorb new
+    // source variants, defeating the closed-sum ratchet.
+    (
+        @error_block
+        attrs = [$(#[$eattr:meta])*],
+        vis = [$evis:vis],
+        error = [$error:ident],
+        source = [$source:ty],
+        formatter = [$f:ident],
+        variants = [$($variants:tt)*],
+        displays = [$($displays:tt)*],
+        maps = [$($maps:tt)*],
+        unreachable _ $(,)?
+    ) => {
+        ::core::compile_error!(
+            "refinement!: `unreachable` requires the explicit residual source-variant list; a `_` catch-all would silently absorb new source variants"
+        );
+    };
+
+    // Terminal: explicit residual list. The residual arm completes
+    // the generated match without a catch-all, so a new source
+    // variant is a compile error in every declaration.
+    (
+        @error_block
+        attrs = [$(#[$eattr:meta])*],
+        vis = [$evis:vis],
+        error = [$error:ident],
+        source = [$source:ty],
+        formatter = [$f:ident],
+        variants = [$($variants:tt)*],
+        displays = [$($displays:tt)*],
+        maps = [$($maps:tt)*],
+        unreachable $residual:pat $(,)?
+    ) => {
+        $crate::refinement! {
+            @error_items
+            attrs = [$(#[$eattr])*],
+            vis = [$evis],
+            error = [$error],
+            source = [$source],
+            formatter = [$f],
+            variants = [$($variants)*],
+            displays = [$($displays)*],
+            maps = [
+                $($maps)*
+                $residual => ::core::unreachable!(
+                    "refinement! error mapping: the rule composition cannot produce this source-error variant"
+                ),
+            ],
+        }
+    };
+
+    // Terminal: total mapping — every source variant has an arm, so
+    // there is no residual and the match is exhaustive as-is.
+    (
+        @error_block
+        attrs = [$(#[$eattr:meta])*],
+        vis = [$evis:vis],
+        error = [$error:ident],
+        source = [$source:ty],
+        formatter = [$f:ident],
+        variants = [$($variants:tt)*],
+        displays = [$($displays:tt)*],
+        maps = [$($maps:tt)*],
+    ) => {
+        $crate::refinement! {
+            @error_items
+            attrs = [$(#[$eattr])*],
+            vis = [$evis],
+            error = [$error],
+            source = [$source],
+            formatter = [$f],
+            variants = [$($variants)*],
+            displays = [$($displays)*],
+            maps = [$($maps)*],
+        }
+    };
+
+    // Step: one mapped arm. The variant's declared field idents are
+    // reused as the construction shorthand, so they must match the
+    // source pattern's bindings — a mismatch is an unresolved-name
+    // compile error at the declaration.
+    (
+        @error_block
+        attrs = [$(#[$eattr:meta])*],
+        vis = [$evis:vis],
+        error = [$error:ident],
+        source = [$source:ty],
+        formatter = [$f:ident],
+        variants = [$($variants:tt)*],
+        displays = [$($displays:tt)*],
+        maps = [$($maps:tt)*],
+        $(#[$vattr:meta])*
+        $pat:pat => $variant:ident $({
+            $($(#[$fattr:meta])* $field:ident : $fty:ty),+ $(,)?
+        })? : $display:literal
+        $(, $($rest:tt)*)?
+    ) => {
+        $crate::refinement! {
+            @error_block
+            attrs = [$(#[$eattr])*],
+            vis = [$evis],
+            error = [$error],
+            source = [$source],
+            formatter = [$f],
+            variants = [
+                $($variants)*
+                $(#[$vattr])*
+                $variant $({ $($(#[$fattr])* $field: $fty),+ })?,
+            ],
+            displays = [
+                $($displays)*
+                Self::$variant $({ $($field),+ })? => ::core::write!($f, $display),
+            ],
+            maps = [
+                $($maps)*
+                $pat => Self::$variant $({ $($field),+ })?,
+            ],
+            $($($rest)*)?
+        }
+    };
+
+    // ─── Internal: emit the error-enum item set. ──────────────────
+    (
+        @error_items
+        attrs = [$(#[$eattr:meta])*],
+        vis = [$evis:vis],
+        error = [$error:ident],
+        source = [$source:ty],
+        formatter = [$f:ident],
+        variants = [$($variants:tt)*],
+        displays = [$($displays:tt)*],
+        maps = [$($maps:tt)*],
+    ) => {
+        $(#[$eattr])*
+        #[derive(Debug, PartialEq, Eq)]
+        $evis enum $error {
+            $($variants)*
+        }
+
+        impl ::core::fmt::Display for $error {
+            #[inline]
+            fn fmt(&self, $f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                match self {
+                    $($displays)*
+                }
+            }
+        }
+
+        impl ::core::error::Error for $error {}
+
+        // The domain enum is its own `ErrorMapper`: the mapping
+        // match below is the single determinant every construction
+        // and deserialisation path inherits through `MapErr`.
+        // `unreachable_patterns` is denied so a residual pattern
+        // that repeats a mapped variant is a compile error.
+        impl $crate::ErrorMapper<$source> for $error {
+            type Error = Self;
+
+            #[deny(unreachable_patterns)]
+            #[inline]
+            fn map_error(error: $source) -> Self::Error {
+                match error {
+                    $($maps)*
+                }
+            }
+        }
+    };
+
+    // ─── Simple form (unchanged surface). ─────────────────────────
     (
         $(#[$attr:meta])*
         $vis:vis $name:ident : $inner:ty, $rule:ty $(;)?
@@ -458,9 +933,10 @@ mod tests {
     use alloc::vec::Vec;
 
     use crate::primitive::{
-        AtLeast, AtMost, EachChar, FirstChar, IdentChar, IdentStart, LenChars, LenItems,
+        AsciiAlphanumeric, AtLeast, AtMost, CollectionError, EachChar, FirstChar, IdentChar,
+        IdentStart, LenChars, LenItems, NumericError, StringError, Within,
     };
-    use crate::{And, Rule};
+    use crate::{And, ErrorMapper, Rule};
 
     refinement! {
         /// Bounded identifier (head: alpha/underscore;
@@ -555,6 +1031,191 @@ mod tests {
             err,
             crate::primitive::CollectionError::LenOutOfRange { actual: 0 },
         );
+    }
+
+    // ─── Error-block form fixtures. ────────────────────────────────
+    //
+    // Three declarations so every generated surface is exercised
+    // across distinct monomorphisations: a string composition with a
+    // residual list, a numeric total mapping, and a non-`Display`
+    // collection carrier (which must omit `impl Display;`).
+
+    refinement! {
+        /// Flight-code shape: 3..=8 ASCII alphanumeric chars.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub TestCode: String, And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>;
+        impl Display;
+
+        /// Flat domain error for [`TestCode`].
+        error StringError => pub TestCodeError {
+            /// Length (in characters) outside `3..=8`.
+            StringError::CharCountOutOfRange { actual } => Length {
+                /// Observed character count.
+                actual: usize,
+            }: "code length {actual} not in 3..=8",
+            /// Character at `offset` is not ASCII alphanumeric.
+            StringError::BadChar { offset } => BadChar {
+                /// UTF-8 byte offset of the rejected character.
+                offset: usize,
+            }: "code character at byte offset {offset} not ASCII alphanumeric",
+            unreachable StringError::ByteLenOutOfRange { .. }
+                | StringError::Empty
+                | StringError::BadFirstChar
+                | StringError::BadHexLength { .. },
+        }
+    }
+
+    refinement! {
+        /// Percentage score: 0..=100.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub TestScore: i32, Within<0, 100>;
+        impl Display;
+
+        /// Flat domain error for [`TestScore`]. `Within` emits only
+        /// `OutOfRange`, so the mapping is total: no `unreachable`
+        /// arm.
+        error NumericError => pub TestScoreError {
+            /// Value outside `0..=100`.
+            NumericError::OutOfRange { value } => OutOfRange {
+                /// Offending value widened into `i128`.
+                value: i128,
+            }: "score {value} not in 0..=100",
+        }
+    }
+
+    refinement! {
+        /// Roster of 1..=3 player ids. The carrier (`Vec<i32>`) is
+        /// not `Display`, so the declaration omits `impl Display;`.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub TestRoster: Vec<i32>, LenItems<1, 3>;
+
+        /// Flat domain error for [`TestRoster`] (unit variant).
+        error CollectionError => pub TestRosterError {
+            /// Item count outside `1..=3`.
+            CollectionError::LenOutOfRange { .. } => BadLength:
+                "roster needs 1 to 3 players",
+            unreachable CollectionError::BadItem { .. }
+                | CollectionError::DuplicateKey { .. }
+                | CollectionError::MatchingItem { .. }
+                | CollectionError::NoMatchingItem
+                | CollectionError::NotSorted { .. },
+        }
+    }
+
+    #[test]
+    fn refinement_error_block_try_new_admits_good_input() {
+        let code = TestCode::try_new("BA2490".to_string()).unwrap();
+        assert_eq!(code.as_inner(), "BA2490");
+        let score = TestScore::try_new(42_i32).unwrap();
+        assert_eq!(*score.as_inner(), 42_i32);
+        let roster = TestRoster::try_new(vec![7_i32, 9]).unwrap();
+        assert_eq!(roster.as_inner(), &vec![7_i32, 9]);
+    }
+
+    #[test]
+    fn refinement_error_block_try_new_rejects_with_domain_error() {
+        // Each mapped arm of each declaration: the caller sees the
+        // domain enum, never the source enum.
+        let too_short = TestCode::try_new("AB".to_string()).unwrap_err();
+        assert_eq!(too_short, TestCodeError::Length { actual: 2 });
+        let bad_char = TestCode::try_new("BA 490".to_string()).unwrap_err();
+        assert_eq!(bad_char, TestCodeError::BadChar { offset: 2 });
+        let out_of_range = TestScore::try_new(101_i32).unwrap_err();
+        assert_eq!(out_of_range, TestScoreError::OutOfRange { value: 101 });
+        let empty = TestRoster::try_new(Vec::new()).unwrap_err();
+        assert_eq!(empty, TestRosterError::BadLength);
+    }
+
+    #[test]
+    fn refinement_error_block_into_inner_returns_owned() {
+        let code = TestCode::try_new("BA2490".to_string()).unwrap();
+        let owned: String = code.into_inner();
+        assert_eq!(owned, "BA2490");
+        let score = TestScore::try_new(42_i32).unwrap();
+        assert_eq!(score.into_inner(), 42_i32);
+        let roster = TestRoster::try_new(vec![7_i32]).unwrap();
+        let players: Vec<i32> = roster.into_inner();
+        assert_eq!(players, vec![7_i32]);
+    }
+
+    #[test]
+    fn refinement_error_block_as_ref_borrows_inner() {
+        let code = TestCode::try_new("BA2490".to_string()).unwrap();
+        let s: &String = code.as_ref();
+        assert_eq!(s, "BA2490");
+        let score = TestScore::try_new(42_i32).unwrap();
+        let n: &i32 = score.as_ref();
+        assert_eq!(*n, 42_i32);
+        let roster = TestRoster::try_new(vec![7_i32]).unwrap();
+        let players: &Vec<i32> = roster.as_ref();
+        assert_eq!(players, &vec![7_i32]);
+    }
+
+    #[test]
+    fn refinement_error_block_opt_in_display_forwards_to_carrier() {
+        // `impl Display;` is the opt-in token; both opted
+        // declarations forward to the carrier's `Display`.
+        let code = TestCode::try_new("BA2490".to_string()).unwrap();
+        assert_eq!(code.to_string(), "BA2490");
+        let score = TestScore::try_new(42_i32).unwrap();
+        assert_eq!(score.to_string(), "42");
+    }
+
+    #[test]
+    fn refinement_error_block_error_display_uses_declared_literals() {
+        // Every variant of every generated enum renders its
+        // declared literal, with inline captures bound to fields.
+        assert_eq!(
+            TestCodeError::Length { actual: 2 }.to_string(),
+            "code length 2 not in 3..=8",
+        );
+        assert_eq!(
+            TestCodeError::BadChar { offset: 2 }.to_string(),
+            "code character at byte offset 2 not ASCII alphanumeric",
+        );
+        assert_eq!(
+            TestScoreError::OutOfRange { value: 101 }.to_string(),
+            "score 101 not in 0..=100",
+        );
+        assert_eq!(
+            TestRosterError::BadLength.to_string(),
+            "roster needs 1 to 3 players"
+        );
+    }
+
+    #[test]
+    fn refinement_error_block_error_implements_error_trait() {
+        // Hand-rolled `Display` + emitted `core::error::Error`, so
+        // the enums work with `?`, `anyhow`, and stdlib machinery.
+        let _: &dyn core::error::Error = &TestCodeError::Length { actual: 2 };
+        let _: &dyn core::error::Error = &TestScoreError::OutOfRange { value: 101 };
+        let _: &dyn core::error::Error = &TestRosterError::BadLength;
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot produce this source-error variant")]
+    fn refinement_error_block_string_residual_arm_panics() {
+        // The residual arm is unreachable through `try_new`; calling
+        // the mapper directly is the only way to exercise it.
+        TestCodeError::map_error(StringError::Empty);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot produce this source-error variant")]
+    fn refinement_error_block_collection_residual_arm_panics() {
+        TestRosterError::map_error(CollectionError::NoMatchingItem);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn refinement_error_block_admits_entire_declared_range(
+            x in 0_i32..=100_i32
+        ) {
+            // The `MapErr` wrapper must not change the admissible
+            // set — only the error codomain.
+            let score = TestScore::try_new(x).unwrap();
+            proptest::prop_assert!((0..=100).contains(score.as_inner()));
+        }
     }
 
     closed_set! {
