@@ -38,6 +38,7 @@ use regex::Regex;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::schema::{Schema, SchemaRule};
 
 /// A whole-string regular-expression rule whose pattern is carried in
 /// the type as a `&'static str` const generic.
@@ -138,6 +139,22 @@ impl<const RE: &'static str> Rule<String> for Pattern<RE> {
             Some(m) if m.start() == 0 && m.end() == raw.len() => Ok(raw),
             _ => Err(PatternError::NoMatch),
         }
+    }
+}
+
+// ─── `SchemaRule` impl. ───────────────────────────────────────────
+
+impl<const RE: &'static str> SchemaRule<String> for Pattern<RE> {
+    /// The pattern IS the fragment: the schema carries `RE` itself
+    /// ([`Schema::Regex`]). Membership of a `Regex` node is
+    /// undecidable inside the kernel (deciding it needs the regex
+    /// engine), so the string boundary fold yields no candidates for
+    /// it — `refine` stays the only decision procedure, and the
+    /// schema's value is the constructive fragment for derived views
+    /// (descriptions, diffs, `string_regex`-style generation).
+    #[inline]
+    fn schema() -> Schema {
+        Schema::regex(RE)
     }
 }
 
@@ -252,6 +269,30 @@ mod tests {
         let second: Refined<String, Name> = Refined::try_new("Bb".to_string()).unwrap();
         assert_eq!(first.as_inner(), "Aa");
         assert_eq!(second.as_inner(), "Bb");
+    }
+
+    #[test]
+    fn schema_is_the_pattern_fragment() {
+        use crate::schema::{Schema, SchemaRule};
+        assert_eq!(
+            <Name as SchemaRule<String>>::schema(),
+            Schema::Regex(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$"),
+        );
+        assert_eq!(
+            <Digits as SchemaRule<String>>::schema(),
+            Schema::Regex(r"[0-9]+"),
+        );
+        // A Regex schema is constructively opaque to the kernel's
+        // membership and boundary folds: refine stays the only
+        // decision procedure.
+        assert_eq!(
+            <Digits as SchemaRule<String>>::schema().string_membership("12"),
+            None,
+        );
+        assert_eq!(
+            <Digits as SchemaRule<String>>::schema().string_boundaries(),
+            [],
+        );
     }
 
     #[test]

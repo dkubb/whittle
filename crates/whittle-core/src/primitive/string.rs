@@ -15,7 +15,7 @@ use core::marker::PhantomData;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
-use crate::schema::CharSet;
+use crate::schema::{CharSet, LenBound, LenUnit, Schema, SchemaRule};
 use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 
 /// Inclusive bound on the number of Unicode scalar values: `MIN <=
@@ -1203,7 +1203,11 @@ impl ArbitraryChar for PrintableMultiline {
 ///
 /// `ArbitraryRule` (behind `proptest`), `DeserializeRule` (behind
 /// `serde`), and the `StableUnder*` markers are all inherited from
-/// the underlying composition.
+/// the underlying composition. No [`SchemaRule`] yet, deliberately:
+/// the alias is an `And`, whose schema is the `Intersection`
+/// composition — combinator territory that lands in a later stage.
+/// Special-casing the alias would fork the determinant the
+/// combinator impl will own.
 ///
 /// # Examples
 ///
@@ -1244,7 +1248,9 @@ pub type BoundedLine<const MAX: usize> =
 /// printable class is the default for external/provider text
 /// (tiers 1–2); narrow format grammars belong only to tier 4
 /// (we-generate / contractually-guaranteed values). Available
-/// behind the `unicode` feature.
+/// behind the `unicode` feature. Like [`BoundedLine`], no
+/// [`SchemaRule`] until the `And` combinator's `Intersection`
+/// schema lands.
 ///
 /// # Examples
 ///
@@ -1672,6 +1678,135 @@ impl<const LEN: usize> Rule<String> for HexFixedAny<LEN> {
             }
         }
         Ok(raw)
+    }
+}
+
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// Each schema reads the SAME const generics and predicate sets
+// `refine` reads. A dimension a rule does not constrain widens to
+// the carrier-true bound: lengths to `0..=u64::MAX` (no `String`
+// exceeds a u64 length on supported targets), alphabets to the full
+// scalar-value set. `BoundedLine`/`BoundedText` are `And` aliases
+// and deliberately have NO schema yet: `And` composes schemas as
+// `Intersection`, which is combinator territory (a later stage) —
+// special-casing the aliases here would fork the determinant.
+
+/// The unconstrained alphabet: every Unicode scalar value.
+fn any_char_set() -> CharSet {
+    CharSet::from_ranges([('\0', char::MAX)])
+}
+
+/// Widen a const-generic `usize` length bound into the schema's
+/// `u64` length universe (lossless on supported targets).
+fn len_to_u64(len: usize) -> u64 {
+    u64::try_from(len).expect("usize lengths fit u64 on supported targets")
+}
+
+impl<const MIN: usize, const MAX: usize> SchemaRule<String> for LenChars<MIN, MAX> {
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        Schema::string(
+            LenBound::new(len_to_u64(MIN), len_to_u64(MAX)),
+            LenUnit::Chars,
+            any_char_set(),
+            None,
+        )
+    }
+}
+
+impl<const MIN: usize, const MAX: usize> SchemaRule<String> for LenBytes<MIN, MAX> {
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        Schema::string(
+            LenBound::new(len_to_u64(MIN), len_to_u64(MAX)),
+            LenUnit::Bytes,
+            any_char_set(),
+            None,
+        )
+    }
+}
+
+impl SchemaRule<String> for NonEmpty {
+    #[inline]
+    fn schema() -> Schema {
+        // `refine` measures `is_empty` — a byte question.
+        Schema::string(
+            LenBound::new(1, u64::MAX),
+            LenUnit::Bytes,
+            any_char_set(),
+            None,
+        )
+    }
+}
+
+impl<P> SchemaRule<String> for EachChar<P>
+where
+    P: SchemaChar,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::string(
+            LenBound::new(0, u64::MAX),
+            LenUnit::Chars,
+            P::char_set(),
+            None,
+        )
+    }
+}
+
+impl<P> SchemaRule<String> for FirstChar<P>
+where
+    P: SchemaChar,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::string(
+            LenBound::new(0, u64::MAX),
+            LenUnit::Chars,
+            any_char_set(),
+            Some(P::char_set()),
+        )
+    }
+}
+
+// The hex rules are `Str` nodes, not `Regex`: the structured form
+// (fixed byte length × hex alphabet) feeds the boundary fold,
+// membership, and rendering directly, where a regex fragment would
+// be opaque to all three.
+
+#[cfg(feature = "hex")]
+impl<const LEN: usize> SchemaRule<String> for HexFixedLower<LEN> {
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        // `refine` measures bytes (the ASCII alphabet makes byte
+        // length equal char count); the lowercase-only alphabet is
+        // the `0-9a-f` subset of [`HexChar`]'s set.
+        Schema::string(
+            LenBound::new(len_to_u64(LEN), len_to_u64(LEN)),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('0', '9'), ('a', 'f')]),
+            None,
+        )
+    }
+}
+
+#[cfg(feature = "hex")]
+impl<const LEN: usize> SchemaRule<String> for HexFixedAny<LEN> {
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        // The mixed-case alphabet IS HexChar's admitted set: one
+        // determinant shared with the predicate.
+        Schema::string(
+            LenBound::new(len_to_u64(LEN), len_to_u64(LEN)),
+            LenUnit::Bytes,
+            <HexChar as SchemaChar>::char_set(),
+            None,
+        )
     }
 }
 
@@ -3266,6 +3401,133 @@ mod tests {
         let (saw_min, saw_max) = saw_boundary_lengths::<LenBytes<2, 8>>(String::len, 2, 8);
         assert!(saw_min, "edge-biased LenBytes must emit MIN-length strings");
         assert!(saw_max, "edge-biased LenBytes must emit MAX-length strings");
+    }
+
+    // ─── SchemaRule: constructive descriptions + derived matrices.
+
+    #[test]
+    fn schemas_read_the_same_bounds_refine_reads() {
+        use crate::schema::{CharSet, LenBound, LenUnit, Schema, SchemaRule as _};
+
+        let any = CharSet::from_ranges([('\0', char::MAX)]);
+        assert_eq!(
+            <LenChars<1, 5>>::schema(),
+            Schema::string(LenBound::new(1, 5), LenUnit::Chars, any.clone(), None),
+        );
+        assert_eq!(
+            <LenBytes<2, 8>>::schema(),
+            Schema::string(LenBound::new(2, 8), LenUnit::Bytes, any.clone(), None),
+        );
+        assert_eq!(
+            NonEmpty::schema(),
+            Schema::string(
+                LenBound::new(1, u64::MAX),
+                LenUnit::Bytes,
+                any.clone(),
+                None,
+            ),
+        );
+        assert_eq!(
+            <EachChar<AsciiDigit>>::schema(),
+            Schema::string(
+                LenBound::new(0, u64::MAX),
+                LenUnit::Chars,
+                CharSet::from_ranges([('0', '9')]),
+                None,
+            ),
+        );
+        assert_eq!(
+            <FirstChar<IdentStart>>::schema(),
+            Schema::string(
+                LenBound::new(0, u64::MAX),
+                LenUnit::Chars,
+                any,
+                Some(CharSet::from_ranges([('A', 'Z'), ('_', '_'), ('a', 'z')])),
+            ),
+        );
+    }
+
+    #[cfg(feature = "hex")]
+    #[test]
+    fn hex_schemas_are_fixed_length_str_nodes() {
+        use crate::schema::{CharSet, LenBound, LenUnit, Schema, SchemaRule as _};
+
+        assert_eq!(
+            <super::HexFixedLower<4>>::schema(),
+            Schema::string(
+                LenBound::new(4, 4),
+                LenUnit::Bytes,
+                CharSet::from_ranges([('0', '9'), ('a', 'f')]),
+                None,
+            ),
+        );
+        assert_eq!(
+            <super::HexFixedAny<4>>::schema(),
+            Schema::string(
+                LenBound::new(4, 4),
+                LenUnit::Bytes,
+                CharSet::from_ranges([('0', '9'), ('A', 'F'), ('a', 'f')]),
+                None,
+            ),
+        );
+    }
+
+    /// The schema-derived R-T1 boundary matrix per string family:
+    /// length edges, alphabet near-misses, and first-character
+    /// near-misses, with nothing restated at the test site. Exact
+    /// reject variants stay pinned by the hand-written tests above.
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn boundary_matrices_for_string_rules() {
+        use crate::testing::assert_string_boundary_matrix;
+
+        assert_string_boundary_matrix::<LenChars<1, 5>>();
+        assert_string_boundary_matrix::<LenBytes<2, 8>>();
+        assert_string_boundary_matrix::<NonEmpty>();
+        assert_string_boundary_matrix::<EachChar<AsciiDigit>>();
+        assert_string_boundary_matrix::<EachChar<IdentChar>>();
+        assert_string_boundary_matrix::<FirstChar<IdentStart>>();
+    }
+
+    #[cfg(all(feature = "hex", feature = "proptest"))]
+    #[test]
+    fn boundary_matrices_for_hex_rules() {
+        use crate::testing::assert_string_boundary_matrix;
+
+        assert_string_boundary_matrix::<super::HexFixedLower<4>>();
+        assert_string_boundary_matrix::<super::HexFixedAny<4>>();
+    }
+
+    #[cfg(all(feature = "unicode", feature = "proptest"))]
+    #[test]
+    fn boundary_matrices_for_printable_rules() {
+        use crate::testing::assert_string_boundary_matrix;
+
+        assert_string_boundary_matrix::<EachChar<super::PrintableLine>>();
+        assert_string_boundary_matrix::<EachChar<super::PrintableMultiline>>();
+    }
+
+    /// Strategy samples are ⟦schema⟧ members and the matrix agrees
+    /// with refine, per family.
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn string_schema_cross_checks() {
+        use crate::testing::prop_string_schema_cross_check;
+
+        prop_string_schema_cross_check::<LenChars<1, 5>>();
+        prop_string_schema_cross_check::<LenBytes<2, 8>>();
+        prop_string_schema_cross_check::<NonEmpty>();
+        prop_string_schema_cross_check::<EachChar<AsciiDigit>>();
+        prop_string_schema_cross_check::<FirstChar<IdentStart>>();
+    }
+
+    #[cfg(all(feature = "hex", feature = "proptest"))]
+    #[test]
+    fn string_schema_cross_checks_for_hex_rules() {
+        use crate::testing::prop_string_schema_cross_check;
+
+        prop_string_schema_cross_check::<super::HexFixedLower<4>>();
+        prop_string_schema_cross_check::<super::HexFixedAny<4>>();
     }
 
     // ─── SchemaChar: constructive admissible sets. ────────────────

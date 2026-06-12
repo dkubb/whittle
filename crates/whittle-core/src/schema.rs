@@ -1260,12 +1260,21 @@ impl Schema {
             .collect()
     }
 
-    /// The derived string boundary matrix: members and near-misses of
-    /// every [`Schema::Enumerated`] node in the tree (the labels
-    /// themselves, plus case-flips, truncations, one-character
-    /// extensions, and the empty string — the same derivation
-    /// [`crate::closed_set::rejects`] uses), each classified by the
-    /// schema's own membership verdict.
+    /// The derived string boundary matrix, classified by the
+    /// schema's own membership verdict:
+    ///
+    /// - [`Schema::Enumerated`] nodes contribute their labels plus
+    ///   derived near-misses (case-flips, truncations, one-character
+    ///   extensions, the empty string — the same derivation
+    ///   [`crate::closed_set::rejects`] uses);
+    /// - [`Schema::Str`] nodes contribute the empty string, length
+    ///   edges (`MIN−1`/`MIN`/`MIN+1`/`MAX`/`MAX+1`, capped at
+    ///   [`STR_BOUNDARY_LEN_CAP`] units — an uncapped `u64::MAX`
+    ///   bound yields no candidate), an alphabet near-miss (an
+    ///   in-bounds string whose last character falls outside the
+    ///   alphabet, when an outsider exists), and a first-character
+    ///   near-miss (an alphabet-admissible head outside the
+    ///   first-character set, when the node carries one).
     ///
     /// Candidates whose membership the schema cannot decide
     /// ([`Schema::string_membership`] returns `None`) are omitted.
@@ -1327,14 +1336,97 @@ impl Schema {
                 }
             }
             Self::Canonicalized { inner, .. } => inner.collect_string_candidates(out),
-            // `Str` candidates (length × alphabet edges) land with
-            // the string `SchemaRule` impls; `Collection` elements
-            // have no string embedding at the root (see the method
-            // docs); intervals and regexes contribute nothing.
-            Self::Str { .. } | Self::Regex(_) | Self::Interval { .. } | Self::Collection { .. } => {
-            }
+            Self::Str {
+                len,
+                alphabet,
+                first,
+                ..
+            } => collect_str_candidates(*len, alphabet, first.as_ref(), out),
+            // `Collection` elements have no string embedding at the
+            // root (see the method docs); intervals and regexes
+            // contribute nothing.
+            Self::Regex(_) | Self::Interval { .. } | Self::Collection { .. } => {}
         }
     }
+}
+
+/// Length cap for generated [`Schema::Str`] boundary candidates:
+/// length edges above it yield no candidate.
+///
+/// The unconstrained `u64::MAX` bound is the motivating case — a
+/// megabyte-scale test string probes nothing a 4096-unit one does
+/// not — while every practical fixed length (hex digests up to
+/// SHA-512's 128 chars, bounded lines and labels) stays comfortably
+/// inside.
+pub const STR_BOUNDARY_LEN_CAP: u64 = 4096;
+
+/// Collect one [`Schema::Str`] node's raw boundary candidates; the
+/// root classifies them (see [`Schema::string_boundaries`]).
+fn collect_str_candidates(
+    len: LenBound,
+    alphabet: &CharSet,
+    first: Option<&CharSet>,
+    out: &mut Vec<String>,
+) {
+    out.push(String::new());
+    // Sorted canonical ranges: the first range's start is the set's
+    // smallest member. When the unit counts bytes it is also ASCII
+    // whenever ANY member is (smaller code point, fewer UTF-8
+    // bytes), so length-targeted candidates land on the byte
+    // boundary whenever the alphabet allows it; otherwise the probe
+    // is off-target but still honestly classified.
+    let filler = alphabet.ranges()[0].0;
+    let head = first.map_or(filler, |set| set.ranges()[0].0);
+    // Length edges, capped: an absent edge (MIN = 0's MIN−1, an
+    // uncapped MAX's MAX+1) is skipped, not wrapped.
+    let edges = [
+        len.min.checked_sub(1),
+        Some(len.min),
+        len.min.checked_add(1),
+        Some(len.max),
+        len.max.checked_add(1),
+    ];
+    for target in edges.into_iter().flatten() {
+        if target > STR_BOUNDARY_LEN_CAP {
+            continue;
+        }
+        out.push(unit_candidate(head, filler, target));
+    }
+    // Near-misses ride on the shortest in-bounds (non-empty) length.
+    let miss_len = len.min.clamp(1, STR_BOUNDARY_LEN_CAP);
+    if len.min <= STR_BOUNDARY_LEN_CAP {
+        // Alphabet near-miss: the LAST character falls outside the
+        // alphabet, when an outsider exists.
+        if let Some(outsider) = alphabet.complement_sample() {
+            let mut candidate = unit_candidate(head, filler, miss_len);
+            candidate.pop();
+            candidate.push(outsider);
+            out.push(candidate);
+        }
+        // First-character near-miss: a head inside the alphabet but
+        // outside the first-character set, when one exists.
+        if let Some(first_set) = first
+            && let Some(outside_first) = alphabet.difference(first_set)
+        {
+            out.push(unit_candidate(
+                outside_first.ranges()[0].0,
+                filler,
+                miss_len,
+            ));
+        }
+    }
+}
+
+/// Build a candidate of `target` length units: `head` first, then
+/// `filler` repeated. `target` is pre-capped by the caller, so the
+/// usize conversion cannot fail on supported targets.
+fn unit_candidate(head: char, filler: char, target: u64) -> String {
+    let target = usize::try_from(target).expect("capped candidate lengths fit usize");
+    let mut out = String::with_capacity(target);
+    for index in 0..target {
+        out.push(if index == 0 { head } else { filler });
+    }
+    out
 }
 
 /// The previous representable scalar in the endpoint's regime:
@@ -3093,6 +3185,103 @@ mod tests {
             with_regex.string_boundaries(),
             [string_boundary("on", true)],
         );
+    }
+
+    #[test]
+    fn string_boundaries_derive_str_length_edges_and_alphabet_near_miss() {
+        let digits = Schema::string(
+            LenBound::new(1, 3),
+            LenUnit::Chars,
+            CharSet::from_ranges([('0', '9')]),
+            None,
+        );
+        assert_eq!(
+            digits.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("\0", false),
+                string_boundary("0", true),
+                string_boundary("00", true),
+                string_boundary("000", true),
+                string_boundary("0000", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_derive_a_first_character_near_miss() {
+        let headed = Schema::string(
+            LenBound::new(0, u64::MAX),
+            LenUnit::Chars,
+            CharSet::from_ranges([('\0', char::MAX)]),
+            Some(CharSet::from_ranges([('a', 'm')])),
+        );
+        assert_eq!(
+            headed.string_boundaries(),
+            [
+                // No head to reject: vacuously admitted.
+                string_boundary("", true),
+                // Alphabet-admissible head outside the first set.
+                string_boundary("\0", false),
+                // MIN+1 with an admissible head.
+                string_boundary("a", true),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_skip_a_first_set_covering_the_alphabet() {
+        // first ⊇ alphabet: no head can violate it, so no
+        // first-character near-miss is derivable.
+        let saturated = Schema::string(
+            LenBound::new(1, 2),
+            LenUnit::Chars,
+            CharSet::from_ranges([('a', 'z')]),
+            Some(CharSet::from_ranges([('a', 'z')])),
+        );
+        assert_eq!(
+            saturated.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("\0", false),
+                string_boundary("a", true),
+                string_boundary("aa", true),
+                string_boundary("aaa", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_measure_byte_unit_edges_with_ascii_fillers() {
+        let two_bytes = Schema::string(
+            LenBound::new(2, 2),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('a', 'z')]),
+            None,
+        );
+        assert_eq!(
+            two_bytes.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("a", false),
+                string_boundary("a\0", false),
+                string_boundary("aa", true),
+                string_boundary("aaa", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_cap_unreachable_length_edges() {
+        // Every length edge exceeds the cap: only the empty string
+        // remains, and the near-misses are skipped with it.
+        let huge = Schema::string(
+            LenBound::new(10_000, 20_000),
+            LenUnit::Chars,
+            CharSet::from_ranges([('a', 'a')]),
+            None,
+        );
+        assert_eq!(huge.string_boundaries(), [string_boundary("", false)]);
     }
 
     #[test]

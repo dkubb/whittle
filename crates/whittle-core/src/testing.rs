@@ -57,6 +57,7 @@ use crate::closed_set::{self, ClosedSet};
 use crate::rule::Rule;
 use crate::schema::{Scalar, ScalarKind, Schema, SchemaRule};
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
 
@@ -531,6 +532,179 @@ pub fn prop_schema_cross_check<T, R>(
             ));
         }
     }
+
+    finish_cross_check(core::any::type_name::<R>(), violations);
+}
+
+/// One row of a derived STRING boundary matrix: the schema's test
+/// point plus `refine`'s verdict. Non-generic so every string rule
+/// family shares one violation renderer
+/// ([`string_matrix_violations`]).
+struct StringMatrixRow {
+    /// The schema-classified test point.
+    boundary: crate::schema::StringBoundary,
+    /// Whether `R::refine` admitted the candidate.
+    refine_admits: bool,
+}
+
+/// Derive the string boundary matrix from `R::schema()` and attach
+/// each row's `refine` verdict. Generic but branch-free: all
+/// reporting decisions live in [`string_matrix_violations`].
+fn collect_string_matrix<R>() -> Vec<StringMatrixRow>
+where
+    R: SchemaRule<String>,
+{
+    R::schema()
+        .string_boundaries()
+        .into_iter()
+        .map(|boundary| {
+            let refine_admits = R::refine(boundary.value.clone()).is_ok();
+            StringMatrixRow {
+                boundary,
+                refine_admits,
+            }
+        })
+        .collect()
+}
+
+/// Render a string matrix's violations. Non-generic: one function
+/// serves every string rule family.
+fn string_matrix_violations(rows: &[StringMatrixRow]) -> Vec<alloc::string::String> {
+    let mut violations: Vec<alloc::string::String> = Vec::new();
+    for row in rows {
+        match (row.boundary.admitted, row.refine_admits) {
+            (true, false) => violations.push(format!(
+                "schema admits {:?} at the boundary but refine rejects it: the \
+                 schema overclaims the admitted set",
+                row.boundary.value,
+            )),
+            (false, true) => violations.push(format!(
+                "schema rejects {:?} at the boundary but refine admits it: the \
+                 schema underclaims the admitted set",
+                row.boundary.value,
+            )),
+            (true, true) | (false, false) => {}
+        }
+    }
+    if rows.is_empty() {
+        violations.push(alloc::string::String::from(
+            "the string boundary matrix is vacuous: the schema yields no \
+             decidable string candidate (no Str or Enumerated vocabulary?)",
+        ));
+    }
+    violations
+}
+
+/// Assert the schema-derived R-T1 boundary matrix for a string
+/// rule.
+///
+/// Length edges, alphabet near-misses, first-character near-misses,
+/// and enumerated near-misses are all read off `R::schema()` and
+/// checked against `refine` — see [`Schema::string_boundaries`] for
+/// the candidate derivation and [`assert_schema_boundary_matrix`]
+/// for the design (this is its string-carrier sibling; the same
+/// second-determinant removal, the same placement-only contract).
+///
+/// # Panics
+///
+/// Panics when `refine` disagrees with the schema's verdict on a
+/// candidate (in either direction), or when the matrix is vacuous.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::{AsciiDigit, EachChar};
+/// use whittle_core::testing::assert_string_boundary_matrix;
+///
+/// // "", "0", and the alphabet near-miss "\0" — derived,
+/// // classified, and checked with nothing restated here.
+/// assert_string_boundary_matrix::<EachChar<AsciiDigit>>();
+/// ```
+pub fn assert_string_boundary_matrix<R>()
+where
+    R: SchemaRule<String>,
+{
+    finish_cross_check(
+        core::any::type_name::<R>(),
+        string_matrix_violations(&collect_string_matrix::<R>()),
+    );
+}
+
+/// Classify strategy samples against the schema's string membership.
+/// Non-generic: the member, non-member, and undecidable paths are
+/// shared by every string rule family.
+fn string_sample_violations(
+    schema: &Schema,
+    samples: &[alloc::string::String],
+) -> Vec<alloc::string::String> {
+    let mut violations: Vec<alloc::string::String> = Vec::new();
+    for sample in samples {
+        match schema.string_membership(sample) {
+            Some(true) => {}
+            Some(false) => violations.push(format!(
+                "ArbitraryRule sample {sample:?} is not a ⟦schema⟧ member: the \
+                 hand-written strategy and the schema disagree",
+            )),
+            None => violations.push(format!(
+                "⟦schema⟧ membership of sample {sample:?} is undecidable: the \
+                 schema cannot describe its own strategy's output",
+            )),
+        }
+    }
+    violations
+}
+
+/// Cross-check a string rule's [`SchemaRule`] schema against its
+/// `refine` and its hand-written strategy.
+///
+/// The string-carrier sibling of [`prop_schema_cross_check`], for
+/// rules that are both [`SchemaRule`] and
+/// [`ArbitraryRule`](crate::ArbitraryRule):
+///
+/// 1. **The boundary matrix agrees with `refine`** (exactly
+///    [`assert_string_boundary_matrix`]'s obligation).
+/// 2. **Strategy samples are schema members** under
+///    [`Schema::string_membership`]. A sample the schema cannot
+///    decide is itself a violation: a rule whose schema cannot
+///    describe its own strategy's output has an unsound or
+///    out-of-vocabulary schema. (`Pattern`'s `Regex` schema is
+///    undecidable by design — don't aim this helper at it.)
+///
+/// # Panics
+///
+/// Panics when `refine` disagrees with the schema on a boundary
+/// candidate, when the matrix is vacuous, or when a strategy sample
+/// is a non-member or undecidable.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::LenChars;
+/// use whittle_core::testing::prop_string_schema_cross_check;
+///
+/// prop_string_schema_cross_check::<LenChars<1, 8>>();
+/// ```
+pub fn prop_string_schema_cross_check<R>()
+where
+    R: SchemaRule<String> + crate::ArbitraryRule<String>,
+{
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let schema = R::schema();
+    let mut violations = string_matrix_violations(&collect_string_matrix::<R>());
+
+    let strategy = R::arbitrary_strategy();
+    let mut runner = TestRunner::deterministic();
+    let mut samples: Vec<alloc::string::String> = Vec::new();
+    for _ in 0..CROSS_CHECK_SAMPLES {
+        samples.push(
+            strategy
+                .new_tree(&mut runner)
+                .expect("strategy must produce a value tree")
+                .current(),
+        );
+    }
+    violations.extend(string_sample_violations(&schema, &samples));
 
     finish_cross_check(core::any::type_name::<R>(), violations);
 }
@@ -1095,6 +1269,115 @@ mod tests {
     #[should_panic(expected = "parses but the schema rejects it")]
     fn assert_closed_set_schema_panics_when_a_rejected_near_miss_parses() {
         assert_closed_set_schema::<TestToggle>(&Schema::enumerated(&["onx"]));
+    }
+
+    // ─── String boundary matrix + cross-check. ─────────────────────
+
+    use super::{assert_string_boundary_matrix, prop_string_schema_cross_check};
+    use crate::schema::{CharSet, LenBound, LenUnit};
+    use alloc::string::{String, ToString as _};
+
+    /// String fixture disagreeing with its schema in both
+    /// directions: refine admits up to 2 chars, the schema claims
+    /// 1..=3 — the empty string is rejected-but-admitted
+    /// (underclaim) and the 3-char edge is admitted-but-rejected
+    /// (overclaim). Its strategy mixes a member with a non-member.
+    enum StringWildly {}
+
+    impl Rule<String> for StringWildly {
+        type Error = OutOfRange;
+        fn refine(raw: String) -> Result<String, Self::Error> {
+            if raw.chars().count() <= 2 {
+                Ok(raw)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<String> for StringWildly {
+        fn schema() -> Schema {
+            Schema::string(
+                LenBound::new(1, 3),
+                LenUnit::Chars,
+                CharSet::from_ranges([('\0', char::MAX)]),
+                None,
+            )
+        }
+    }
+
+    impl ArbitraryRule<String> for StringWildly {
+        type Strategy = proptest::sample::Select<String>;
+        fn arbitrary_strategy() -> Self::Strategy {
+            // "ab" is a ⟦schema⟧ member; "" is not.
+            proptest::sample::select(alloc::vec!["ab".to_string(), String::new()])
+        }
+    }
+
+    /// Rule whose schema is a bare regex: no decidable string
+    /// vocabulary, so the matrix is vacuous and its own samples are
+    /// undecidable.
+    enum Regexish {}
+
+    impl Rule<String> for Regexish {
+        type Error = OutOfRange;
+        fn refine(raw: String) -> Result<String, Self::Error> {
+            Ok(raw)
+        }
+    }
+
+    impl SchemaRule<String> for Regexish {
+        fn schema() -> Schema {
+            Schema::regex("^x$")
+        }
+    }
+
+    impl ArbitraryRule<String> for Regexish {
+        type Strategy = proptest::strategy::Just<String>;
+        fn arbitrary_strategy() -> Self::Strategy {
+            proptest::strategy::Just("x".to_string())
+        }
+    }
+
+    /// Matrix obligation, overclaim direction: the schema admits the
+    /// 3-char edge, refine rejects it.
+    #[test]
+    #[should_panic(expected = "refine rejects it")]
+    fn assert_string_boundary_matrix_panics_when_schema_overclaims() {
+        assert_string_boundary_matrix::<StringWildly>();
+    }
+
+    /// Matrix obligation, underclaim direction: the schema rejects
+    /// the empty string, refine admits it.
+    #[test]
+    #[should_panic(expected = "refine admits it")]
+    fn assert_string_boundary_matrix_panics_when_schema_underclaims() {
+        assert_string_boundary_matrix::<StringWildly>();
+    }
+
+    /// A regex-only schema yields no decidable candidate: vacuity is
+    /// reported, not silently passed.
+    #[test]
+    #[should_panic(expected = "vacuous")]
+    fn assert_string_boundary_matrix_panics_when_vacuous() {
+        assert_string_boundary_matrix::<Regexish>();
+    }
+
+    /// The cross-check consumes the same matrix and adds the sample
+    /// obligation: the non-member sample fires alongside the matrix
+    /// violations.
+    #[test]
+    #[should_panic(expected = "is not a ⟦schema⟧ member")]
+    fn prop_string_schema_cross_check_panics_when_strategy_leaks() {
+        prop_string_schema_cross_check::<StringWildly>();
+    }
+
+    /// A schema that cannot decide its own strategy's output is
+    /// reported as undecidable, not skipped.
+    #[test]
+    #[should_panic(expected = "is undecidable")]
+    fn prop_string_schema_cross_check_panics_when_membership_is_undecidable() {
+        prop_string_schema_cross_check::<Regexish>();
     }
 
     // ─── SchemaChar exhaustive oracle. ─────────────────────────────
