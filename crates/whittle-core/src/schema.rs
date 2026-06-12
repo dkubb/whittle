@@ -210,15 +210,20 @@ pub enum ScalarKind {
     /// Calendar dates, encoded as days from CE
     /// (`chrono::NaiveDate::num_days_from_ce`).
     Date,
-    /// UTC datetimes, encoded as seconds since the Unix epoch
-    /// (`chrono::DateTime::timestamp`).
+    /// UTC datetimes, encoded as sub-second-exact ticks:
+    /// `timestamp * 2_000_000_000 + timestamp_subsec_nanos`
+    /// (`chrono::DateTime<Utc>` accessors).
     ///
-    /// The encoding truncates sub-second precision, so a membership
-    /// verdict speaks for the whole-second representative, not for
-    /// every carrier value sharing its second: at an inclusive upper
-    /// endpoint, a datetime in the same second but with nanoseconds
-    /// past it is rejected by `refine` while its truncation is a
-    /// member. `refine` stays authoritative below one second.
+    /// The scale is `2_000_000_000` — not `1_000_000_000` — because
+    /// chrono represents a leap second as a sub-second nanosecond
+    /// payload in `1_000_000_000..2_000_000_000` within the
+    /// *previous* second; a plain nanosecond product would
+    /// interleave those values with the next second and break order
+    /// preservation. With the 2×10⁹ scale the embedding is strictly
+    /// monotone and injective over every representable
+    /// `DateTime<Utc>` (leap seconds included), so membership
+    /// verdicts are exact at full sub-second precision. A
+    /// whole-second bound encodes as `seconds * 2_000_000_000`.
     DateTime,
     /// Fixed-point decimals, encoded as `i128` mantissas at the
     /// recorded scale: the denoted value is `mantissa / 10^scale`.
@@ -229,6 +234,15 @@ pub enum ScalarKind {
         scale: u8,
     },
 }
+
+/// Ticks per second in the [`ScalarKind::DateTime`] encoding.
+///
+/// The scale a whole-second bound is multiplied by, and the divisor
+/// that recovers `(seconds, subsec_nanos)` from a tick value.
+/// `2_000_000_000` rather than `1_000_000_000` so chrono's
+/// leap-second sub-second payloads (`1_000_000_000..2_000_000_000`)
+/// embed order-preservingly (see [`ScalarKind::DateTime`]).
+pub const DATETIME_TICKS_PER_SECOND: i128 = 2_000_000_000;
 
 impl ScalarKind {
     /// `true` iff `scalar`'s variant matches this kind's regime:
@@ -2050,22 +2064,37 @@ fn fmt_interval(
 }
 
 /// Render one endpoint: decimal mantissas render as the scaled value
-/// (`5` at scale 1 renders `0.5`); everything else renders the
-/// scalar's own number.
+/// (`5` at scale 1 renders `0.5`), datetime ticks render as seconds
+/// (with the sub-second payload appended when present); everything
+/// else renders the scalar's own number.
 fn fmt_endpoint(
     f: &mut core::fmt::Formatter<'_>,
     kind: ScalarKind,
     scalar: Scalar,
 ) -> core::fmt::Result {
     match scalar {
-        Scalar::Int(mantissa) => {
-            if let ScalarKind::Decimal { scale } = kind {
-                fmt_scaled_decimal(f, mantissa, scale)
-            } else {
+        Scalar::Int(mantissa) => match kind {
+            ScalarKind::Decimal { scale } => fmt_scaled_decimal(f, mantissa, scale),
+            ScalarKind::DateTime => fmt_datetime_ticks(f, mantissa),
+            ScalarKind::Integer | ScalarKind::Float | ScalarKind::Date => {
                 write!(f, "{mantissa}")
             }
-        }
+        },
         Scalar::Float(value) => write!(f, "{value}"),
+    }
+}
+
+/// Render a [`ScalarKind::DateTime`] tick endpoint as whole seconds,
+/// appending the sub-second nanosecond payload only when one is
+/// present (rule-derived bounds are whole seconds, so the plain form
+/// is the common rendering).
+fn fmt_datetime_ticks(f: &mut core::fmt::Formatter<'_>, ticks: i128) -> core::fmt::Result {
+    let secs = ticks.div_euclid(DATETIME_TICKS_PER_SECOND);
+    let nanos = ticks.rem_euclid(DATETIME_TICKS_PER_SECOND);
+    if nanos == 0 {
+        write!(f, "{secs}")
+    } else {
+        write!(f, "{secs}s+{nanos}ns")
     }
 }
 
@@ -3826,14 +3855,27 @@ mod tests {
             .to_string(),
             "date(days from CE) in 730120..=767009",
         );
+        // Datetime endpoints are ticks; whole seconds render plain.
         assert_eq!(
             Schema::interval(
                 ScalarKind::DateTime,
                 Bound::Inclusive(Scalar::Int(0)),
-                Bound::Inclusive(Scalar::Int(1_893_456_000)),
+                Bound::Inclusive(Scalar::Int(
+                    1_893_456_000 * super::DATETIME_TICKS_PER_SECOND
+                )),
             )
             .to_string(),
             "datetime(unix seconds) in 0..=1893456000",
+        );
+        // A sub-second payload is appended only when present.
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::DateTime,
+                Bound::Inclusive(Scalar::Int(super::DATETIME_TICKS_PER_SECOND + 1)),
+                Bound::Unbounded,
+            )
+            .to_string(),
+            "datetime(unix seconds) in 1s+1ns..",
         );
     }
 

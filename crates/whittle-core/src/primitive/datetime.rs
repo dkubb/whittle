@@ -29,7 +29,7 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
-use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+use crate::schema::{Bound, DATETIME_TICKS_PER_SECOND, Scalar, ScalarKind, Schema, SchemaRule};
 
 /// Flat domain error for `DateTime<Utc>` rules.
 #[derive(Debug, PartialEq, Eq)]
@@ -246,19 +246,27 @@ pub trait ArbitraryDateTime: Rule<DateTime<Utc>> {
 // ─── `SchemaRule` impls. ──────────────────────────────────────────
 //
 // Datetime schemas are integer intervals of kind `DateTime` whose
-// endpoints are seconds since the Unix epoch — read back from the
-// SAME bound consts `refine` compares against (`MIN_DATETIME` /
-// `MAX_DATETIME`), so the compile-time range validation is forced
-// here exactly as it is in `refine`.
+// endpoints are sub-second-exact ticks
+// (`timestamp * DATETIME_TICKS_PER_SECOND + subsec_nanos`, see
+// `ScalarKind::DateTime`) — read back from the SAME bound consts
+// `refine` compares against (`MIN_DATETIME` / `MAX_DATETIME`), so
+// the compile-time range validation is forced here exactly as it is
+// in `refine`.
 //
-// The seconds encoding truncates sub-second precision (the
-// `ScalarKind::DateTime` caveat): `refine` compares full-precision
-// datetimes against nanosecond-zero bounds, so a value inside the
-// MAX bound's second but past its nanosecond is rejected even
-// though its truncated embedding is a schema member. Schema
-// verdicts are exact for whole-second values (everything the
-// boundary fold and `try_extract` produce); `refine` is the
-// decision procedure below one second.
+// SOUNDNESS: the tick embedding is strictly monotone and injective
+// over every representable `DateTime<Utc>` — chrono orders datetimes
+// lexicographically on `(timestamp, subsec_nanos)` with the
+// sub-second payload below `2_000_000_000` (leap seconds occupy
+// `1_000_000_000..`), which is exactly the tick order — so
+// `raw >= MIN_DATETIME` in `refine` holds iff
+// `ticks(raw) >= ticks(MIN_DATETIME)` in the schema, at full
+// sub-second precision. A whole-second bound's payload is zero, so
+// its ticks are `secs * DATETIME_TICKS_PER_SECOND`.
+
+/// One whole-second bound's tick encoding (sub-second payload zero).
+const fn datetime_ticks_from_epoch_secs(secs_since_epoch: i64) -> i128 {
+    secs_since_epoch as i128 * DATETIME_TICKS_PER_SECOND
+}
 
 impl<const MIN_SECS_SINCE_EPOCH: i64> SchemaRule<DateTime<Utc>>
     for DateTimeAtLeast<MIN_SECS_SINCE_EPOCH>
@@ -267,7 +275,9 @@ impl<const MIN_SECS_SINCE_EPOCH: i64> SchemaRule<DateTime<Utc>>
     fn schema() -> Schema {
         Schema::interval(
             ScalarKind::DateTime,
-            Bound::Inclusive(Scalar::Int(i128::from(Self::MIN_DATETIME.timestamp()))),
+            Bound::Inclusive(Scalar::Int(datetime_ticks_from_epoch_secs(
+                Self::MIN_DATETIME.timestamp(),
+            ))),
             Bound::Unbounded,
         )
     }
@@ -281,7 +291,9 @@ impl<const MAX_SECS_SINCE_EPOCH: i64> SchemaRule<DateTime<Utc>>
         Schema::interval(
             ScalarKind::DateTime,
             Bound::Unbounded,
-            Bound::Inclusive(Scalar::Int(i128::from(Self::MAX_DATETIME.timestamp()))),
+            Bound::Inclusive(Scalar::Int(datetime_ticks_from_epoch_secs(
+                Self::MAX_DATETIME.timestamp(),
+            ))),
         )
     }
 }
@@ -294,8 +306,12 @@ impl<const MIN_SECS_SINCE_EPOCH: i64, const MAX_SECS_SINCE_EPOCH: i64> SchemaRul
         let () = Self::VALID;
         Schema::interval(
             ScalarKind::DateTime,
-            Bound::Inclusive(Scalar::Int(i128::from(MIN_SECS_SINCE_EPOCH))),
-            Bound::Inclusive(Scalar::Int(i128::from(MAX_SECS_SINCE_EPOCH))),
+            Bound::Inclusive(Scalar::Int(datetime_ticks_from_epoch_secs(
+                MIN_SECS_SINCE_EPOCH,
+            ))),
+            Bound::Inclusive(Scalar::Int(datetime_ticks_from_epoch_secs(
+                MAX_SECS_SINCE_EPOCH,
+            ))),
         )
     }
 }
@@ -511,50 +527,81 @@ mod tests {
 
     // ─── SchemaRule: the constructive descriptions. ────────────────
 
-    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+    use crate::schema::{Bound, DATETIME_TICKS_PER_SECOND, Scalar, ScalarKind, Schema, SchemaRule};
 
     fn datetime_interval(lo: Bound, hi: Bound) -> Schema {
         Schema::interval(ScalarKind::DateTime, lo, hi)
+    }
+
+    /// One whole-second bound, in the schema's tick encoding.
+    fn ticks(secs: i128) -> Bound {
+        Bound::Inclusive(Scalar::Int(secs * DATETIME_TICKS_PER_SECOND))
     }
 
     #[test]
     fn schema_reads_the_same_bounds_refine_reads() {
         assert_eq!(
             <DateTimeAtLeast<1_704_067_200> as SchemaRule<DateTime<Utc>>>::schema(),
-            datetime_interval(
-                Bound::Inclusive(Scalar::Int(1_704_067_200)),
-                Bound::Unbounded,
-            ),
+            datetime_interval(ticks(1_704_067_200), Bound::Unbounded),
         );
         assert_eq!(
             <DateTimeAtLeast<0> as SchemaRule<DateTime<Utc>>>::schema(),
-            datetime_interval(Bound::Inclusive(Scalar::Int(0)), Bound::Unbounded),
+            datetime_interval(ticks(0), Bound::Unbounded),
         );
         assert_eq!(
             <DateTimeAtMost<1_893_456_000> as SchemaRule<DateTime<Utc>>>::schema(),
-            datetime_interval(
-                Bound::Unbounded,
-                Bound::Inclusive(Scalar::Int(1_893_456_000)),
-            ),
+            datetime_interval(Bound::Unbounded, ticks(1_893_456_000)),
         );
         assert_eq!(
             <DateTimeAtMost<0> as SchemaRule<DateTime<Utc>>>::schema(),
-            datetime_interval(Bound::Unbounded, Bound::Inclusive(Scalar::Int(0))),
+            datetime_interval(Bound::Unbounded, ticks(0)),
         );
         assert_eq!(
             <DateTimeInRange<1_704_067_200, 1_893_456_000> as SchemaRule<DateTime<Utc>>>::schema(),
-            datetime_interval(
-                Bound::Inclusive(Scalar::Int(1_704_067_200)),
-                Bound::Inclusive(Scalar::Int(1_893_456_000)),
-            ),
+            datetime_interval(ticks(1_704_067_200), ticks(1_893_456_000)),
         );
         assert_eq!(
             <DateTimeInRange<0, 60> as SchemaRule<DateTime<Utc>>>::schema(),
-            datetime_interval(
-                Bound::Inclusive(Scalar::Int(0)),
-                Bound::Inclusive(Scalar::Int(60)),
-            ),
+            datetime_interval(ticks(0), ticks(60)),
         );
+    }
+
+    /// The sub-second hazard, resolved: a datetime one nanosecond
+    /// past an inclusive upper bound is rejected by `refine` AND a
+    /// non-member of the schema — the tick encoding keeps the two
+    /// determinants in agreement below one second.
+    #[test]
+    fn schema_membership_is_subsecond_exact_at_the_upper_bound() {
+        type Until2030 = DateTimeAtMost<1_893_456_000>;
+        let past_bound = DateTime::<Utc>::from_timestamp(1_893_456_000, 1).unwrap();
+        assert_eq!(
+            <Until2030 as crate::Rule<DateTime<Utc>>>::refine(past_bound),
+            Err(DateTimeError::OutOfRange { value: past_bound }),
+        );
+        let embedded = Scalar::Int(
+            i128::from(past_bound.timestamp()) * DATETIME_TICKS_PER_SECOND
+                + i128::from(past_bound.timestamp_subsec_nanos()),
+        );
+        assert_eq!(
+            <Until2030 as SchemaRule<DateTime<Utc>>>::schema()
+                .scalar_membership(ScalarKind::DateTime, &embedded),
+            Some(false),
+        );
+    }
+
+    /// Display renders tick endpoints as whole seconds, and appends
+    /// the sub-second payload only when one is present.
+    #[test]
+    fn schema_display_renders_ticks_as_seconds() {
+        assert_eq!(
+            <DateTimeInRange<0, 60> as SchemaRule<DateTime<Utc>>>::schema().to_string(),
+            "datetime(unix seconds) in 0..=60",
+        );
+        let subsecond = datetime_interval(
+            Bound::Inclusive(Scalar::Int(DATETIME_TICKS_PER_SECOND + 1)),
+            Bound::Unbounded,
+        );
+        assert_eq!(subsecond.to_string(), "datetime(unix seconds) in 1s+1ns..");
     }
 
     #[cfg(feature = "proptest")]
@@ -564,10 +611,15 @@ mod tests {
         use crate::testing::{assert_schema_boundary_matrix, prop_schema_cross_check};
         use chrono::{DateTime, Utc};
 
+        use crate::schema::DATETIME_TICKS_PER_SECOND;
+
         fn embed_datetime(value: &DateTime<Utc>) -> (ScalarKind, Scalar) {
             (
                 ScalarKind::DateTime,
-                Scalar::Int(i128::from(value.timestamp())),
+                Scalar::Int(
+                    i128::from(value.timestamp()) * DATETIME_TICKS_PER_SECOND
+                        + i128::from(value.timestamp_subsec_nanos()),
+                ),
             )
         }
 
@@ -577,10 +629,17 @@ mod tests {
                       would add a None arm no boundary candidate reaches"
         )]
         fn extract_datetime(_kind: ScalarKind, scalar: Scalar) -> Option<DateTime<Utc>> {
-            scalar
-                .as_int()
-                .and_then(|widened| i64::try_from(widened).ok())
-                .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
+            // A tick neighbour one below a whole-second bound has a
+            // leap-second payload (`1_999_999_999`); chrono accepts
+            // sub-second nanos up to `2_000_000_000`, so the
+            // extraction is total over in-range tick values.
+            scalar.as_int().and_then(|ticks| {
+                let nanos = u32::try_from(ticks.rem_euclid(DATETIME_TICKS_PER_SECOND))
+                    .expect("tick payloads are below 2_000_000_000");
+                i64::try_from(ticks.div_euclid(DATETIME_TICKS_PER_SECOND))
+                    .ok()
+                    .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, nanos))
+            })
         }
 
         /// Schema endpoints pass refine and strategy samples are
