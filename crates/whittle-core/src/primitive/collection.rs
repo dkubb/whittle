@@ -12,6 +12,7 @@ use core::marker::PhantomData;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::{Refined, Rule};
+use crate::schema::{LenBound, Schema, SchemaRule};
 
 /// Inclusive bound on the number of items in a `Vec<T>`:
 /// `MIN <= len <= MAX`.
@@ -963,6 +964,83 @@ impl<T, K> crate::rule::PureFilter for UniqueByKey<T, K> {}
 impl<T, K> crate::rule::PureFilter for Sorted<T, K> {}
 impl<P> crate::rule::PureFilter for NoneOf<P> {}
 impl<P> crate::rule::PureFilter for AnyOf<P> {}
+
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS: each schema reads the same const generics / element
+// rule its `refine` tests, and every rule here is a pure filter, so
+// the accepted set IS the carried set. A dimension a rule does not
+// constrain widens to the carrier-true form: lengths to
+// `0..=u64::MAX` (no `Vec` exceeds a u64 length on supported
+// targets), elements to `None` (no element constraint to record —
+// the constructive form of "every carrier element admitted").
+//
+// `Sorted` and `UniqueByKey` have schemas ONLY at
+// [`IdentityKey`]: the Collection node's flags speak about the
+// ELEMENTS themselves (pairwise distinct, ascending), which is
+// exactly what identity keying tests. A projected key
+// (`UniqueByKey<T, ByField>`) constrains a DERIVED value the
+// vocabulary cannot express — absence over a wrong claim. `NoneOf` /
+// `AnyOf` quantify an opaque predicate over items, which has no
+// constructive node either — absent for the same reason.
+
+/// The item-count bound that constrains nothing.
+const fn unconstrained_len() -> LenBound {
+    LenBound::new(0, u64::MAX)
+}
+
+/// Widen a const-generic `usize` item bound into the schema's `u64`
+/// length universe (lossless on supported targets).
+fn items_to_u64(len: usize) -> u64 {
+    u64::try_from(len).expect("usize lengths fit u64 on supported targets")
+}
+
+impl<T, const MIN: usize, const MAX: usize> SchemaRule<Vec<T>> for LenItems<MIN, MAX>
+where
+    T: 'static,
+{
+    #[inline]
+    fn schema() -> Schema {
+        const { Self::VALID };
+        Schema::collection(
+            LenBound::new(items_to_u64(MIN), items_to_u64(MAX)),
+            None,
+            false,
+            false,
+        )
+    }
+}
+
+impl<T, R> SchemaRule<Vec<T>> for AllItems<R>
+where
+    T: 'static,
+    R: SchemaRule<T>,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::collection(unconstrained_len(), Some(R::schema()), false, false)
+    }
+}
+
+impl<T> SchemaRule<Vec<T>> for UniqueByKey<T, IdentityKey<T>>
+where
+    T: Ord + Clone + 'static,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::collection(unconstrained_len(), None, false, true)
+    }
+}
+
+impl<T> SchemaRule<Vec<T>> for Sorted<T, IdentityKey<T>>
+where
+    T: Ord + Clone + 'static,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::collection(unconstrained_len(), None, true, false)
+    }
+}
 
 // ─── Serde `DeserializeRule` impls. ───────────────────────────────
 //
@@ -2406,6 +2484,170 @@ mod tests {
                 message.contains("length 2 not in admissible range"),
                 "unexpected diagnostic: {message}",
             );
+        }
+    }
+
+    // ─── `SchemaRule`: the constructive descriptions. ──────────────
+
+    mod schema {
+        use alloc::vec::Vec;
+
+        use super::super::{AllItems, Distinct, IdentityKey, LenItems, Sorted};
+        use crate::primitive::Within;
+        use crate::schema::{Bound, LenBound, Scalar, ScalarKind, Schema, SchemaRule};
+
+        fn percent_interval() -> Schema {
+            Schema::interval(
+                ScalarKind::Integer,
+                Bound::Inclusive(Scalar::Int(0)),
+                Bound::Inclusive(Scalar::Int(100)),
+            )
+        }
+
+        /// Each rule's schema reads the same bounds / flags refine
+        /// tests; unconstrained dimensions widen to the carrier-true
+        /// form (full length range, absent element).
+        #[test]
+        fn schemas_read_the_same_constraints_refine_tests() {
+            assert_eq!(
+                <LenItems<1, 5> as SchemaRule<Vec<i32>>>::schema(),
+                Schema::collection(LenBound::new(1, 5), None, false, false),
+            );
+            assert_eq!(
+                <AllItems<Within<0, 100>> as SchemaRule<Vec<i32>>>::schema(),
+                Schema::collection(
+                    LenBound::new(0, u64::MAX),
+                    Some(percent_interval()),
+                    false,
+                    false,
+                ),
+            );
+            assert_eq!(
+                <Distinct<i32> as SchemaRule<Vec<i32>>>::schema(),
+                Schema::collection(LenBound::new(0, u64::MAX), None, false, true),
+            );
+            assert_eq!(
+                <Sorted<i32, IdentityKey<i32>> as SchemaRule<Vec<i32>>>::schema(),
+                Schema::collection(LenBound::new(0, u64::MAX), None, true, false),
+            );
+        }
+
+        /// Collection fusion assembles the composed rule's node: the
+        /// `And<LenItems, …>` conjunctions canonicalise to ONE
+        /// Collection carrying every constraint.
+        #[test]
+        fn composed_collection_schemas_fuse_to_one_node() {
+            use crate::And;
+
+            type Bounded = And<LenItems<1, 5>, Distinct<i32>>;
+            type Pipeline = And<And<LenItems<1, 5>, Distinct<i32>>, Sorted<i32, IdentityKey<i32>>>;
+
+            assert_eq!(
+                <Bounded as SchemaRule<Vec<i32>>>::schema(),
+                Schema::collection(LenBound::new(1, 5), None, false, true),
+            );
+
+            assert_eq!(
+                <Pipeline as SchemaRule<Vec<i32>>>::schema(),
+                Schema::collection(LenBound::new(1, 5), None, true, true),
+            );
+        }
+
+        #[cfg(feature = "proptest")]
+        mod matrices {
+            use super::super::super::{AllItems, Distinct, IdentityKey, LenItems, Sorted};
+            use crate::And;
+            use crate::primitive::Within;
+            use crate::schema::{Scalar, ScalarKind};
+            use crate::testing::assert_collection_boundary_matrix;
+
+            fn make_i32(index: u64) -> i32 {
+                i32::try_from(index).expect("probe indices are small")
+            }
+
+            #[expect(
+                clippy::return_and_then,
+                reason = "the branch-free and_then chain keeps this fn fully covered: a `?` \
+                          would add a None arm no boundary candidate reaches"
+            )]
+            fn extract_i32(_kind: ScalarKind, scalar: Scalar) -> Option<i32> {
+                scalar
+                    .as_int()
+                    .and_then(|widened| i32::try_from(widened).ok())
+            }
+
+            /// The derived length matrix and reject probes agree with
+            /// refine across the collection vocabulary: bare bounds,
+            /// element constraints, and the fused conjunctions with
+            /// each flag.
+            #[test]
+            fn boundary_matrices_for_collection_rules() {
+                assert_collection_boundary_matrix::<i32, LenItems<1, 3>>(make_i32, extract_i32);
+                assert_collection_boundary_matrix::<i32, AllItems<Within<0, 100>>>(
+                    make_i32,
+                    extract_i32,
+                );
+                assert_collection_boundary_matrix::<i32, And<LenItems<1, 3>, Distinct<i32>>>(
+                    make_i32,
+                    extract_i32,
+                );
+                assert_collection_boundary_matrix::<
+                    i32,
+                    And<And<LenItems<1, 3>, Distinct<i32>>, Sorted<i32, IdentityKey<i32>>>,
+                >(make_i32, extract_i32);
+            }
+
+            /// Hand-written fixture pairing `unique` with a finite
+            /// element domain (the library rules cannot conjoin the
+            /// two through `And` — their error types differ): refine
+            /// checks length 1..=10, distinctness, and elements in
+            /// 0..=2 directly.
+            enum SmallDistinct {}
+
+            #[derive(Debug, PartialEq, Eq)]
+            struct SmallDistinctError;
+
+            impl crate::Rule<alloc::vec::Vec<i32>> for SmallDistinct {
+                type Error = SmallDistinctError;
+                fn refine(raw: alloc::vec::Vec<i32>) -> Result<alloc::vec::Vec<i32>, Self::Error> {
+                    let in_len = (1..=10).contains(&raw.len());
+                    let in_range = raw.iter().all(|item| (0..=2).contains(item));
+                    let distinct = raw
+                        .iter()
+                        .collect::<alloc::collections::BTreeSet<_>>()
+                        .len()
+                        == raw.len();
+                    if in_len && in_range && distinct {
+                        Ok(raw)
+                    } else {
+                        Err(SmallDistinctError)
+                    }
+                }
+            }
+
+            impl crate::SchemaRule<alloc::vec::Vec<i32>> for SmallDistinct {
+                fn schema() -> crate::Schema {
+                    crate::Schema::collection(
+                        crate::schema::LenBound::new(1, 10),
+                        Some(crate::Schema::interval(
+                            ScalarKind::Integer,
+                            crate::schema::Bound::Inclusive(Scalar::Int(0)),
+                            crate::schema::Bound::Inclusive(Scalar::Int(2)),
+                        )),
+                        false,
+                        true,
+                    )
+                }
+            }
+
+            /// The unique × finite-element-domain capacity skip,
+            /// end to end: 0..=2 supplies only three distinct
+            /// values against a 1..=10 bound, so the high edges are
+            /// omitted and every testable row (and probe) agrees.
+            #[test]
+            fn boundary_matrix_skips_unwitnessable_unique_lengths() {
+                assert_collection_boundary_matrix::<i32, SmallDistinct>(make_i32, extract_i32);
+            }
         }
     }
 }

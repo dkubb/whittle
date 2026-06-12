@@ -726,6 +726,183 @@ where
     finish_cross_check(core::any::type_name::<R>(), violations);
 }
 
+/// One row of a derived COLLECTION boundary matrix: the schema's
+/// length test point plus `refine`'s verdict on a contract-following
+/// candidate of that length. Non-generic so every collection rule
+/// family shares one violation renderer
+/// ([`collection_matrix_violations`]).
+struct CollectionMatrixRow {
+    /// The schema-classified length test point.
+    boundary: crate::schema::CollectionBoundary,
+    /// Whether `R::refine` admitted the materialised candidate.
+    refine_admits: bool,
+}
+
+/// Render a collection matrix's violations plus the flag-probe
+/// outcomes. Non-generic: one function serves every collection rule
+/// family. Each probe is `Some((description, refine_admits))` when
+/// the schema vocabulary called for it; a probe `refine` ADMITS is a
+/// violation (every probe is a schema-derived reject).
+fn collection_matrix_violations(
+    rows: &[CollectionMatrixRow],
+    probes: &[Option<(&'static str, bool)>],
+) -> Vec<alloc::string::String> {
+    let mut violations: Vec<alloc::string::String> = Vec::new();
+    for row in rows {
+        match (row.boundary.admitted, row.refine_admits) {
+            (true, false) => violations.push(format!(
+                "schema admits {} items at the boundary but refine rejects the \
+                 candidate: the schema overclaims the admitted set",
+                row.boundary.len,
+            )),
+            (false, true) => violations.push(format!(
+                "schema rejects {} items at the boundary but refine admits the \
+                 candidate: the schema underclaims the admitted set",
+                row.boundary.len,
+            )),
+            (true, true) | (false, false) => {}
+        }
+    }
+    if rows.is_empty() {
+        violations.push(alloc::string::String::from(
+            "the collection boundary matrix is vacuous: the schema has no \
+             Collection root, or every length edge was skipped",
+        ));
+    }
+    for probe in probes.iter().flatten() {
+        let (description, refine_admits) = probe;
+        if *refine_admits {
+            violations.push(format!(
+                "refine admits {description}, which the schema rejects: the \
+                 schema underclaims the admitted set",
+            ));
+        }
+    }
+    violations
+}
+
+/// Assert the schema-derived R-T1 boundary matrix for a collection
+/// rule.
+///
+/// Length edges are read off [`Schema::collection_boundaries`], each
+/// materialised through `make_element` and checked against `refine`,
+/// plus one schema-derived reject probe per constraint the node
+/// carries (a duplicate pair when `unique`, a descending pair when
+/// `sorted`, an element outsider when an element schema is present
+/// and yields an extractable rejected boundary value).
+///
+/// # `make_element` contract
+///
+/// `make_element(i)` must return the `i`-th value of a strictly
+/// increasing sequence admissible under the node's element schema
+/// (any strictly increasing sequence when the node has none). The
+/// matrix only probes indices its own length rows require —
+/// capacity-capped for `unique` nodes over finite integer element
+/// domains (see [`Schema::collection_boundaries`]) — plus at most
+/// `max(MIN, 2)` values for the flag probes.
+///
+/// `try_extract` is the element carrier's partial inverse from the
+/// scalar universe, exactly as in [`assert_schema_boundary_matrix`];
+/// it is consulted only for the element-outsider probe.
+///
+/// # Panics
+///
+/// Panics when `refine` disagrees with a length row's verdict (in
+/// either direction), when a reject probe is admitted, or when the
+/// matrix is vacuous (no `Collection` root, or every edge skipped).
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::And;
+/// use whittle_core::primitive::{Distinct, LenItems};
+/// use whittle_core::schema::{Scalar, ScalarKind};
+/// use whittle_core::testing::assert_collection_boundary_matrix;
+///
+/// // 0/1/2/3/4 items plus a duplicate-pair probe — derived,
+/// // classified, and checked with nothing restated here.
+/// assert_collection_boundary_matrix::<i32, And<LenItems<1, 3>, Distinct<i32>>>(
+///     |index| i32::try_from(index).expect("probe indices are small"),
+///     |_kind, scalar| i32::try_from(scalar.as_int().expect("integer elements")).ok(),
+/// );
+/// ```
+pub fn assert_collection_boundary_matrix<T, R>(
+    make_element: fn(u64) -> T,
+    try_extract: fn(ScalarKind, Scalar) -> Option<T>,
+) where
+    T: core::fmt::Debug + 'static,
+    R: SchemaRule<Vec<T>>,
+{
+    use crate::schema::{COLLECTION_BOUNDARY_LEN_CAP, SchemaView};
+
+    let schema = R::schema();
+
+    // (1) Length rows, materialised through the element contract.
+    let rows: Vec<CollectionMatrixRow> = schema
+        .collection_boundaries()
+        .into_iter()
+        .map(|boundary| {
+            let candidate: Vec<T> = (0..boundary.len).map(make_element).collect();
+            CollectionMatrixRow {
+                boundary,
+                refine_admits: R::refine(candidate).is_ok(),
+            }
+        })
+        .collect();
+
+    // (2) Schema-derived reject probes, one per carried constraint.
+    let mut probes: [Option<(&'static str, bool)>; 3] = [None, None, None];
+    if let SchemaView::Collection {
+        len,
+        element,
+        sorted,
+        unique,
+    } = schema.view()
+    {
+        // The shortest admissible length that can host a violating
+        // pair, when one exists below the cap.
+        let pair_len = len.lo().max(2);
+        let pair_fits = pair_len <= len.hi() && pair_len <= COLLECTION_BOUNDARY_LEN_CAP;
+        if unique && pair_fits {
+            // A duplicate at the front, ascending afterwards: sorted
+            // (non-strict) stays satisfied, distinctness breaks.
+            let mut candidate = alloc::vec![make_element(0), make_element(0)];
+            candidate.extend((1..pair_len - 1).map(make_element));
+            probes[0] = Some(("a duplicate pair", R::refine(candidate).is_ok()));
+        }
+        if sorted && pair_fits {
+            // A descending pair at the front, ascending afterwards:
+            // all elements distinct, order breaks.
+            let mut candidate = alloc::vec![make_element(1), make_element(0)];
+            candidate.extend((2..pair_len).map(make_element));
+            probes[1] = Some(("a descending pair", R::refine(candidate).is_ok()));
+        }
+        if let Some(element_schema) = element {
+            // An element outsider in place of the candidate's last
+            // element, at the shortest non-empty admissible length.
+            let outsider_len = len.lo().max(1);
+            let outsider = element_schema
+                .scalar_boundaries()
+                .into_iter()
+                .find(|row| !row.admitted)
+                .and_then(|row| try_extract(row.kind, row.value));
+            if let Some(outsider) = outsider
+                && outsider_len <= len.hi()
+                && outsider_len <= COLLECTION_BOUNDARY_LEN_CAP
+            {
+                let mut candidate: Vec<T> = (0..outsider_len - 1).map(make_element).collect();
+                candidate.push(outsider);
+                probes[2] = Some(("an element outsider", R::refine(candidate).is_ok()));
+            }
+        }
+    }
+
+    finish_cross_check(
+        core::any::type_name::<R>(),
+        collection_matrix_violations(&rows, &probes),
+    );
+}
+
 /// Cap on the disagreements [`assert_schema_char`] reports before
 /// truncating: a wildly wrong set would otherwise render up to ~1.1M
 /// code points.
@@ -1445,6 +1622,116 @@ mod tests {
     #[should_panic(expected = "is undecidable")]
     fn prop_string_schema_cross_check_panics_when_membership_is_undecidable() {
         prop_string_schema_cross_check::<Regexish>();
+    }
+
+    // ─── Collection boundary matrix. ───────────────────────────────
+
+    use super::assert_collection_boundary_matrix;
+    use alloc::vec::Vec;
+
+    fn make_i32(index: u64) -> i32 {
+        i32::try_from(index).expect("probe indices are small")
+    }
+
+    /// Vec fixture violating both length-row directions and every
+    /// flag probe at once: refine admits ANY vector of at most 2
+    /// items, while the schema claims 1..=3 sorted+unique vectors of
+    /// 0..=10 elements. The 0-item row is rejected-but-admitted
+    /// (underclaim), the 3-item row is admitted-but-rejected
+    /// (overclaim), and all three probes (duplicate, descending,
+    /// outsider — each materialised at 2 or fewer items) are
+    /// admitted.
+    enum VecWildly {}
+
+    impl Rule<Vec<i32>> for VecWildly {
+        type Error = OutOfRange;
+        fn refine(raw: Vec<i32>) -> Result<Vec<i32>, Self::Error> {
+            if raw.len() <= 2 {
+                Ok(raw)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<Vec<i32>> for VecWildly {
+        fn schema() -> Schema {
+            Schema::collection(
+                crate::schema::LenBound::new(1, 3),
+                Some(Schema::interval(
+                    ScalarKind::Integer,
+                    Bound::Inclusive(Scalar::Int(0)),
+                    Bound::Inclusive(Scalar::Int(10)),
+                )),
+                true,
+                true,
+            )
+        }
+    }
+
+    /// Vec rule whose schema is no Collection at all: the matrix is
+    /// vacuous and must say so.
+    enum VecRegexish {}
+
+    impl Rule<Vec<i32>> for VecRegexish {
+        type Error = OutOfRange;
+        fn refine(raw: Vec<i32>) -> Result<Vec<i32>, Self::Error> {
+            Ok(raw)
+        }
+    }
+
+    impl SchemaRule<Vec<i32>> for VecRegexish {
+        fn schema() -> Schema {
+            Schema::regex("^x$")
+        }
+    }
+
+    /// Length-row obligation, underclaim direction: the schema
+    /// rejects the 0-item edge, refine admits it. The collected
+    /// report carries every violation at once, so the same fixture
+    /// run drives each direction's assertion below.
+    #[test]
+    #[should_panic(expected = "refine admits the candidate")]
+    fn assert_collection_boundary_matrix_panics_when_schema_underclaims() {
+        assert_collection_boundary_matrix::<i32, VecWildly>(make_i32, extract_i32);
+    }
+
+    /// Length-row obligation, overclaim direction: the schema admits
+    /// the 3-item edge, refine rejects it.
+    #[test]
+    #[should_panic(expected = "refine rejects the candidate")]
+    fn assert_collection_boundary_matrix_panics_when_schema_overclaims() {
+        assert_collection_boundary_matrix::<i32, VecWildly>(make_i32, extract_i32);
+    }
+
+    /// The probe obligations fire in the same collected report.
+    #[test]
+    #[should_panic(expected = "refine admits a duplicate pair")]
+    fn assert_collection_boundary_matrix_panics_when_probes_are_admitted() {
+        assert_collection_boundary_matrix::<i32, VecWildly>(make_i32, extract_i32);
+    }
+
+    #[test]
+    #[should_panic(expected = "refine admits a descending pair")]
+    fn assert_collection_boundary_matrix_panics_when_sorted_probe_is_admitted() {
+        assert_collection_boundary_matrix::<i32, VecWildly>(make_i32, extract_i32);
+    }
+
+    #[test]
+    #[should_panic(expected = "refine admits an element outsider")]
+    fn assert_collection_boundary_matrix_panics_when_outsider_is_admitted() {
+        assert_collection_boundary_matrix::<i32, VecWildly>(make_i32, extract_i32);
+    }
+
+    /// A non-Collection schema yields no length row: vacuity is
+    /// reported, not silently passed.
+    #[test]
+    #[should_panic(expected = "vacuous")]
+    fn assert_collection_boundary_matrix_panics_when_vacuous() {
+        // A vacuous matrix never calls refine: pin the fixture's
+        // trivially-accepting refine before the panicking act.
+        assert_eq!(VecRegexish::refine(alloc::vec![1]), Ok(alloc::vec![1]),);
+        assert_collection_boundary_matrix::<i32, VecRegexish>(make_i32, extract_i32);
     }
 
     // ─── SchemaChar exhaustive oracle. ─────────────────────────────

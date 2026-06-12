@@ -50,8 +50,8 @@ pub use schema::{Schema, SchemaInterval, SchemaRule};
 pub use serde;
 #[cfg(feature = "proptest")]
 pub use testing::{
-    assert_closed_set_schema, assert_schema_boundary_matrix, assert_schema_char,
-    assert_string_boundary_matrix, prop_image_refines, prop_schema_cross_check,
+    assert_closed_set_schema, assert_collection_boundary_matrix, assert_schema_boundary_matrix,
+    assert_schema_char, assert_string_boundary_matrix, prop_image_refines, prop_schema_cross_check,
     prop_string_schema_cross_check, prop_total,
 };
 pub use transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
