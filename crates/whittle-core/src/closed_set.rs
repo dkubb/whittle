@@ -48,6 +48,10 @@
 //!    [`as_str`] panics loudly when it is violated (see its docs
 //!    for why that is a contract-violation diagnostic, not a
 //!    fallback).
+//!
+//! [`verify_table`] discharges these obligations mechanically to
+//! the extent expressible: hand-written impls call it once in a
+//! test; macro-generated impls don't need it.
 
 use alloc::string::String;
 
@@ -430,6 +434,77 @@ pub fn as_str<E: ClosedSet>(value: E) -> &'static str {
     );
 }
 
+// ─── Test support for hand-written impls. ─────────────────────────
+
+/// Mechanically discharge the hand-written-impl obligations of
+/// [`ClosedSet`] (see the [module docs](self)).
+///
+/// Hand-written impls call this once in a test; macro-generated
+/// impls don't need it — the
+/// [`closed_set!`](macro@crate::closed_set) declaration shape makes
+/// the violations unrepresentable.
+///
+/// Checks, to the extent expressible over an unenumerable enum:
+///
+/// 1. **Wire-string injectivity** (and non-emptiness) — re-forced
+///    at compile time via [`ClosedSet::VALID`]; a violating table
+///    fails to compile at this call.
+/// 2. **Variant coverage / table ↔ enum bijectivity** — for each
+///    table row `(wire, variant)`, [`as_str`] applied to `variant`
+///    must return that row's `wire`. A variant declared in two rows
+///    (an alias) fails on the second row. Together with injectivity
+///    this makes `parse(as_str(variant)) == Ok(variant)` hold for
+///    every declared row — the `parse` ∘ `as_str` round-trip is a
+///    corollary, not a separate runtime check.
+///
+/// What it cannot check: a variant that appears in **no** row. The
+/// enum is not enumerable generically; that violation surfaces as
+/// [`as_str`]'s own loud panic at first use.
+///
+/// # Panics
+///
+/// Panics naming the violated obligation when a table row's variant
+/// does not map back to that row's wire string.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::ClosedSet;
+/// use whittle_core::closed_set;
+///
+/// /// Feature toggle wire form.
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// enum Toggle {
+///     On,
+///     Off,
+/// }
+///
+/// impl ClosedSet for Toggle {
+///     const MEMBERS: &'static [(&'static str, Self)] =
+///         &[("on", Self::On), ("off", Self::Off)];
+/// }
+///
+/// // The hand-written impl's one-test obligation discharge.
+/// closed_set::verify_table::<Toggle>();
+/// ```
+pub fn verify_table<E>()
+where
+    E: ClosedSet + core::fmt::Debug,
+{
+    const { E::VALID };
+    for &(wire, variant) in E::MEMBERS {
+        let round = as_str(variant);
+        assert!(
+            round == wire,
+            "ClosedSet variant-coverage obligation violated: variant {variant:?} \
+             maps to wire string \"{round}\" but the table also declares the row \
+             (\"{wire}\", {variant:?}) — every variant must appear in MEMBERS \
+             exactly once (aliases are not supported; the closed_set! macro makes \
+             this unrepresentable)",
+        );
+    }
+}
+
 // ─── Serde: the wire shape is the plain wire string (P5). ─────────
 
 /// Serialize `value` as its plain wire string ([`as_str`]) — no
@@ -652,7 +727,7 @@ const fn flip_ascii_case(c: char) -> char {
 mod tests {
     use alloc::string::ToString as _;
 
-    use super::{ClosedSet, as_str, has_duplicate_wire_string, parse, str_eq};
+    use super::{ClosedSet, as_str, has_duplicate_wire_string, parse, str_eq, verify_table};
 
     /// First monomorphisation of the generic fns.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -767,6 +842,46 @@ mod tests {
         // variant-coverage obligation is violated, so the totality
         // diagnostic fires.
         let _wire: &str = as_str(Lawless::Unlisted);
+    }
+
+    /// Deliberately violates the one-row-per-variant obligation: a
+    /// hand-written table declaring the same variant under two wire
+    /// strings (an alias). Exists only to cover `verify_table`'s
+    /// rejection arm.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Aliased {
+        On,
+        Off,
+    }
+
+    impl ClosedSet for Aliased {
+        const MEMBERS: &'static [(&'static str, Self)] =
+            &[("on", Self::On), ("enabled", Self::On), ("off", Self::Off)];
+    }
+
+    #[test]
+    fn verify_table_passes_for_well_formed_tables() {
+        verify_table::<Status>();
+        verify_table::<Toggle>();
+        verify_table::<Digit>();
+    }
+
+    #[test]
+    fn verify_table_cannot_see_an_omitted_variant() {
+        // Documented expressibility limit: the enum is not
+        // enumerable generically, so a variant with no row at all
+        // (`Lawless::Unlisted`) is invisible to the row scan; that
+        // violation surfaces through `as_str`'s own panic instead.
+        verify_table::<Lawless>();
+    }
+
+    #[test]
+    #[should_panic(expected = "ClosedSet variant-coverage obligation violated")]
+    fn verify_table_panics_when_a_variant_is_declared_twice() {
+        // `Aliased::On` appears in two rows: `as_str` resolves it to
+        // the first row's wire, so the second row's check fails with
+        // the obligation named.
+        verify_table::<Aliased>();
     }
 
     #[test]
