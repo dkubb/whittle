@@ -130,7 +130,17 @@ The library makes no compile-time proof-discharge claims. Every invariant
 Whittle carries is enforced by runtime validation at construction.
 Downstream code that holds a refined value relies on Rust's ordinary
 trust-the-type discipline; the proof is "this type exists, therefore its
-constructor ran successfully," not a type-level theorem.
+constructor ran successfully," not a type-level theorem. [Amended
+2026-06-11: in the state-space-minimization formal vocabulary, this is
+a predicative encoding at rank 2 (constructor/parser) of the encoding
+order. Structurally `S(Refined<T, R>) ≅ S(T)` — the carrier is
+`#[repr(transparent)]` over `T` — while the admissible set is
+`C = { t ∈ T : R::refine(t) = Ok(…) }`. `try_new` is the boundary
+morphism: it restricts the reachable set to `C`, so `I_reach = ∅` even
+though `I_repr = S(T) \ C ≠ ∅`. `into_inner` is proof-erasing; `weaken`
+(Section 5.7) is the proof-preserving implication morphism. The claim
+is therefore boundary discharge, not structural discharge, which is why
+Section 5.2's single-construction-path requirement is load-bearing.]
 
 The library is single-developer in origin but is intended for ecosystem
 adoption. Public API decisions favour stability and consumer convenience
@@ -167,6 +177,15 @@ The model intentionally distinguishes:
 - the **schema**, which is a reflectable runtime description of the rule
   used by derived integrations (property generators, JSON Schema,
   pretty-printers).
+
+[Amended 2026-06-11: the model's names map onto the
+state-space-minimization formal vocabulary — the admissible state space
+is `C`; the narrowing morphism, realised by the smart constructor, is
+the boundary morphism through which all trust increases (`I_reach = ∅`
+over the predicative carrier, whose `I_repr` stays non-empty); the
+implication edge is the proof-preserving morphism realised by `weaken`;
+`into_inner` is the proof-erasing projection back to the raw input
+type.]
 
 A consumer-facing **named domain type** is the public face — a Rust
 newtype that wraps a refined value and exposes a delegating surface
@@ -571,6 +590,13 @@ Whittle is not:
 - a replacement for every Rust newtype (newtypes whose only purpose
   is nominal distinction without validation, like `branded`'s use
   case, are explicitly out of scope);
+- a wrapper for invariants the standard library already proves with
+  a smart-constructor type (`NonZeroU16` and kin): `Refined` is for
+  invariants the standard library cannot express [Amended
+  2026-06-11: added from dogfooding evidence — wrapping a stdlib
+  smart-constructor type in `Refined<_, Within<…>>` added proof
+  surface and unreachable bridges without shrinking the state
+  space];
 - a serialization format, an HTTP framework, a database adapter, or
   any other ecosystem layer above the narrowing boundary;
 - a context-passing effect system (the contextual-rule story handles
