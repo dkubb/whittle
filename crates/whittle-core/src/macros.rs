@@ -821,6 +821,12 @@ macro_rules! deserialize_rule {
 /// - `FromStr` and `TryFrom<&str>` forwarding to
 ///   [`closed_set::parse`](crate::closed_set::parse), and `Display`
 ///   forwarding to [`closed_set::as_str`](crate::closed_set::as_str);
+/// - an inherent `schema()` returning
+///   [`Schema::Enumerated`](crate::schema::Schema::Enumerated) with
+///   the wire-string labels in declaration order — the constructive
+///   description of the closed set, derived from the same
+///   declaration list as the `MEMBERS` table (do not define another
+///   inherent `schema` on the enum);
 /// - when whittle's `serde` feature is enabled, `Serialize` /
 ///   `Deserialize` impls forwarding to the closed-set codec — the
 ///   wire shape is the plain wire string, serialization is the
@@ -871,6 +877,12 @@ macro_rules! deserialize_rule {
 /// // `TryFrom<&str>` is the same boundary morphism.
 /// let by_try: ActivityStatus = "inactive".try_into().unwrap();
 /// assert_eq!(by_try, ActivityStatus::Inactive);
+///
+/// // The schema is the declared label set, in declaration order.
+/// assert_eq!(
+///     ActivityStatus::schema(),
+///     whittle_core::schema::Schema::enumerated(&["active", "inactive"]),
+/// );
 ///
 /// // Reject: exact error contents — the bounded offending value
 /// // and the expected set borrowed from the MEMBERS table.
@@ -950,6 +962,17 @@ macro_rules! closed_set {
         // Force the injectivity side condition at declaration time
         // rather than first use.
         const _: () = <$name as $crate::ClosedSet>::VALID;
+
+        impl $name {
+            /// Constructive schema of the closed set: the wire-string
+            /// labels in declaration order, as an `Enumerated` schema
+            /// node. Derived from the same declaration list as the
+            /// `ClosedSet::MEMBERS` table, so the two cannot drift.
+            #[must_use]
+            pub fn schema() -> $crate::schema::Schema {
+                $crate::schema::Schema::enumerated(&[$($wire),+])
+            }
+        }
 
         impl ::core::str::FromStr for $name {
             type Err = $crate::ClosedSetError<Self>;
@@ -1419,6 +1442,18 @@ mod tests {
                 ("active", TestActivityStatus::Active),
                 ("inactive", TestActivityStatus::Inactive),
             ],
+        );
+    }
+
+    #[test]
+    fn closed_set_macro_schema_is_the_declared_label_set() {
+        assert_eq!(
+            TestActivityStatus::schema(),
+            crate::schema::Schema::enumerated(&["active", "inactive"]),
+        );
+        assert_eq!(
+            TestBranch::schema(),
+            crate::schema::Schema::enumerated(&["main", "satellite"]),
         );
     }
 

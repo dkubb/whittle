@@ -49,7 +49,9 @@ pub use schema::{Schema, SchemaRule};
 #[doc(hidden)]
 pub use serde;
 #[cfg(feature = "proptest")]
-pub use testing::{prop_image_refines, prop_total};
+pub use testing::{
+    assert_closed_set_schema, prop_image_refines, prop_schema_cross_check, prop_total,
+};
 pub use transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 /// Compile-time-validated constructor for [`primitive::Pattern`].
 ///

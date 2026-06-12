@@ -53,8 +53,11 @@
 //!
 //! Available behind the `proptest` feature.
 
+use crate::closed_set::{self, ClosedSet};
 use crate::rule::Rule;
+use crate::schema::{Scalar, ScalarKind, Schema, SchemaRule};
 use alloc::format;
+use alloc::vec::Vec;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
 
 /// Run `test` against every generated `A`, panicking with the
@@ -217,6 +220,248 @@ where
     });
 }
 
+// ─── Schema cross-checks (IDEA §5.11). ─────────────────────────────
+//
+// `SchemaRule` introduces a second description of a rule's admitted
+// set; these helpers are the mechanical oracle keeping the two
+// determinants consistent until derived generation replaces the
+// hand-written strategies. Violations are collected and reported
+// together through one non-generic finisher, so a single
+// deliberately-inconsistent fixture exercises every check.
+
+/// Number of strategy samples each cross-check draws. Deterministic
+/// runner, so the sample set is stable across runs.
+const CROSS_CHECK_SAMPLES: u32 = 256;
+
+/// Panic with the collected cross-check violations, deduplicated.
+/// Non-generic on purpose: the panic is shared by every helper
+/// instantiation, so pass and fail paths merge into one function.
+fn finish_cross_check(subject: &str, mut violations: Vec<alloc::string::String>) {
+    violations.sort_unstable();
+    violations.dedup();
+    assert!(
+        violations.is_empty(),
+        "schema cross-check failed for {subject}:\n{}",
+        violations.join("\n"),
+    );
+}
+
+/// Cross-check a rule's [`SchemaRule`] schema against its `refine`
+/// and its hand-written [`ArbitraryRule`](crate::ArbitraryRule)
+/// strategy:
+///
+/// 1. **Schema endpoints pass `refine`.** Every finite interval
+///    endpoint of `R::schema()` — converted into the carrier through
+///    `extract` — must be admitted by `R::refine` and be a member of
+///    the schema itself.
+/// 2. **Strategy samples are schema members.** Every value the
+///    hand-written strategy emits — embedded into the scalar
+///    universe through `embed` — must be a member of `⟦schema⟧`
+///    under [`Schema::scalar_membership`].
+///
+/// `embed` is the carrier's embedding into the schema's scalar
+/// universe (`i32` → `(Integer, Int(widened))`, `f64` →
+/// `(Float, Float(value))`, `NaiveDate` →
+/// `(Date, Int(days from CE))`, …); `extract` is its partial inverse,
+/// total over the endpoints of the schemas it is used with (pick test
+/// instantiations whose endpoints fit the carrier).
+///
+/// Violations are collected and reported together, so one run
+/// surfaces every disagreement between the two determinants.
+///
+/// # Panics
+///
+/// Panics when a schema endpoint is rejected by `refine` or falls
+/// outside the schema, or when a strategy sample falls outside
+/// `⟦schema⟧` — each a violation of the [`SchemaRule`] soundness
+/// obligation, named in the message.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+/// use whittle_core::testing::prop_schema_cross_check;
+/// use whittle_core::{ArbitraryRule, Rule};
+///
+/// /// Admits `0..=100`.
+/// enum Percent {}
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// struct OutOfRange;
+///
+/// impl Rule<i32> for Percent {
+///     type Error = OutOfRange;
+///     fn refine(raw: i32) -> Result<i32, Self::Error> {
+///         if (0..=100).contains(&raw) { Ok(raw) } else { Err(OutOfRange) }
+///     }
+/// }
+///
+/// impl SchemaRule<i32> for Percent {
+///     fn schema() -> Schema {
+///         Schema::interval(
+///             ScalarKind::Integer,
+///             Bound::Inclusive(Scalar::Int(0)),
+///             Bound::Inclusive(Scalar::Int(100)),
+///         )
+///     }
+/// }
+///
+/// impl ArbitraryRule<i32> for Percent {
+///     type Strategy = core::ops::RangeInclusive<i32>;
+///     fn arbitrary_strategy() -> Self::Strategy {
+///         0..=100
+///     }
+/// }
+///
+/// prop_schema_cross_check::<i32, Percent>(
+///     |value| (ScalarKind::Integer, Scalar::Int(i128::from(*value))),
+///     |_kind, scalar| {
+///         i32::try_from(scalar.as_int().expect("integer schema")).expect("fits i32")
+///     },
+/// );
+/// ```
+pub fn prop_schema_cross_check<T, R>(
+    embed: fn(&T) -> (ScalarKind, Scalar),
+    extract: fn(ScalarKind, Scalar) -> T,
+) where
+    T: core::fmt::Debug + 'static,
+    R: SchemaRule<T> + crate::ArbitraryRule<T>,
+{
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let mut violations: Vec<alloc::string::String> = Vec::new();
+    let schema = R::schema();
+
+    // (1) Schema endpoints are members of the schema and pass refine.
+    for &(kind, scalar) in &schema.interval_endpoints() {
+        let member = extract(kind, scalar);
+        let (member_kind, member_scalar) = embed(&member);
+        if schema.scalar_membership(member_kind, &member_scalar) != Some(true) {
+            violations.push(format!(
+                "schema endpoint {member:?} is not a member of its own schema \
+                 (the embedding must agree with the schema's kind)",
+            ));
+        }
+        if R::refine(extract(kind, scalar)).is_err() {
+            violations.push(format!(
+                "schema endpoint {member:?} rejected by refine: the schema \
+                 declares a boundary value outside the admitted set",
+            ));
+        }
+    }
+
+    // (2) Strategy samples are ⟦schema⟧ members.
+    let strategy = R::arbitrary_strategy();
+    let mut runner = TestRunner::deterministic();
+    for _ in 0..CROSS_CHECK_SAMPLES {
+        let sample = strategy
+            .new_tree(&mut runner)
+            .expect("strategy must produce a value tree")
+            .current();
+        let (kind, scalar) = embed(&sample);
+        if schema.scalar_membership(kind, &scalar) != Some(true) {
+            violations.push(format!(
+                "ArbitraryRule sample {sample:?} is not a ⟦schema⟧ member: the \
+                 hand-written strategy and the schema disagree",
+            ));
+        }
+    }
+
+    finish_cross_check(core::any::type_name::<R>(), violations);
+}
+
+/// Cross-check a closed set's `Enumerated` schema against its
+/// [`ClosedSet::MEMBERS`] table:
+///
+/// 1. **Schema members parse.** The schema's labels must be exactly
+///    the table's wire strings, in declaration order, and every
+///    label must [`closed_set::parse`] back into the set (the
+///    closed-set analogue of "schema endpoints pass refine").
+/// 2. **Strategy samples are schema members.** Every value
+///    [`closed_set::admissible`] emits must render
+///    ([`closed_set::as_str`]) to one of the schema's labels.
+///
+/// `schema` is the value under test — pass the macro-emitted
+/// `Enum::schema()` (or a hand-written equivalent). Violations are
+/// collected and reported together.
+///
+/// # Panics
+///
+/// Panics when the schema is not an `Enumerated` node, when its
+/// labels differ from the `MEMBERS` wire strings, when a label fails
+/// to parse, or when an admissible sample renders outside the label
+/// set.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::closed_set;
+/// use whittle_core::testing::assert_closed_set_schema;
+///
+/// closed_set! {
+///     /// Feature toggle wire form.
+///     pub enum Toggle {
+///         /// Enabled.
+///         On = "on",
+///         /// Disabled.
+///         Off = "off",
+///     }
+/// }
+///
+/// assert_closed_set_schema::<Toggle>(&Toggle::schema());
+/// ```
+pub fn assert_closed_set_schema<E>(schema: &Schema)
+where
+    E: ClosedSet + core::fmt::Debug,
+{
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let mut violations: Vec<alloc::string::String> = Vec::new();
+
+    if let Some(labels) = schema.as_enumerated() {
+        // (1) Labels are exactly the MEMBERS wire strings, in order,
+        // and every label parses back into the set.
+        let wires: Vec<&'static str> = E::MEMBERS.iter().map(|member| member.0).collect();
+        if labels != wires {
+            violations.push(format!(
+                "Enumerated labels {labels:?} must be the MEMBERS wire strings \
+                 {wires:?} in declaration order",
+            ));
+        }
+        for label in labels {
+            if closed_set::parse::<E>(label).is_err() {
+                violations.push(format!(
+                    "schema label {label:?} does not parse: not a member of the \
+                     closed set",
+                ));
+            }
+        }
+
+        // (2) Admissible samples render to schema labels.
+        let strategy = closed_set::admissible::<E>();
+        let mut runner = TestRunner::deterministic();
+        for _ in 0..CROSS_CHECK_SAMPLES {
+            let sample = strategy
+                .new_tree(&mut runner)
+                .expect("strategy must produce a value tree")
+                .current();
+            let wire = closed_set::as_str(sample);
+            if !labels.contains(&wire) {
+                violations.push(format!(
+                    "admissible sample {sample:?} renders to {wire:?}, which is \
+                     not a schema label",
+                ));
+            }
+        }
+    } else {
+        violations.push(format!(
+            "closed-set schema must be an Enumerated node, got:\n{schema}",
+        ));
+    }
+
+    finish_cross_check(core::any::type_name::<E>(), violations);
+}
+
 #[cfg(test)]
 #[expect(
     clippy::panic,
@@ -288,5 +533,236 @@ mod tests {
     #[should_panic(expected = "image violates")]
     fn prop_image_refines_panics_on_inadmissible_output() {
         prop_image_refines::<Within<0, 10>, _, _, _>(inadmissible_constant as fn(Zero) -> u8);
+    }
+
+    // ─── Schema cross-checks. ──────────────────────────────────────
+
+    use super::{assert_closed_set_schema, prop_schema_cross_check};
+    use crate::rule::{ArbitraryRule, Rule};
+    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+
+    /// Consistent fixture over `i32`: refine, schema, and strategy
+    /// all describe `0..=100`.
+    enum PercentI32 {}
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct OutOfRange;
+
+    impl Rule<i32> for PercentI32 {
+        type Error = OutOfRange;
+        fn refine(raw: i32) -> Result<i32, Self::Error> {
+            if (0..=100).contains(&raw) {
+                Ok(raw)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<i32> for PercentI32 {
+        fn schema() -> Schema {
+            Schema::interval(
+                ScalarKind::Integer,
+                Bound::Inclusive(Scalar::Int(0)),
+                Bound::Inclusive(Scalar::Int(100)),
+            )
+        }
+    }
+
+    impl ArbitraryRule<i32> for PercentI32 {
+        type Strategy = core::ops::RangeInclusive<i32>;
+        fn arbitrary_strategy() -> Self::Strategy {
+            0..=100
+        }
+    }
+
+    /// Consistent fixture over `u8` — the second carrier
+    /// monomorphisation of the cross-check helper.
+    enum HalfU8 {}
+
+    impl Rule<u8> for HalfU8 {
+        type Error = OutOfRange;
+        fn refine(raw: u8) -> Result<u8, Self::Error> {
+            if raw <= 50 { Ok(raw) } else { Err(OutOfRange) }
+        }
+    }
+
+    impl SchemaRule<u8> for HalfU8 {
+        fn schema() -> Schema {
+            Schema::interval(
+                ScalarKind::Integer,
+                Bound::Inclusive(Scalar::Int(0)),
+                Bound::Inclusive(Scalar::Int(50)),
+            )
+        }
+    }
+
+    impl ArbitraryRule<u8> for HalfU8 {
+        type Strategy = core::ops::RangeInclusive<u8>;
+        fn arbitrary_strategy() -> Self::Strategy {
+            0..=50
+        }
+    }
+
+    /// Fixture violating every cross-check obligation in one run —
+    /// the collected-violations design lets a single instantiation
+    /// exercise every branch of the helper:
+    ///
+    /// - `refine` admits `0..=10`, but the schema also claims a
+    ///   `Date`-kind interval `[20, 30]` whose endpoints are rejected
+    ///   (endpoint-refine violation) and whose endpoints embed into
+    ///   the `Integer` kind, where membership is undecidable
+    ///   (endpoint-membership violation);
+    /// - the strategy emits `10` (a member) and `11` (not a member —
+    ///   sample-membership violation).
+    enum WildlyInconsistent {}
+
+    impl Rule<i32> for WildlyInconsistent {
+        type Error = OutOfRange;
+        fn refine(raw: i32) -> Result<i32, Self::Error> {
+            if (0..=10).contains(&raw) {
+                Ok(raw)
+            } else {
+                Err(OutOfRange)
+            }
+        }
+    }
+
+    impl SchemaRule<i32> for WildlyInconsistent {
+        fn schema() -> Schema {
+            Schema::union(
+                [
+                    Schema::interval(
+                        ScalarKind::Integer,
+                        Bound::Inclusive(Scalar::Int(0)),
+                        Bound::Inclusive(Scalar::Int(10)),
+                    ),
+                    Schema::interval(
+                        ScalarKind::Date,
+                        Bound::Inclusive(Scalar::Int(20)),
+                        Bound::Inclusive(Scalar::Int(30)),
+                    ),
+                ]
+                .into(),
+            )
+        }
+    }
+
+    impl ArbitraryRule<i32> for WildlyInconsistent {
+        type Strategy = core::ops::RangeInclusive<i32>;
+        fn arbitrary_strategy() -> Self::Strategy {
+            // Mixes a schema member (10) with a non-member (11), so
+            // one run exercises both sides of the sample check.
+            10..=11
+        }
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+    )]
+    fn embed_i32(value: &i32) -> (ScalarKind, Scalar) {
+        (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
+    }
+
+    fn extract_i32(_kind: ScalarKind, scalar: Scalar) -> i32 {
+        i32::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits i32")
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+    )]
+    fn embed_u8(value: &u8) -> (ScalarKind, Scalar) {
+        (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
+    }
+
+    fn extract_u8(_kind: ScalarKind, scalar: Scalar) -> u8 {
+        u8::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits u8")
+    }
+
+    /// Both obligations hold for consistent fixtures, across two
+    /// carrier monomorphisations.
+    #[test]
+    fn prop_schema_cross_check_passes_for_consistent_rules() {
+        prop_schema_cross_check::<i32, PercentI32>(embed_i32, extract_i32);
+        prop_schema_cross_check::<u8, HalfU8>(embed_u8, extract_u8);
+        // The cross-check only ever feeds the fixtures admissible
+        // values; pin their reject branches directly.
+        assert_eq!(PercentI32::refine(101), Err(OutOfRange));
+        assert_eq!(HalfU8::refine(51), Err(OutOfRange));
+    }
+
+    /// Obligation (1), refine half: a schema endpoint outside the
+    /// admitted set is a soundness violation, named in the report.
+    #[test]
+    #[should_panic(expected = "rejected by refine")]
+    fn prop_schema_cross_check_panics_when_schema_overclaims() {
+        prop_schema_cross_check::<i32, WildlyInconsistent>(embed_i32, extract_i32);
+    }
+
+    /// Obligation (1), membership half: an endpoint whose embedding
+    /// the schema cannot decide is reported alongside the rest.
+    #[test]
+    #[should_panic(expected = "is not a member of its own schema")]
+    fn prop_schema_cross_check_panics_when_embedding_disagrees() {
+        prop_schema_cross_check::<i32, WildlyInconsistent>(embed_i32, extract_i32);
+    }
+
+    /// Obligation (2) fires: a strategy sample outside ⟦schema⟧ means
+    /// the two determinants disagree. Same fixture, same panic — the
+    /// collected report carries every violation at once.
+    #[test]
+    #[should_panic(expected = "is not a ⟦schema⟧ member")]
+    fn prop_schema_cross_check_panics_when_strategy_leaks() {
+        prop_schema_cross_check::<i32, WildlyInconsistent>(embed_i32, extract_i32);
+    }
+
+    crate::closed_set! {
+        /// Macro-generated fixture: the tracer bullet through the
+        /// closed-set schema emission.
+        pub enum TestToggle {
+            /// Enabled.
+            On = "on",
+            /// Disabled.
+            Off = "off",
+        }
+    }
+
+    /// The macro-emitted schema satisfies both closed-set
+    /// obligations.
+    #[test]
+    fn assert_closed_set_schema_passes_for_macro_emitted_schema() {
+        assert_closed_set_schema::<TestToggle>(&TestToggle::schema());
+    }
+
+    /// A non-Enumerated schema is rejected up front.
+    #[test]
+    #[should_panic(expected = "must be an Enumerated node")]
+    fn assert_closed_set_schema_panics_for_non_enumerated_schema() {
+        assert_closed_set_schema::<TestToggle>(&Schema::regex("^x$"));
+    }
+
+    /// Reordered labels are a drift between the schema and the
+    /// MEMBERS table.
+    #[test]
+    #[should_panic(expected = "in declaration order")]
+    fn assert_closed_set_schema_panics_for_reordered_labels() {
+        assert_closed_set_schema::<TestToggle>(&Schema::enumerated(&["off", "on"]));
+    }
+
+    /// A label outside the closed set fails the parse obligation.
+    #[test]
+    #[should_panic(expected = "does not parse")]
+    fn assert_closed_set_schema_panics_for_unparseable_label() {
+        assert_closed_set_schema::<TestToggle>(&Schema::enumerated(&["on", "bogus"]));
+    }
+
+    /// A schema missing a member's wire string is caught by the
+    /// admissible-sample check.
+    #[test]
+    #[should_panic(expected = "not a schema label")]
+    fn assert_closed_set_schema_panics_for_missing_label() {
+        assert_closed_set_schema::<TestToggle>(&Schema::enumerated(&["on"]));
     }
 }
