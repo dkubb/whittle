@@ -822,7 +822,8 @@ macro_rules! deserialize_rule {
 ///   [`closed_set::parse`](crate::closed_set::parse), and `Display`
 ///   forwarding to [`closed_set::as_str`](crate::closed_set::as_str);
 /// - an inherent `schema()` returning
-///   [`Schema::Enumerated`](crate::schema::Schema::Enumerated) with
+///   an `Enumerated` schema
+///   ([`SchemaView::Enumerated`](crate::schema::SchemaView::Enumerated)) with
 ///   the wire-string labels in declaration order — the constructive
 ///   description of the closed set, derived from the same
 ///   declaration list as the `MEMBERS` table (do not define another

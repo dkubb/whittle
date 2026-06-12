@@ -20,8 +20,10 @@
 //!
 //! # Canonical form
 //!
-//! Smart constructors maintain canonical form, so the set of
-//! constructor-built values approximates the set of canonical trees:
+//! [`Schema`] is opaque over a private representation, so the smart
+//! constructors are the ONLY construction paths and every `Schema`
+//! value IS a canonical tree (canonical by construction; read trees
+//! back through [`Schema::view`]):
 //!
 //! - [`Schema::interval`] requires non-`NaN` endpoints with
 //!   `lo <= hi`, normalises `-0.0` to `0.0`, and reduces decimal
@@ -186,7 +188,7 @@ impl Ord for Scalar {
     }
 }
 
-/// The carrier domain an [`Schema::Interval`] describes.
+/// The carrier domain an [`SchemaView::Interval`] describes.
 ///
 /// The kind disambiguates integer-encoded carriers that share the
 /// `i128` widening: a date interval and a plain integer interval with
@@ -236,7 +238,7 @@ impl ScalarKind {
     }
 }
 
-/// One end of an [`Schema::Interval`].
+/// One end of an [`SchemaView::Interval`].
 ///
 /// Only inclusive finite endpoints exist: every shipped rule's
 /// admitted set is closed at its finite ends (open integer bounds
@@ -263,7 +265,7 @@ impl Bound {
     }
 }
 
-/// Length unit for [`Schema::Str`] bounds.
+/// Length unit for [`SchemaView::Str`] bounds.
 ///
 /// `LenChars` counts Unicode scalar values; `LenBytes` counts UTF-8
 /// bytes. The two units admit different sets for the same numeric
@@ -276,7 +278,7 @@ pub enum LenUnit {
     Bytes,
 }
 
-/// Closed length range for [`Schema::Str`] and [`Schema::Collection`]
+/// Closed length range for [`SchemaView::Str`] and [`SchemaView::Collection`]
 /// nodes: `min <= length <= max`, both ends inclusive.
 ///
 /// The fields are private so `lo <= hi` is an invariant, not a
@@ -567,7 +569,7 @@ fn char_predecessor(c: char) -> char {
     }
 }
 
-/// A canonicalisation morphism recorded by [`Schema::Canonicalized`].
+/// A canonicalisation morphism recorded by [`SchemaView::Canonicalized`].
 ///
 /// The morphism is the transformation `refine` applies to raw input
 /// before the inner rule runs. The carried set is the inner schema's
@@ -619,14 +621,94 @@ pub struct StringBoundary {
 
 /// Constructive description of an admitted set.
 ///
-/// Build values through the smart constructors ([`Schema::interval`],
-/// [`Schema::union`], …), which maintain the canonical form the
-/// module docs describe; `Eq`/`Ord`/`Display` are only meaningful on
-/// canonically-constructed values. The enum is a deliberately closed
-/// sum: a new node kind is a breaking change that every consumer
-/// match must acknowledge.
+/// `Schema` is an opaque struct over a private node tree: the smart
+/// constructors ([`Schema::interval`], [`Schema::union`], …) are the
+/// ONLY construction paths, so every `Schema` value IS a canonical
+/// tree — the canonical form the module docs describe holds by
+/// construction, not by convention. Read the tree through
+/// [`Schema::view`], which returns a borrowed [`SchemaView`]: full
+/// `match`-ability without a construction path, so a consumer can
+/// never assemble a non-canonical `Schema` out of node shapes.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Schema {
+pub struct Schema {
+    repr: SchemaRepr,
+}
+
+/// The private node tree behind [`Schema`]. Every variant's public
+/// denotation is documented on its [`SchemaView`] mirror; code in
+/// this module upholds the canonical-form invariants the smart
+/// constructors establish.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SchemaRepr {
+    /// See [`SchemaView::Interval`].
+    Interval {
+        kind: ScalarKind,
+        lo: Bound,
+        hi: Bound,
+    },
+    /// See [`SchemaView::Str`].
+    Str {
+        len: LenBound,
+        unit: LenUnit,
+        alphabet: CharSet,
+        first: Option<CharSet>,
+    },
+    /// See [`SchemaView::Regex`].
+    Regex(&'static str),
+    /// See [`SchemaView::Enumerated`].
+    Enumerated(&'static [&'static str]),
+    /// See [`SchemaView::Collection`].
+    Collection {
+        len: LenBound,
+        element: Box<Schema>,
+        sorted: bool,
+        unique: bool,
+    },
+    /// See [`SchemaView::Union`].
+    Union(Vec<Schema>),
+    /// See [`SchemaView::Intersection`].
+    Intersection(Vec<Schema>),
+    /// See [`SchemaView::Canonicalized`].
+    Canonicalized {
+        morphism: Morphism,
+        inner: Box<Schema>,
+    },
+}
+
+/// Borrowed read surface of a [`Schema`] tree: one variant per node
+/// shape, with borrowed payloads, returned by [`Schema::view`].
+///
+/// A view is for READING the canonical tree (derived generators,
+/// boundary matrices, residual-state reports, schema diffs — the
+/// R-S2 consumers): matching is total over the node shapes, but no
+/// view, however assembled, converts back into a [`Schema`] — the
+/// smart constructors stay the only construction paths, so the
+/// canonical-form invariants survive every consumer.
+///
+/// The enum is a deliberately closed sum: a new node kind is a
+/// breaking change that every consumer match must acknowledge.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema, SchemaView};
+///
+/// let percent = Schema::interval(
+///     ScalarKind::Integer,
+///     Bound::Inclusive(Scalar::Int(0)),
+///     Bound::Inclusive(Scalar::Int(100)),
+/// );
+/// assert_eq!(
+///     percent.view(),
+///     SchemaView::Interval {
+///         kind: ScalarKind::Integer,
+///         lo: Bound::Inclusive(Scalar::Int(0)),
+///         hi: Bound::Inclusive(Scalar::Int(100)),
+///     },
+/// );
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchemaView<'schema> {
     /// A scalar interval, closed at each finite end. The admitted set
     /// is the interval intersected with the carrier's own
     /// representable range under the kind's encoding.
@@ -645,10 +727,10 @@ pub enum Schema {
         /// Unit the length range counts.
         unit: LenUnit,
         /// Characters admitted at every position.
-        alphabet: CharSet,
+        alphabet: &'schema CharSet,
         /// Stricter set for the first character, when the rule
         /// distinguishes it ([`FirstChar`](crate::primitive::FirstChar)).
-        first: Option<CharSet>,
+        first: Option<&'schema CharSet>,
     },
     /// Strings the regular expression matches over their WHOLE span
     /// — anchored semantics, exactly as the `refine` of
@@ -669,7 +751,7 @@ pub enum Schema {
         /// Admitted item-count range.
         len: LenBound,
         /// Schema every element satisfies.
-        element: Box<Self>,
+        element: &'schema Schema,
         /// Elements are sorted ascending
         /// ([`Sorted`](crate::primitive::Sorted)).
         sorted: bool,
@@ -680,12 +762,12 @@ pub enum Schema {
     /// The union of the members' sets. Canonical: flattened, sorted,
     /// deduplicated, and never a singleton (a single member collapses
     /// to the member itself), so at least two members are present.
-    Union(Vec<Self>),
+    Union(&'schema [Schema]),
     /// The intersection of the members' sets — the residual symbolic
     /// form for operands the canonicalizer cannot fuse. Canonical:
     /// flattened, sorted, deduplicated, same-kind intervals fused,
     /// never a singleton.
-    Intersection(Vec<Self>),
+    Intersection(&'schema [Schema]),
     /// A canonicalising rule: the carried set is `inner`'s set; the
     /// recorded morphism maps raw input onto it (so the raw-input
     /// preimage is the morphism's preimage of the inner set).
@@ -693,7 +775,7 @@ pub enum Schema {
         /// The canonicalisation applied to raw input.
         morphism: Morphism,
         /// Schema of the carried (post-morphism) set.
-        inner: Box<Self>,
+        inner: &'schema Schema,
     },
 }
 
@@ -765,7 +847,9 @@ impl Schema {
             );
         }
         let (kind, lo, hi) = reduce_decimal_scale(kind, lo, hi);
-        Self::Interval { kind, lo, hi }
+        Self {
+            repr: SchemaRepr::Interval { kind, lo, hi },
+        }
     }
 
     /// Build a string schema from its length bound, length unit,
@@ -792,11 +876,13 @@ impl Schema {
         alphabet: CharSet,
         first: Option<CharSet>,
     ) -> Self {
-        Self::Str {
-            len,
-            unit,
-            alphabet,
-            first,
+        Self {
+            repr: SchemaRepr::Str {
+                len,
+                unit,
+                alphabet,
+                first,
+            },
         }
     }
 
@@ -804,21 +890,23 @@ impl Schema {
     ///
     /// The denoted set is the WHOLE-STRING language: a string is a
     /// member only when the pattern matches its entire span (see
-    /// [`Schema::Regex`]). Producers whose `refine` performs a
+    /// [`SchemaView::Regex`]). Producers whose `refine` performs a
     /// substring search must not use this node.
     ///
     /// # Examples
     ///
     /// ```
-    /// use whittle_core::schema::Schema;
+    /// use whittle_core::schema::{Schema, SchemaView};
     ///
     /// let name = Schema::regex(r"^[A-Z][a-z]*$");
-    /// assert_eq!(name, Schema::Regex(r"^[A-Z][a-z]*$"));
+    /// assert_eq!(name.view(), SchemaView::Regex(r"^[A-Z][a-z]*$"));
     /// ```
     #[inline]
     #[must_use]
     pub const fn regex(pattern: &'static str) -> Self {
-        Self::Regex(pattern)
+        Self {
+            repr: SchemaRepr::Regex(pattern),
+        }
     }
 
     /// Build an enumerated schema from a closed set's labels, in
@@ -851,7 +939,9 @@ impl Schema {
                 "Schema::enumerated: labels must be duplicate-free",
             );
         }
-        Self::Enumerated(labels)
+        Self {
+            repr: SchemaRepr::Enumerated(labels),
+        }
     }
 
     /// Build a collection schema from its length bound, element
@@ -877,11 +967,13 @@ impl Schema {
     #[inline]
     #[must_use]
     pub fn collection(len: LenBound, element: Self, sorted: bool, unique: bool) -> Self {
-        Self::Collection {
-            len,
-            element: Box::new(element),
-            sorted,
-            unique,
+        Self {
+            repr: SchemaRepr::Collection {
+                len,
+                element: Box::new(element),
+                sorted,
+                unique,
+            },
         }
     }
 
@@ -924,7 +1016,7 @@ impl Schema {
         );
         let mut flat: Vec<Self> = Vec::with_capacity(members.len());
         for member in members {
-            if let Self::Union(inner) = member {
+            if let SchemaRepr::Union(inner) = member.repr {
                 flat.extend(inner);
             } else {
                 flat.push(member);
@@ -932,7 +1024,7 @@ impl Schema {
         }
         flat.sort_unstable();
         flat.dedup();
-        collapse_singleton(flat, Self::Union)
+        collapse_singleton(flat, SchemaRepr::Union)
     }
 
     /// Build the intersection of `members`' sets, canonicalising:
@@ -982,9 +1074,9 @@ impl Schema {
         let mut others: Vec<Self> = Vec::new();
         let mut queue: Vec<Self> = members;
         while let Some(member) = queue.pop() {
-            if let Self::Intersection(inner) = member {
+            if let SchemaRepr::Intersection(inner) = member.repr {
                 queue.extend(inner);
-            } else if let Self::Interval { kind, lo, hi } = member {
+            } else if let SchemaRepr::Interval { kind, lo, hi } = member.repr {
                 match intervals.iter_mut().find(|(k, _, _)| *k == kind) {
                     Some((_, fused_lo, fused_hi)) => {
                         *fused_lo = fuse_lo(*fused_lo, lo);
@@ -1005,7 +1097,7 @@ impl Schema {
         }
         flat.sort_unstable();
         flat.dedup();
-        collapse_singleton(flat, Self::Intersection)
+        collapse_singleton(flat, SchemaRepr::Intersection)
     }
 
     /// Build a canonicalised schema: the carried set is `inner`'s
@@ -1026,14 +1118,16 @@ impl Schema {
     #[inline]
     #[must_use]
     pub fn canonicalized(morphism: Morphism, inner: Self) -> Self {
-        Self::Canonicalized {
-            morphism,
-            inner: Box::new(inner),
+        Self {
+            repr: SchemaRepr::Canonicalized {
+                morphism,
+                inner: Box::new(inner),
+            },
         }
     }
 
     /// The enumerated labels, when this schema is
-    /// [`Schema::Enumerated`].
+    /// [`SchemaView::Enumerated`].
     ///
     /// # Examples
     ///
@@ -1047,10 +1141,74 @@ impl Schema {
     #[inline]
     #[must_use]
     pub const fn as_enumerated(&self) -> Option<&'static [&'static str]> {
-        if let Self::Enumerated(labels) = *self {
+        if let SchemaRepr::Enumerated(labels) = self.repr {
             Some(labels)
         } else {
             None
+        }
+    }
+
+    /// Borrowed view of the root node: the read surface for derived
+    /// tooling (see [`SchemaView`]).
+    ///
+    /// Recurse by calling `view` again on the borrowed children
+    /// ([`SchemaView::Collection`]'s element, [`SchemaView::Union`] /
+    /// [`SchemaView::Intersection`] members,
+    /// [`SchemaView::Canonicalized`]'s inner schema).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Morphism, Schema, SchemaView};
+    ///
+    /// let trimmed = Schema::canonicalized(
+    ///     Morphism::Trim,
+    ///     Schema::enumerated(&["on", "off"]),
+    /// );
+    /// let SchemaView::Canonicalized { morphism, inner } = trimmed.view() else {
+    ///     panic!("constructed as Canonicalized");
+    /// };
+    /// assert_eq!(morphism, Morphism::Trim);
+    /// assert_eq!(inner.view(), SchemaView::Enumerated(&["on", "off"]));
+    /// ```
+    #[must_use]
+    pub fn view(&self) -> SchemaView<'_> {
+        match &self.repr {
+            SchemaRepr::Interval { kind, lo, hi } => SchemaView::Interval {
+                kind: *kind,
+                lo: *lo,
+                hi: *hi,
+            },
+            SchemaRepr::Str {
+                len,
+                unit,
+                alphabet,
+                first,
+            } => SchemaView::Str {
+                len: *len,
+                unit: *unit,
+                alphabet,
+                first: first.as_ref(),
+            },
+            SchemaRepr::Regex(pattern) => SchemaView::Regex(pattern),
+            SchemaRepr::Enumerated(labels) => SchemaView::Enumerated(labels),
+            SchemaRepr::Collection {
+                len,
+                element,
+                sorted,
+                unique,
+            } => SchemaView::Collection {
+                len: *len,
+                element,
+                sorted: *sorted,
+                unique: *unique,
+            },
+            SchemaRepr::Union(members) => SchemaView::Union(members),
+            SchemaRepr::Intersection(members) => SchemaView::Intersection(members),
+            SchemaRepr::Canonicalized { morphism, inner } => SchemaView::Canonicalized {
+                morphism: *morphism,
+                inner,
+            },
         }
     }
 
@@ -1086,26 +1244,26 @@ impl Schema {
     }
 
     fn collect_interval_endpoints(&self, endpoints: &mut Vec<(ScalarKind, Scalar)>) {
-        match self {
-            Self::Interval { kind, lo, hi } => {
+        match &self.repr {
+            SchemaRepr::Interval { kind, lo, hi } => {
                 for bound in [lo, hi] {
                     if let Some(scalar) = bound.scalar() {
                         endpoints.push((*kind, scalar));
                     }
                 }
             }
-            Self::Union(members) | Self::Intersection(members) => {
+            SchemaRepr::Union(members) | SchemaRepr::Intersection(members) => {
                 for member in members {
                     member.collect_interval_endpoints(endpoints);
                 }
             }
-            Self::Collection { element, .. } => {
+            SchemaRepr::Collection { element, .. } => {
                 element.collect_interval_endpoints(endpoints);
             }
-            Self::Canonicalized { inner, .. } => {
+            SchemaRepr::Canonicalized { inner, .. } => {
                 inner.collect_interval_endpoints(endpoints);
             }
-            Self::Str { .. } | Self::Regex(_) | Self::Enumerated(_) => {}
+            SchemaRepr::Str { .. } | SchemaRepr::Regex(_) | SchemaRepr::Enumerated(_) => {}
         }
     }
 
@@ -1148,8 +1306,8 @@ impl Schema {
     /// ```
     #[must_use]
     pub fn scalar_membership(&self, kind: ScalarKind, value: &Scalar) -> Option<bool> {
-        match self {
-            Self::Interval {
+        match &self.repr {
+            SchemaRepr::Interval {
                 kind: interval_kind,
                 lo,
                 hi,
@@ -1159,24 +1317,25 @@ impl Schema {
                 }
                 Some(bound_admits_below(*lo, value) && bound_admits_above(*hi, value))
             }
-            Self::Union(members) => {
+            SchemaRepr::Union(members) => {
                 let answers: Vec<Option<bool>> = members
                     .iter()
                     .map(|member| member.scalar_membership(kind, value))
                     .collect();
                 combine_membership(&answers, |decided| decided.contains(&true))
             }
-            Self::Intersection(members) => {
+            SchemaRepr::Intersection(members) => {
                 let answers: Vec<Option<bool>> = members
                     .iter()
                     .map(|member| member.scalar_membership(kind, value))
                     .collect();
                 combine_membership(&answers, |decided| !decided.contains(&false))
             }
-            Self::Canonicalized { inner, .. } => inner.scalar_membership(kind, value),
-            Self::Str { .. } | Self::Regex(_) | Self::Enumerated(_) | Self::Collection { .. } => {
-                None
-            }
+            SchemaRepr::Canonicalized { inner, .. } => inner.scalar_membership(kind, value),
+            SchemaRepr::Str { .. }
+            | SchemaRepr::Regex(_)
+            | SchemaRepr::Enumerated(_)
+            | SchemaRepr::Collection { .. } => None,
         }
     }
 
@@ -1184,12 +1343,12 @@ impl Schema {
     /// where the vocabulary is string-decidable.
     ///
     /// Returns `Some(true)`/`Some(false)` when every node consulted
-    /// can decide — [`Schema::Str`] nodes by length, alphabet, and
-    /// first-character checks, [`Schema::Enumerated`] nodes by label
+    /// can decide — [`SchemaView::Str`] nodes by length, alphabet, and
+    /// first-character checks, [`SchemaView::Enumerated`] nodes by label
     /// lookup — and `None` when the answer depends on a node outside
-    /// the string fragment. [`Schema::Regex`] is `None` by design:
+    /// the string fragment. [`SchemaView::Regex`] is `None` by design:
     /// deciding it needs a regex engine, which the `no_std` kernel
-    /// does not carry. [`Schema::Canonicalized`] decides membership
+    /// does not carry. [`SchemaView::Canonicalized`] decides membership
     /// of the CARRIED set (its inner schema), matching the
     /// [`SchemaRule`] denotation.
     ///
@@ -1207,8 +1366,8 @@ impl Schema {
     /// ```
     #[must_use]
     pub fn string_membership(&self, value: &str) -> Option<bool> {
-        match self {
-            Self::Str {
+        match &self.repr {
+            SchemaRepr::Str {
                 len,
                 unit,
                 alphabet,
@@ -1220,23 +1379,25 @@ impl Schema {
                 first.as_ref(),
                 value,
             )),
-            Self::Enumerated(labels) => Some(labels.contains(&value)),
-            Self::Union(members) => {
+            SchemaRepr::Enumerated(labels) => Some(labels.contains(&value)),
+            SchemaRepr::Union(members) => {
                 let answers: Vec<Option<bool>> = members
                     .iter()
                     .map(|member| member.string_membership(value))
                     .collect();
                 combine_membership(&answers, |decided| decided.contains(&true))
             }
-            Self::Intersection(members) => {
+            SchemaRepr::Intersection(members) => {
                 let answers: Vec<Option<bool>> = members
                     .iter()
                     .map(|member| member.string_membership(value))
                     .collect();
                 combine_membership(&answers, |decided| !decided.contains(&false))
             }
-            Self::Canonicalized { inner, .. } => inner.string_membership(value),
-            Self::Interval { .. } | Self::Regex(_) | Self::Collection { .. } => None,
+            SchemaRepr::Canonicalized { inner, .. } => inner.string_membership(value),
+            SchemaRepr::Interval { .. } | SchemaRepr::Regex(_) | SchemaRepr::Collection { .. } => {
+                None
+            }
         }
     }
 
@@ -1319,11 +1480,11 @@ impl Schema {
     /// The derived string boundary matrix, classified by the
     /// schema's own membership verdict:
     ///
-    /// - [`Schema::Enumerated`] nodes contribute their labels plus
+    /// - [`SchemaView::Enumerated`] nodes contribute their labels plus
     ///   derived near-misses (case-flips, truncations, one-character
     ///   extensions, the empty string — the same derivation
     ///   [`crate::closed_set::rejects`] uses);
-    /// - [`Schema::Str`] nodes contribute the empty string, length
+    /// - [`SchemaView::Str`] nodes contribute the empty string, length
     ///   edges (`MIN−1`/`MIN`/`MIN+1`/`MAX`/`MAX+1`, capped at
     ///   [`STR_BOUNDARY_LEN_CAP`] units — an uncapped `u64::MAX`
     ///   bound yields no candidate), an alphabet near-miss (an
@@ -1342,7 +1503,7 @@ impl Schema {
     ///
     /// Candidates whose membership the schema cannot decide
     /// ([`Schema::string_membership`] returns `None`) are omitted.
-    /// [`Schema::Collection`] elements contribute nothing: their
+    /// [`SchemaView::Collection`] elements contribute nothing: their
     /// carrier is not a string, so element-level candidates have no
     /// string embedding at the root. The result is sorted and
     /// deduplicated.
@@ -1387,20 +1548,20 @@ impl Schema {
     /// every node; [`Schema::string_boundaries`] classifies them at
     /// the root.
     fn collect_string_candidates(&self, out: &mut Vec<String>) {
-        match self {
-            Self::Enumerated(labels) => {
+        match &self.repr {
+            SchemaRepr::Enumerated(labels) => {
                 out.extend(labels.iter().map(|label| String::from(*label)));
                 out.extend(crate::closed_set::near_miss_candidates(
                     labels.iter().copied(),
                 ));
             }
-            Self::Union(members) | Self::Intersection(members) => {
+            SchemaRepr::Union(members) | SchemaRepr::Intersection(members) => {
                 for member in members {
                     member.collect_string_candidates(out);
                 }
             }
-            Self::Canonicalized { inner, .. } => inner.collect_string_candidates(out),
-            Self::Str {
+            SchemaRepr::Canonicalized { inner, .. } => inner.collect_string_candidates(out),
+            SchemaRepr::Str {
                 len,
                 unit,
                 alphabet,
@@ -1409,12 +1570,12 @@ impl Schema {
             // `Collection` elements have no string embedding at the
             // root (see the method docs); intervals and regexes
             // contribute nothing.
-            Self::Regex(_) | Self::Interval { .. } | Self::Collection { .. } => {}
+            SchemaRepr::Regex(_) | SchemaRepr::Interval { .. } | SchemaRepr::Collection { .. } => {}
         }
     }
 }
 
-/// Length cap for generated [`Schema::Str`] boundary candidates:
+/// Length cap for generated [`SchemaView::Str`] boundary candidates:
 /// length edges above it yield no candidate.
 ///
 /// The unconstrained `u64::MAX` bound is the motivating case — a
@@ -1424,7 +1585,7 @@ impl Schema {
 /// inside.
 pub const STR_BOUNDARY_LEN_CAP: u64 = 4096;
 
-/// Collect one [`Schema::Str`] node's raw boundary candidates; the
+/// Collect one [`SchemaView::Str`] node's raw boundary candidates; the
 /// root classifies them (see [`Schema::string_boundaries`]).
 fn collect_str_candidates(
     len: LenBound,
@@ -1565,7 +1726,7 @@ fn scalar_succ(scalar: Scalar) -> Option<Scalar> {
     }
 }
 
-/// Decide a [`Schema::Str`] node's membership for one string: the
+/// Decide a [`SchemaView::Str`] node's membership for one string: the
 /// length (measured in the node's unit) must fall in the bound,
 /// every character must be in the alphabet, and the first character
 /// (when one exists) must be in the first-character set (when the
@@ -1712,11 +1873,13 @@ fn fuse_hi(a: Bound, b: Bound) -> Bound {
 
 /// A canonical n-ary node never holds a single member: collapse to
 /// the member itself, otherwise wrap with `node`.
-fn collapse_singleton(mut members: Vec<Schema>, node: fn(Vec<Schema>) -> Schema) -> Schema {
+fn collapse_singleton(mut members: Vec<Schema>, node: fn(Vec<Schema>) -> SchemaRepr) -> Schema {
     if members.len() == 1 {
         members.remove(0)
     } else {
-        node(members)
+        Schema {
+            repr: node(members),
+        }
     }
 }
 
@@ -1769,9 +1932,9 @@ fn fmt_schema_at(
     for _ in 0..depth {
         f.write_str("  ")?;
     }
-    match schema {
-        Schema::Interval { kind, lo, hi } => fmt_interval(f, *kind, *lo, *hi),
-        Schema::Str {
+    match &schema.repr {
+        SchemaRepr::Interval { kind, lo, hi } => fmt_interval(f, *kind, *lo, *hi),
+        SchemaRepr::Str {
             len,
             unit,
             alphabet,
@@ -1790,8 +1953,8 @@ fn fmt_schema_at(
         }
         // "whole string" is part of the denotation, not decoration:
         // the node admits exactly the full-span matches.
-        Schema::Regex(pattern) => write!(f, "whole string matches /{pattern}/"),
-        Schema::Enumerated(labels) => {
+        SchemaRepr::Regex(pattern) => write!(f, "whole string matches /{pattern}/"),
+        SchemaRepr::Enumerated(labels) => {
             f.write_str("one of ")?;
             for (index, label) in labels.iter().enumerate() {
                 if index > 0 {
@@ -1801,7 +1964,7 @@ fn fmt_schema_at(
             }
             Ok(())
         }
-        Schema::Collection {
+        SchemaRepr::Collection {
             len,
             element,
             sorted,
@@ -1817,9 +1980,9 @@ fn fmt_schema_at(
             f.write_str(")\n")?;
             fmt_schema_at(element, f, depth + 1)
         }
-        Schema::Union(members) => fmt_members(f, "any of", members, depth),
-        Schema::Intersection(members) => fmt_members(f, "all of", members, depth),
-        Schema::Canonicalized { morphism, inner } => {
+        SchemaRepr::Union(members) => fmt_members(f, "any of", members, depth),
+        SchemaRepr::Intersection(members) => fmt_members(f, "all of", members, depth),
+        SchemaRepr::Canonicalized { morphism, inner } => {
             writeln!(f, "canonicalized by {morphism}")?;
             fmt_schema_at(inner, f, depth + 1)
         }
@@ -1971,7 +2134,7 @@ impl core::fmt::Display for CharSet {
 /// preimage. The two readings coincide for pure predicates, whose
 /// `refine` is the identity on admissible input (IDEA §5.12
 /// idempotence); for canonicalising rules the
-/// [`Schema::Canonicalized`] node's inner schema denotes the carried
+/// [`SchemaView::Canonicalized`] node's inner schema denotes the carried
 /// set and the recorded [`Morphism`] describes how raw input reaches
 /// it (the accepted preimage is the morphism's preimage of the inner
 /// set).
@@ -2052,12 +2215,14 @@ where
     reason = "explicit in test code"
 )]
 mod tests {
-    use alloc::boxed::Box;
     use alloc::string::ToString as _;
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use super::{Bound, CharSet, LenBound, LenUnit, Morphism, Scalar, ScalarKind, Schema};
+    use super::{
+        Bound, CharSet, LenBound, LenUnit, Morphism, Scalar, ScalarKind, Schema, SchemaRepr,
+        SchemaView,
+    };
 
     fn int_interval(lo: i128, hi: i128) -> Schema {
         Schema::interval(
@@ -2113,8 +2278,8 @@ mod tests {
     fn interval_accepts_degenerate_singleton() {
         let point = int_interval(42, 42);
         assert_eq!(
-            point,
-            Schema::Interval {
+            point.view(),
+            SchemaView::Interval {
                 kind: ScalarKind::Integer,
                 lo: Bound::Inclusive(Scalar::Int(42)),
                 hi: Bound::Inclusive(Scalar::Int(42)),
@@ -2207,8 +2372,8 @@ mod tests {
             Bound::Inclusive(Scalar::Int(25)),
         );
         assert_eq!(
-            interval,
-            Schema::Interval {
+            interval.view(),
+            SchemaView::Interval {
                 kind: ScalarKind::Decimal { scale: 1 },
                 lo: Bound::Inclusive(Scalar::Int(5)),
                 hi: Bound::Inclusive(Scalar::Int(25)),
@@ -2327,37 +2492,39 @@ mod tests {
             CharSet::from_ranges([('a', 'z')]),
             Some(CharSet::from_ranges([('_', '_')])),
         );
+        let alphabet = CharSet::from_ranges([('a', 'z')]);
+        let first = CharSet::from_ranges([('_', '_')]);
         assert_eq!(
-            ident,
-            Schema::Str {
+            ident.view(),
+            SchemaView::Str {
                 len: LenBound::new(1, 64),
                 unit: LenUnit::Chars,
-                alphabet: CharSet::from_ranges([('a', 'z')]),
-                first: Some(CharSet::from_ranges([('_', '_')])),
+                alphabet: &alphabet,
+                first: Some(&first),
             },
         );
         let list = Schema::collection(LenBound::new(0, 8), ident.clone(), false, true);
         assert_eq!(
-            list,
-            Schema::Collection {
+            list.view(),
+            SchemaView::Collection {
                 len: LenBound::new(0, 8),
-                element: Box::new(ident),
+                element: &ident,
                 sorted: false,
                 unique: true,
             },
         );
         let trimmed = Schema::canonicalized(Morphism::Trim, list.clone());
         assert_eq!(
-            trimmed,
-            Schema::Canonicalized {
+            trimmed.view(),
+            SchemaView::Canonicalized {
                 morphism: Morphism::Trim,
-                inner: Box::new(list),
+                inner: &list,
             },
         );
         // Support types are ordered for canonical sorting.
         assert!(LenUnit::Chars < LenUnit::Bytes);
         assert!(Morphism::Trim < Morphism::AsciiLowercase);
-        assert_eq!(Schema::regex("^a$"), Schema::Regex("^a$"));
+        assert_eq!(Schema::regex("^a$").view(), SchemaView::Regex("^a$"));
     }
 
     // ─── Union canonical invariants. ───────────────────────────────
@@ -2376,12 +2543,8 @@ mod tests {
         assert_eq!(nested, flat);
         // The canonical form is the sorted, deduplicated member list.
         assert_eq!(
-            flat,
-            Schema::Union(vec![
-                int_interval(0, 1),
-                int_interval(5, 9),
-                int_interval(20, 30),
-            ]),
+            flat.view(),
+            SchemaView::Union(&[int_interval(0, 1), int_interval(5, 9), int_interval(20, 30),]),
         );
     }
 
@@ -2486,8 +2649,8 @@ mod tests {
         let mixed = Schema::intersection(vec![int.clone(), float.clone()]);
         // The canonical residual form is the sorted symbolic pair.
         assert_eq!(
-            mixed,
-            Schema::Intersection(vec![int.clone(), float.clone()]),
+            mixed.view(),
+            SchemaView::Intersection(&[int.clone(), float.clone()]),
         );
         // Construction order is irrelevant.
         assert_eq!(mixed, Schema::intersection(vec![float, int]));
@@ -3603,13 +3766,17 @@ mod tests {
 
     #[test]
     fn display_renders_float_endpoint_under_decimal_kind_literal() {
-        // Only reachable through a literal (non-canonical) value: the
-        // constructors reject regime mismatches. The renderer stays
-        // total and falls back to the scalar's own number.
-        let literal = Schema::Interval {
-            kind: ScalarKind::Decimal { scale: 2 },
-            lo: Bound::Inclusive(Scalar::Float(0.5)),
-            hi: Bound::Unbounded,
+        // Unreachable through the public surface: the constructors
+        // reject regime mismatches and the representation is private,
+        // so only a module-internal literal can build it. The
+        // renderer stays total over the repr and falls back to the
+        // scalar's own number.
+        let literal = Schema {
+            repr: SchemaRepr::Interval {
+                kind: ScalarKind::Decimal { scale: 2 },
+                lo: Bound::Inclusive(Scalar::Float(0.5)),
+                hi: Bound::Unbounded,
+            },
         };
         assert_eq!(literal.to_string(), "decimal in 0.5..");
     }

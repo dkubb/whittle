@@ -146,7 +146,8 @@ impl<const RE: &'static str> Rule<String> for Pattern<RE> {
 
 impl<const RE: &'static str> SchemaRule<String> for Pattern<RE> {
     /// The pattern IS the fragment: the schema carries `RE` itself
-    /// ([`Schema::Regex`]), and the node's whole-string denotation
+    /// ([`SchemaView::Regex`](crate::schema::SchemaView::Regex)), and
+    /// the node's whole-string denotation
     /// is exactly `refine`'s full-span check — no anchoring is lost
     /// in the schema. Membership of a `Regex` node is
     /// undecidable inside the kernel (deciding it needs the regex
@@ -275,14 +276,14 @@ mod tests {
 
     #[test]
     fn schema_is_the_pattern_fragment() {
-        use crate::schema::{Schema, SchemaRule};
+        use crate::schema::{SchemaRule, SchemaView};
         assert_eq!(
-            <Name as SchemaRule<String>>::schema(),
-            Schema::Regex(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$"),
+            <Name as SchemaRule<String>>::schema().view(),
+            SchemaView::Regex(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$"),
         );
         assert_eq!(
-            <Digits as SchemaRule<String>>::schema(),
-            Schema::Regex(r"[0-9]+"),
+            <Digits as SchemaRule<String>>::schema().view(),
+            SchemaView::Regex(r"[0-9]+"),
         );
         // A Regex schema is constructively opaque to the kernel's
         // membership and boundary folds: refine stays the only
