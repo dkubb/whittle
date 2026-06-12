@@ -688,16 +688,8 @@ where
 {
     use proptest::strategy::Strategy as _;
     let mut derived: alloc::vec::Vec<String> = alloc::vec::Vec::new();
-    push_reject::<E>(&mut derived, String::new());
-    for &(wire, _) in E::MEMBERS {
-        let flipped: String = wire.chars().map(flip_ascii_case).collect();
-        push_reject::<E>(&mut derived, flipped);
-        let mut truncated = String::from(wire);
-        truncated.pop();
-        push_reject::<E>(&mut derived, truncated);
-        let mut extended = String::from(wire);
-        extended.push('x');
-        push_reject::<E>(&mut derived, extended);
+    for candidate in near_miss_candidates(E::MEMBERS.iter().map(|&(wire, _)| wire)) {
+        push_reject::<E>(&mut derived, candidate);
     }
     proptest::prop_oneof![
         proptest::sample::select(derived),
@@ -708,8 +700,35 @@ where
     ]
 }
 
+/// Near-miss candidates derived from a set of wire labels: the empty
+/// string, plus an ASCII case-flip, a last-character truncation, and
+/// a one-character extension per label.
+///
+/// UNFILTERED by design — a candidate can collide with a label (the
+/// truncation of `"ab"` in `{"a", "ab"}` is `"a"`), so each caller
+/// classifies against its own membership determinant: [`rejects`]
+/// filters against [`ClosedSet::MEMBERS`]; the schema boundary fold
+/// ([`crate::schema::Schema::string_boundaries`]) classifies with the
+/// schema's own membership verdict. One derivation, two consumers.
+pub(crate) fn near_miss_candidates<'label, I>(labels: I) -> alloc::vec::Vec<String>
+where
+    I: IntoIterator<Item = &'label str>,
+{
+    let mut candidates: alloc::vec::Vec<String> = alloc::vec![String::new()];
+    for wire in labels {
+        let flipped: String = wire.chars().map(flip_ascii_case).collect();
+        candidates.push(flipped);
+        let mut truncated = String::from(wire);
+        truncated.pop();
+        candidates.push(truncated);
+        let mut extended = String::from(wire);
+        extended.push('x');
+        candidates.push(extended);
+    }
+    candidates
+}
+
 /// Swap the ASCII case of `c` (identity on non-letters).
-#[cfg(feature = "proptest")]
 const fn flip_ascii_case(c: char) -> char {
     if c.is_ascii_uppercase() {
         c.to_ascii_lowercase()

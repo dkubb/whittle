@@ -49,6 +49,7 @@
 //! match on their text.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::rule::Rule;
@@ -384,6 +385,24 @@ impl CharSet {
     pub fn ranges(&self) -> &[(char, char)] {
         &self.ranges
     }
+
+    /// Membership test: `true` iff `ch` falls inside one of the
+    /// canonical ranges.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::CharSet;
+    ///
+    /// let ident = CharSet::from_ranges([('a', 'z'), ('_', '_')]);
+    /// assert!(ident.contains('q'));
+    /// assert!(ident.contains('_'));
+    /// assert!(!ident.contains('-'));
+    /// ```
+    #[must_use]
+    pub fn contains(&self, ch: char) -> bool {
+        self.ranges.iter().any(|&(lo, hi)| lo <= ch && ch <= hi)
+    }
 }
 
 /// The next Unicode scalar value after `c`, skipping the surrogate
@@ -418,6 +437,37 @@ pub enum Morphism {
     /// ASCII uppercasing
     /// ([`AsciiUppercase`](crate::transform::AsciiUppercase)).
     AsciiUppercase,
+}
+
+/// One scalar test point of a derived boundary matrix
+/// ([`Schema::scalar_boundaries`]): a value at or adjacent to an
+/// interval endpoint, paired with the schema's own membership verdict.
+///
+/// The verdict is read off the schema itself — the single
+/// constructive determinant — so a test consuming the matrix never
+/// restates the bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScalarBoundary {
+    /// Carrier domain of the test point.
+    pub kind: ScalarKind,
+    /// The test point in the scalar universe.
+    pub value: Scalar,
+    /// The schema's membership verdict for the point: `true` means
+    /// the admitted set contains it.
+    pub admitted: bool,
+}
+
+/// One string test point of a derived boundary matrix
+/// ([`Schema::string_boundaries`]): a label, near-miss, or
+/// length/alphabet edge case, paired with the schema's own
+/// membership verdict.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StringBoundary {
+    /// The candidate string.
+    pub value: String,
+    /// The schema's membership verdict for the candidate: `true`
+    /// means the admitted set contains it.
+    pub admitted: bool,
 }
 
 /// Constructive description of an admitted set.
@@ -953,16 +1003,287 @@ impl Schema {
                 Some(bound_admits_below(*lo, value) && bound_admits_above(*hi, value))
             }
             Self::Union(members) => {
-                fold_membership(members, kind, value, |decided| decided.contains(&true))
+                let answers: Vec<Option<bool>> = members
+                    .iter()
+                    .map(|member| member.scalar_membership(kind, value))
+                    .collect();
+                combine_membership(&answers, |decided| decided.contains(&true))
             }
             Self::Intersection(members) => {
-                fold_membership(members, kind, value, |decided| !decided.contains(&false))
+                let answers: Vec<Option<bool>> = members
+                    .iter()
+                    .map(|member| member.scalar_membership(kind, value))
+                    .collect();
+                combine_membership(&answers, |decided| !decided.contains(&false))
             }
             Self::Canonicalized { inner, .. } => inner.scalar_membership(kind, value),
             Self::Str { .. } | Self::Regex(_) | Self::Enumerated(_) | Self::Collection { .. } => {
                 None
             }
         }
+    }
+
+    /// Decide membership of a string in this schema's denoted set,
+    /// where the vocabulary is string-decidable.
+    ///
+    /// Returns `Some(true)`/`Some(false)` when every node consulted
+    /// can decide — [`Schema::Str`] nodes by length, alphabet, and
+    /// first-character checks, [`Schema::Enumerated`] nodes by label
+    /// lookup — and `None` when the answer depends on a node outside
+    /// the string fragment. [`Schema::Regex`] is `None` by design:
+    /// deciding it needs a regex engine, which the `no_std` kernel
+    /// does not carry. [`Schema::Canonicalized`] decides membership
+    /// of the CARRIED set (its inner schema), matching the
+    /// [`SchemaRule`] denotation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::Schema;
+    ///
+    /// let toggle = Schema::enumerated(&["on", "off"]);
+    /// assert_eq!(toggle.string_membership("on"), Some(true));
+    /// assert_eq!(toggle.string_membership("ON"), Some(false));
+    ///
+    /// // Regexes are undecidable without an engine.
+    /// assert_eq!(Schema::regex("^on$").string_membership("on"), None);
+    /// ```
+    #[must_use]
+    pub fn string_membership(&self, value: &str) -> Option<bool> {
+        match self {
+            Self::Str {
+                len,
+                unit,
+                alphabet,
+                first,
+            } => Some(str_node_admits(
+                *len,
+                *unit,
+                alphabet,
+                first.as_ref(),
+                value,
+            )),
+            Self::Enumerated(labels) => Some(labels.contains(&value)),
+            Self::Union(members) => {
+                let answers: Vec<Option<bool>> = members
+                    .iter()
+                    .map(|member| member.string_membership(value))
+                    .collect();
+                combine_membership(&answers, |decided| decided.contains(&true))
+            }
+            Self::Intersection(members) => {
+                let answers: Vec<Option<bool>> = members
+                    .iter()
+                    .map(|member| member.string_membership(value))
+                    .collect();
+                combine_membership(&answers, |decided| !decided.contains(&false))
+            }
+            Self::Canonicalized { inner, .. } => inner.string_membership(value),
+            Self::Interval { .. } | Self::Regex(_) | Self::Collection { .. } => None,
+        }
+    }
+
+    /// The derived scalar boundary matrix: every finite interval
+    /// endpoint together with its adjacent representable neighbours
+    /// (`MIN−1`/`MIN`/`MIN+1`, `MAX−1`/`MAX`/`MAX+1`), each
+    /// classified by the schema's own membership verdict.
+    ///
+    /// Neighbours respect the endpoint's regime: integer-kind values
+    /// step by one and stop at the `i128` extremes (no candidate is
+    /// emitted past them); float endpoints step to the next
+    /// representable `f64` via [`f64::next_up`]/[`f64::next_down`]
+    /// (at an infinity the step is the identity and the duplicate is
+    /// removed). Candidates whose membership the schema cannot decide
+    /// ([`Schema::scalar_membership`] returns `None`) are omitted —
+    /// absence over a guessed verdict. The result is sorted and
+    /// deduplicated.
+    ///
+    /// Float precision: neighbours are `f64`-ULP steps. A carrier
+    /// narrower than `f64` (an `f32` rule) may not represent the
+    /// neighbour exactly; consumers must skip candidates their
+    /// carrier cannot embed losslessly (see
+    /// `assert_schema_boundary_matrix` in `whittle_core::testing`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{
+    ///     Bound, Scalar, ScalarBoundary, ScalarKind, Schema,
+    /// };
+    ///
+    /// let percent = Schema::interval(
+    ///     ScalarKind::Integer,
+    ///     Bound::Inclusive(Scalar::Int(0)),
+    ///     Bound::Inclusive(Scalar::Int(100)),
+    /// );
+    /// let boundary = |value: i128, admitted: bool| ScalarBoundary {
+    ///     kind: ScalarKind::Integer,
+    ///     value: Scalar::Int(value),
+    ///     admitted,
+    /// };
+    /// assert_eq!(
+    ///     percent.scalar_boundaries(),
+    ///     [
+    ///         boundary(-1, false),
+    ///         boundary(0, true),
+    ///         boundary(1, true),
+    ///         boundary(99, true),
+    ///         boundary(100, true),
+    ///         boundary(101, false),
+    ///     ],
+    /// );
+    /// ```
+    #[must_use]
+    pub fn scalar_boundaries(&self) -> Vec<ScalarBoundary> {
+        let mut candidates: Vec<(ScalarKind, Scalar)> = Vec::new();
+        for &(kind, scalar) in &self.interval_endpoints() {
+            for candidate in [scalar_pred(scalar), Some(scalar), scalar_succ(scalar)]
+                .into_iter()
+                .flatten()
+            {
+                candidates.push((kind, candidate));
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
+            .into_iter()
+            .filter_map(|(kind, value)| {
+                let admitted = self.scalar_membership(kind, &value)?;
+                Some(ScalarBoundary {
+                    kind,
+                    value,
+                    admitted,
+                })
+            })
+            .collect()
+    }
+
+    /// The derived string boundary matrix: members and near-misses of
+    /// every [`Schema::Enumerated`] node in the tree (the labels
+    /// themselves, plus case-flips, truncations, one-character
+    /// extensions, and the empty string — the same derivation
+    /// [`crate::closed_set::rejects`] uses), each classified by the
+    /// schema's own membership verdict.
+    ///
+    /// Candidates whose membership the schema cannot decide
+    /// ([`Schema::string_membership`] returns `None`) are omitted.
+    /// [`Schema::Collection`] elements contribute nothing: their
+    /// carrier is not a string, so element-level candidates have no
+    /// string embedding at the root. The result is sorted and
+    /// deduplicated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{Schema, StringBoundary};
+    ///
+    /// let toggle = Schema::enumerated(&["on"]);
+    /// let boundary = |value: &str, admitted: bool| StringBoundary {
+    ///     value: value.into(),
+    ///     admitted,
+    /// };
+    /// assert_eq!(
+    ///     toggle.string_boundaries(),
+    ///     [
+    ///         boundary("", false),
+    ///         boundary("ON", false),
+    ///         boundary("o", false),
+    ///         boundary("on", true),
+    ///         boundary("onx", false),
+    ///     ],
+    /// );
+    /// ```
+    #[must_use]
+    pub fn string_boundaries(&self) -> Vec<StringBoundary> {
+        let mut candidates: Vec<String> = Vec::new();
+        self.collect_string_candidates(&mut candidates);
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
+            .into_iter()
+            .filter_map(|value| {
+                let admitted = self.string_membership(&value)?;
+                Some(StringBoundary { value, admitted })
+            })
+            .collect()
+    }
+
+    /// Collect raw (unclassified) string boundary candidates from
+    /// every node; [`Schema::string_boundaries`] classifies them at
+    /// the root.
+    fn collect_string_candidates(&self, out: &mut Vec<String>) {
+        match self {
+            Self::Enumerated(labels) => {
+                out.extend(labels.iter().map(|label| String::from(*label)));
+                out.extend(crate::closed_set::near_miss_candidates(
+                    labels.iter().copied(),
+                ));
+            }
+            Self::Union(members) | Self::Intersection(members) => {
+                for member in members {
+                    member.collect_string_candidates(out);
+                }
+            }
+            Self::Canonicalized { inner, .. } => inner.collect_string_candidates(out),
+            // `Str` candidates (length × alphabet edges) land with
+            // the string `SchemaRule` impls; `Collection` elements
+            // have no string embedding at the root (see the method
+            // docs); intervals and regexes contribute nothing.
+            Self::Str { .. } | Self::Regex(_) | Self::Interval { .. } | Self::Collection { .. } => {
+            }
+        }
+    }
+}
+
+/// The previous representable scalar in the endpoint's regime:
+/// integer-regime values step down by one (`None` at `i128::MIN` —
+/// the universe has nothing below it); floats step to the next
+/// representable `f64` via [`f64::next_down`] (the identity at
+/// negative infinity, deduplicated by the caller).
+fn scalar_pred(scalar: Scalar) -> Option<Scalar> {
+    match scalar {
+        Scalar::Int(value) => value.checked_sub(1).map(Scalar::Int),
+        Scalar::Float(value) => Some(Scalar::Float(value.next_down())),
+    }
+}
+
+/// The next representable scalar in the endpoint's regime; the
+/// mirror of [`scalar_pred`] (`None` at `i128::MAX`, identity at
+/// positive infinity).
+fn scalar_succ(scalar: Scalar) -> Option<Scalar> {
+    match scalar {
+        Scalar::Int(value) => value.checked_add(1).map(Scalar::Int),
+        Scalar::Float(value) => Some(Scalar::Float(value.next_up())),
+    }
+}
+
+/// Decide a [`Schema::Str`] node's membership for one string: the
+/// length (measured in the node's unit) must fall in the bound,
+/// every character must be in the alphabet, and the first character
+/// (when one exists) must be in the first-character set (when the
+/// node carries one).
+fn str_node_admits(
+    len: LenBound,
+    unit: LenUnit,
+    alphabet: &CharSet,
+    first: Option<&CharSet>,
+    value: &str,
+) -> bool {
+    let measured = match unit {
+        LenUnit::Chars => value.chars().count(),
+        LenUnit::Bytes => value.len(),
+    };
+    let measured = u64::try_from(measured).expect("string lengths fit u64 on supported targets");
+    if measured < len.min || measured > len.max {
+        return false;
+    }
+    if !value.chars().all(|ch| alphabet.contains(ch)) {
+        return false;
+    }
+    match (first, value.chars().next()) {
+        (Some(set), Some(head)) => set.contains(head),
+        (Some(_) | None, _) => true,
     }
 }
 
@@ -985,23 +1306,13 @@ fn bound_admits_above(hi: Bound, value: &Scalar) -> bool {
     })
 }
 
-/// Combine member membership answers: short-circuits are decided by
-/// `decide` over the decided answers; any undecided member that could
-/// change the outcome makes the whole answer undecided.
-fn fold_membership(
-    members: &[Schema],
-    kind: ScalarKind,
-    value: &Scalar,
-    decide: fn(&[bool]) -> bool,
-) -> Option<bool> {
-    let mut decided: Vec<bool> = Vec::with_capacity(members.len());
-    let mut any_undecided = false;
-    for member in members {
-        match member.scalar_membership(kind, value) {
-            Some(answer) => decided.push(answer),
-            None => any_undecided = true,
-        }
-    }
+/// Combine member membership answers (scalar or string regime):
+/// the outcome is decided by `decide` over the decided answers; any
+/// undecided member that could change the outcome makes the whole
+/// answer undecided.
+fn combine_membership(answers: &[Option<bool>], decide: fn(&[bool]) -> bool) -> Option<bool> {
+    let decided: Vec<bool> = answers.iter().copied().flatten().collect();
+    let any_undecided = answers.iter().any(Option::is_none);
     let outcome = decide(&decided);
     // For a union, a decided `true` wins regardless of undecided
     // members; for an intersection, a decided `false` wins. In both
@@ -2218,6 +2529,376 @@ mod tests {
             )
             .interval_endpoints()
             .is_empty()
+        );
+    }
+
+    // ─── Boundary folds: derived test matrices. ────────────────────
+
+    use super::{ScalarBoundary, StringBoundary};
+    use alloc::string::String;
+
+    fn int_boundary(value: i128, admitted: bool) -> ScalarBoundary {
+        ScalarBoundary {
+            kind: ScalarKind::Integer,
+            value: Scalar::Int(value),
+            admitted,
+        }
+    }
+
+    fn string_boundary(value: &str, admitted: bool) -> StringBoundary {
+        StringBoundary {
+            value: String::from(value),
+            admitted,
+        }
+    }
+
+    #[test]
+    fn scalar_boundaries_classify_endpoints_and_neighbours() {
+        let percent = int_interval(0, 100);
+        assert_eq!(
+            percent.scalar_boundaries(),
+            [
+                int_boundary(-1, false),
+                int_boundary(0, true),
+                int_boundary(1, true),
+                int_boundary(99, true),
+                int_boundary(100, true),
+                int_boundary(101, false),
+            ],
+        );
+    }
+
+    #[test]
+    fn scalar_boundaries_stop_at_the_i128_extremes() {
+        // No candidate exists below i128::MIN or above i128::MAX:
+        // the predecessor/successor folds skip rather than wrap.
+        let everything = int_interval(i128::MIN, i128::MAX);
+        assert_eq!(
+            everything.scalar_boundaries(),
+            [
+                int_boundary(i128::MIN, true),
+                int_boundary(i128::MIN + 1, true),
+                int_boundary(i128::MAX - 1, true),
+                int_boundary(i128::MAX, true),
+            ],
+        );
+    }
+
+    #[test]
+    fn scalar_boundaries_step_floats_by_one_ulp() {
+        let unit = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(0.0)),
+            Bound::Inclusive(Scalar::Float(1.0)),
+        );
+        let float_boundary = |value: f64, admitted: bool| ScalarBoundary {
+            kind: ScalarKind::Float,
+            value: Scalar::Float(value),
+            admitted,
+        };
+        assert_eq!(
+            unit.scalar_boundaries(),
+            [
+                float_boundary(0.0_f64.next_down(), false),
+                float_boundary(0.0, true),
+                float_boundary(0.0_f64.next_up(), true),
+                float_boundary(1.0_f64.next_down(), true),
+                float_boundary(1.0, true),
+                float_boundary(1.0_f64.next_up(), false),
+            ],
+        );
+    }
+
+    #[test]
+    fn scalar_boundaries_dedup_the_infinite_float_ends() {
+        // next_down(-inf) and next_up(+inf) are the identities: the
+        // duplicates collapse, leaving the infinities and their
+        // finite neighbours.
+        let not_nan = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(f64::NEG_INFINITY)),
+            Bound::Inclusive(Scalar::Float(f64::INFINITY)),
+        );
+        let float_boundary = |value: f64, admitted: bool| ScalarBoundary {
+            kind: ScalarKind::Float,
+            value: Scalar::Float(value),
+            admitted,
+        };
+        assert_eq!(
+            not_nan.scalar_boundaries(),
+            [
+                float_boundary(f64::NEG_INFINITY, true),
+                float_boundary(f64::MIN, true),
+                float_boundary(f64::MAX, true),
+                float_boundary(f64::INFINITY, true),
+            ],
+        );
+    }
+
+    #[test]
+    fn scalar_boundaries_classify_the_union_gap() {
+        // NonZero's shape: the gap point 0 is derived from both
+        // endpoints (successor of -1, predecessor of 1) and
+        // classified as a reject.
+        let below = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(-1)),
+        );
+        let above = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(1)),
+            Bound::Unbounded,
+        );
+        let non_zero = Schema::union(vec![below, above]);
+        assert_eq!(
+            non_zero.scalar_boundaries(),
+            [
+                int_boundary(-2, true),
+                int_boundary(-1, true),
+                int_boundary(0, false),
+                int_boundary(1, true),
+                int_boundary(2, true),
+            ],
+        );
+    }
+
+    #[test]
+    fn scalar_boundaries_skip_union_candidates_only_a_true_can_decide() {
+        // Mixed-kind union: a reject verdict would need every member
+        // decided, but the Date member cannot decide Integer
+        // candidates (and vice versa), so only the dominating
+        // accepts survive the fold.
+        let mixed = Schema::union(vec![
+            int_interval(0, 10),
+            Schema::interval(
+                ScalarKind::Date,
+                Bound::Inclusive(Scalar::Int(20)),
+                Bound::Inclusive(Scalar::Int(30)),
+            ),
+        ]);
+        let date_boundary = |value: i128, admitted: bool| ScalarBoundary {
+            kind: ScalarKind::Date,
+            value: Scalar::Int(value),
+            admitted,
+        };
+        assert_eq!(
+            mixed.scalar_boundaries(),
+            [
+                int_boundary(0, true),
+                int_boundary(1, true),
+                int_boundary(9, true),
+                int_boundary(10, true),
+                date_boundary(20, true),
+                date_boundary(21, true),
+                date_boundary(29, true),
+                date_boundary(30, true),
+            ],
+        );
+    }
+
+    #[test]
+    fn scalar_boundaries_skip_intersection_candidates_only_a_false_can_decide() {
+        // The intersection mirror: accepts would need every member
+        // decided, so only the dominating rejects survive.
+        let mixed = Schema::intersection(vec![
+            int_interval(0, 10),
+            Schema::interval(
+                ScalarKind::Date,
+                Bound::Inclusive(Scalar::Int(20)),
+                Bound::Inclusive(Scalar::Int(30)),
+            ),
+        ]);
+        let date_boundary = |value: i128, admitted: bool| ScalarBoundary {
+            kind: ScalarKind::Date,
+            value: Scalar::Int(value),
+            admitted,
+        };
+        assert_eq!(
+            mixed.scalar_boundaries(),
+            [
+                int_boundary(-1, false),
+                int_boundary(11, false),
+                date_boundary(19, false),
+                date_boundary(31, false),
+            ],
+        );
+    }
+
+    #[test]
+    fn char_set_contains_decides_by_canonical_ranges() {
+        let ident = CharSet::from_ranges([('a', 'z'), ('_', '_')]);
+        assert!(ident.contains('a'));
+        assert!(ident.contains('z'));
+        assert!(ident.contains('_'));
+        assert!(!ident.contains('A'));
+        assert!(!ident.contains('-'));
+    }
+
+    #[test]
+    fn string_membership_decides_str_nodes_by_len_alphabet_and_first() {
+        let node = Schema::string(
+            LenBound::new(1, 3),
+            LenUnit::Chars,
+            CharSet::from_ranges([('a', 'z')]),
+            Some(CharSet::from_ranges([('a', 'm')])),
+        );
+        assert_eq!(node.string_membership("abc"), Some(true));
+        assert_eq!(node.string_membership("m"), Some(true));
+        // Length misses on both sides.
+        assert_eq!(node.string_membership(""), Some(false));
+        assert_eq!(node.string_membership("abcd"), Some(false));
+        // Alphabet miss.
+        assert_eq!(node.string_membership("a9"), Some(false));
+        // First-character miss: in the alphabet, outside the head set.
+        assert_eq!(node.string_membership("za"), Some(false));
+    }
+
+    #[test]
+    fn string_membership_measures_bytes_when_the_unit_is_bytes() {
+        let node = Schema::string(
+            LenBound::new(2, 2),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('a', 'z'), ('é', 'é')]),
+            None,
+        );
+        // "é" is one char but two UTF-8 bytes: admitted by bytes.
+        assert_eq!(node.string_membership("é"), Some(true));
+        assert_eq!(node.string_membership("ab"), Some(true));
+        assert_eq!(node.string_membership("a"), Some(false));
+    }
+
+    #[test]
+    fn string_membership_first_check_is_vacuous_without_a_head() {
+        let node = Schema::string(
+            LenBound::new(0, 3),
+            LenUnit::Chars,
+            CharSet::from_ranges([('a', 'z')]),
+            Some(CharSet::from_ranges([('a', 'm')])),
+        );
+        // The empty string has no head to reject.
+        assert_eq!(node.string_membership(""), Some(true));
+    }
+
+    #[test]
+    fn string_membership_decides_enumerated_and_recurses_canonicalized() {
+        let toggle = Schema::enumerated(&["on", "off"]);
+        assert_eq!(toggle.string_membership("off"), Some(true));
+        assert_eq!(toggle.string_membership("OFF"), Some(false));
+        let trimmed = Schema::canonicalized(Morphism::Trim, toggle);
+        assert_eq!(trimmed.string_membership("on"), Some(true));
+        assert_eq!(trimmed.string_membership(" on"), Some(false));
+    }
+
+    #[test]
+    fn string_membership_is_undecided_outside_the_string_fragment() {
+        assert_eq!(int_interval(0, 1).string_membership("0"), None);
+        assert_eq!(Schema::regex("^a$").string_membership("a"), None);
+        assert_eq!(
+            Schema::collection(
+                LenBound::new(0, 1),
+                Schema::enumerated(&["on"]),
+                false,
+                false
+            )
+            .string_membership("on"),
+            None,
+        );
+    }
+
+    #[test]
+    fn string_membership_folds_unions_and_intersections_with_dominance() {
+        let with_regex_union =
+            Schema::union(vec![Schema::enumerated(&["on"]), Schema::regex("^x$")]);
+        // A decided `true` dominates the undecided regex member.
+        assert_eq!(with_regex_union.string_membership("on"), Some(true));
+        assert_eq!(with_regex_union.string_membership("off"), None);
+
+        let with_regex_intersection =
+            Schema::intersection(vec![Schema::enumerated(&["on"]), Schema::regex("^x$")]);
+        // A decided `false` dominates; a decided `true` does not.
+        assert_eq!(
+            with_regex_intersection.string_membership("off"),
+            Some(false),
+        );
+        assert_eq!(with_regex_intersection.string_membership("on"), None);
+    }
+
+    #[test]
+    fn string_boundaries_derive_labels_and_near_misses() {
+        let toggle = Schema::enumerated(&["on", "off"]);
+        assert_eq!(
+            toggle.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("OFF", false),
+                string_boundary("ON", false),
+                string_boundary("o", false),
+                string_boundary("of", false),
+                string_boundary("off", true),
+                string_boundary("offx", false),
+                string_boundary("on", true),
+                string_boundary("onx", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_classify_a_near_miss_that_is_a_member() {
+        // Truncating "ab" yields the member "a": the candidate is
+        // classified (accept), not filtered — the membership verdict
+        // is the schema's, never the derivation's.
+        let nested = Schema::enumerated(&["a", "ab"]);
+        assert_eq!(
+            nested.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("A", false),
+                string_boundary("AB", false),
+                string_boundary("a", true),
+                string_boundary("ab", true),
+                string_boundary("abx", false),
+                string_boundary("ax", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_skip_candidates_a_regex_member_leaves_undecided() {
+        // In a union with a regex, only the dominating accepts are
+        // decidable; every near-miss is skipped rather than guessed.
+        let with_regex = Schema::union(vec![Schema::enumerated(&["on"]), Schema::regex("^x$")]);
+        assert_eq!(
+            with_regex.string_boundaries(),
+            [string_boundary("on", true)],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_recurse_composites_and_skip_non_string_trees() {
+        let trimmed = Schema::canonicalized(Morphism::Trim, Schema::enumerated(&["on"]));
+        assert_eq!(
+            trimmed.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("ON", false),
+                string_boundary("o", false),
+                string_boundary("on", true),
+                string_boundary("onx", false),
+            ],
+        );
+        // Non-string vocabulary yields no candidates, and Collection
+        // elements have no string embedding at the root.
+        assert_eq!(int_interval(0, 1).string_boundaries(), []);
+        assert_eq!(
+            Schema::collection(
+                LenBound::new(0, 1),
+                Schema::enumerated(&["on"]),
+                false,
+                false
+            )
+            .string_boundaries(),
+            [],
         );
     }
 
