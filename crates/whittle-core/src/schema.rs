@@ -32,10 +32,11 @@
 //!   sorted, and deduplicated, and a single operand collapses to the
 //!   operand itself;
 //! - [`Schema::intersection`] fuses same-kind intervals into one
-//!   interval, and fuses `Str` members (alphabets and
-//!   first-character sets intersect; length bounds fuse per unit;
-//!   an emptied character set collapses to the empty-string-only
-//!   node);
+//!   interval, fuses `Str` members (alphabets and first-character
+//!   sets intersect; length bounds fuse per unit; an emptied
+//!   character set collapses to the empty-string-only node), and
+//!   fuses `Collection` members into one node (length bounds
+//!   intersect, element schemas intersect recursively, flags OR);
 //! - [`Schema::enumerated`] requires a non-empty, duplicate-free
 //!   label set.
 //!
@@ -699,6 +700,24 @@ pub struct StringBoundary {
     pub admitted: bool,
 }
 
+/// One length test point of a derived collection boundary matrix
+/// ([`Schema::collection_boundaries`]).
+///
+/// An item count at or adjacent to the node's length bound, paired
+/// with the schema's own verdict for collections OF that length
+/// built from admissible, ordered, distinct elements.
+///
+/// Transparent for the same reason as [`ScalarBoundary`]: a
+/// descriptive output record with no internal invariant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CollectionBoundary {
+    /// The probed item count.
+    pub len: u64,
+    /// The schema's verdict for a contract-following collection of
+    /// that length: `true` means the length bound admits it.
+    pub admitted: bool,
+}
+
 /// Constructive description of an admitted set.
 ///
 /// `Schema` is an opaque struct over a private node tree: the smart
@@ -1123,6 +1142,13 @@ impl Schema {
     /// and deduplicate, and a single remaining member collapses to
     /// the member itself.
     ///
+    /// # `Collection` fusion
+    ///
+    /// All `Collection` members fuse into one node: length bounds
+    /// intersect, element schemas intersect recursively (an absent
+    /// element constrains nothing, so it is the identity), and the
+    /// `sorted` / `unique` flags OR.
+    ///
     /// # `Str` fusion
     ///
     /// All `Str` members fuse jointly: alphabets intersect,
@@ -1181,6 +1207,7 @@ impl Schema {
         );
         let mut intervals: Vec<(ScalarKind, Bound, Bound)> = Vec::new();
         let mut strs: Vec<StrNodeParts> = Vec::new();
+        let mut collections: Vec<CollectionNodeParts> = Vec::new();
         let mut others: Vec<Self> = Vec::new();
         let mut queue: Vec<Self> = members;
         while let Some(member) = queue.pop() {
@@ -1207,6 +1234,19 @@ impl Schema {
                     alphabet,
                     first,
                 });
+            } else if let SchemaRepr::Collection {
+                len,
+                element,
+                sorted,
+                unique,
+            } = member.repr
+            {
+                collections.push(CollectionNodeParts {
+                    len,
+                    element,
+                    sorted,
+                    unique,
+                });
             } else {
                 others.push(member);
             }
@@ -1219,6 +1259,7 @@ impl Schema {
             flat.push(Self::interval(kind, lo, hi));
         }
         flat.extend(fuse_str_nodes(strs));
+        flat.extend(fuse_collection_nodes(collections));
         flat.sort_unstable();
         flat.dedup();
         collapse_singleton(flat, SchemaRepr::Intersection)
@@ -1684,6 +1725,75 @@ impl Schema {
             .collect()
     }
 
+    /// The derived collection length matrix, for a root
+    /// [`SchemaView::Collection`] node: each length edge
+    /// (`MIN−1`/`MIN`/`MIN+1`/`MAX`/`MAX+1`, capped at
+    /// [`COLLECTION_BOUNDARY_LEN_CAP`]) classified by the node's own
+    /// length bound. The verdict speaks for CONTRACT-FOLLOWING
+    /// collections of that length — elements admissible under the
+    /// element schema (when present), non-decreasing, pairwise
+    /// distinct when the node is `unique` — which is exactly what
+    /// `assert_collection_boundary_matrix` in
+    /// `whittle_core::testing` materialises.
+    ///
+    /// Edges a `unique` node's element domain cannot witness with
+    /// pairwise-distinct values (an edge above a finite
+    /// integer-regime element interval's width) are OMITTED — an
+    /// explicit skip, never an unwitnessable probe. Non-`Collection`
+    /// roots yield no rows: the collection vocabulary is consumed at
+    /// the root, and a vacuous matrix is the consumer's signal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{CollectionBoundary, LenBound, Schema};
+    ///
+    /// let batch = Schema::collection(LenBound::new(1, 3), None, false, false);
+    /// let row = |len: u64, admitted: bool| CollectionBoundary { len, admitted };
+    /// assert_eq!(
+    ///     batch.collection_boundaries(),
+    ///     [row(0, false), row(1, true), row(2, true), row(3, true), row(4, false)],
+    /// );
+    /// ```
+    #[must_use]
+    pub fn collection_boundaries(&self) -> Vec<CollectionBoundary> {
+        let SchemaRepr::Collection {
+            len,
+            element,
+            unique,
+            ..
+        } = &self.repr
+        else {
+            return Vec::new();
+        };
+        let capacity = if *unique {
+            element.as_deref().and_then(element_distinct_capacity)
+        } else {
+            None
+        };
+        let mut edges: Vec<u64> = [
+            len.lo().checked_sub(1),
+            Some(len.lo()),
+            len.lo().checked_add(1),
+            Some(len.hi()),
+            len.hi().checked_add(1),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        edges.sort_unstable();
+        edges.dedup();
+        edges
+            .into_iter()
+            .filter(|&edge| edge <= COLLECTION_BOUNDARY_LEN_CAP)
+            .filter(|&edge| capacity.is_none_or(|cap| edge <= cap))
+            .map(|edge| CollectionBoundary {
+                len: edge,
+                admitted: len.lo() <= edge && edge <= len.hi(),
+            })
+            .collect()
+    }
+
     /// Collect raw (unclassified) string boundary candidates from
     /// every node; [`Schema::string_boundaries`] classifies them at
     /// the root.
@@ -1713,6 +1823,36 @@ impl Schema {
             SchemaRepr::Regex(_) | SchemaRepr::Interval { .. } | SchemaRepr::Collection { .. } => {}
         }
     }
+}
+
+/// Item-count cap for derived [`SchemaView::Collection`] boundary
+/// rows: length edges above it yield no row.
+///
+/// Same rationale as [`STR_BOUNDARY_LEN_CAP`]: an unbounded
+/// `usize::MAX` item bound probes nothing a 4096-item one does not.
+pub const COLLECTION_BOUNDARY_LEN_CAP: u64 = 4096;
+
+/// The number of distinct values an element schema can supply, when
+/// that is EXACTLY computable: the width of a finite integer-regime
+/// interval. `None` means unbounded or not computable here — the
+/// matrix applies no cap, and the testing helper's element contract
+/// covers distinctness instead.
+fn element_distinct_capacity(element: &Schema) -> Option<u64> {
+    let SchemaRepr::Interval { kind, lo, hi } = &element.repr else {
+        return None;
+    };
+    if *kind == ScalarKind::Float {
+        // Float widths are not item counts; the only finite-count
+        // float interval is degenerate, which the int path below
+        // cannot see — leave it uncapped (the helper contract rules).
+        return None;
+    }
+    let lo = lo.scalar().and_then(|scalar| scalar.as_int())?;
+    let hi = hi.scalar().and_then(|scalar| scalar.as_int())?;
+    // `hi - lo` can overflow i128 for near-universe intervals; an
+    // uncomputable width is an uncapped one.
+    let width = hi.checked_sub(lo)?.checked_add(1)?;
+    u64::try_from(width).ok()
 }
 
 /// Length cap for generated [`SchemaView::Str`] boundary candidates:
@@ -2146,6 +2286,62 @@ fn fuse_str_nodes(nodes: Vec<StrNodeParts>) -> Vec<Schema> {
         .collect()
 }
 
+/// The deconstructed fields of one `SchemaRepr::Collection` member
+/// queued for intersection fusion.
+struct CollectionNodeParts {
+    len: LenBound,
+    element: Option<Box<Schema>>,
+    sorted: bool,
+    unique: bool,
+}
+
+/// Fuse every `Collection` member of an intersection into ONE node:
+/// length bounds intersect, element schemas intersect through
+/// [`Schema::intersection`] (recursively canonical; an absent
+/// element is the identity — it constrains nothing), and the
+/// `sorted` / `unique` flags OR (each is a constraint, so the
+/// conjunction carries a flag any member carries). Every step is
+/// commutative and associative, so the output is independent of
+/// member order (confluence).
+///
+/// # Panics
+///
+/// Panics when the fused length range empties (no collection has an
+/// impossible item count, so the intersection admits nothing), or
+/// when the recursive element intersection proves itself empty.
+fn fuse_collection_nodes(nodes: Vec<CollectionNodeParts>) -> Option<Schema> {
+    let mut nodes = nodes.into_iter();
+    let head = nodes.next()?;
+    let mut lo = head.len.lo();
+    let mut hi = head.len.hi();
+    let mut element = head.element;
+    let mut sorted = head.sorted;
+    let mut unique = head.unique;
+    for node in nodes {
+        lo = lo.max(node.len.lo());
+        hi = hi.min(node.len.hi());
+        assert!(
+            lo <= hi,
+            "Schema::intersection: fused collection length range is empty \
+             (the intersection admits nothing)",
+        );
+        element = match (element, node.element) {
+            (None, other) | (other, None) => other,
+            (Some(acc), Some(next)) => {
+                Some(Box::new(Schema::intersection(alloc::vec![*acc, *next])))
+            }
+        };
+        sorted |= node.sorted;
+        unique |= node.unique;
+    }
+    Some(Schema::collection(
+        LenBound::new(lo, hi),
+        element.map(|element| *element),
+        sorted,
+        unique,
+    ))
+}
+
 /// A canonical n-ary node never holds a single member: collapse to
 /// the member itself, otherwise wrap with `node`.
 fn collapse_singleton(mut members: Vec<Schema>, node: fn(Vec<Schema>) -> SchemaRepr) -> Schema {
@@ -2570,8 +2766,8 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{
-        Bound, CharSet, LenBound, LenUnit, Morphism, Scalar, ScalarKind, Schema, SchemaRepr,
-        SchemaView,
+        Bound, CharSet, CollectionBoundary, LenBound, LenUnit, Morphism, Scalar, ScalarKind,
+        Schema, SchemaRepr, SchemaView,
     };
 
     fn int_interval(lo: i128, hi: i128) -> Schema {
@@ -3228,6 +3424,153 @@ mod tests {
         ]);
     }
 
+    // ─── Collection fusion inside intersections. ───────────────────
+
+    #[test]
+    fn intersection_fuses_collection_nodes() {
+        // The And<LenItems, AllItems<R>> shape: a pure length bound
+        // ∧ an element constraint fuse into ONE Collection node.
+        let len_only = Schema::collection(LenBound::new(1, 5), None, false, false);
+        let elements = Schema::collection(
+            LenBound::new(0, u64::MAX),
+            Some(int_interval(0, 100)),
+            false,
+            false,
+        );
+        assert_eq!(
+            Schema::intersection(vec![len_only, elements]),
+            Schema::collection(
+                LenBound::new(1, 5),
+                Some(int_interval(0, 100)),
+                false,
+                false
+            ),
+        );
+    }
+
+    #[test]
+    fn intersection_fuses_collection_flags_and_recursive_elements() {
+        // Flags OR; element schemas intersect recursively (the
+        // same-kind interval fusion runs inside the element).
+        let sorted =
+            Schema::collection(LenBound::new(0, 8), Some(int_interval(0, 100)), true, false);
+        let unique = Schema::collection(
+            LenBound::new(2, u64::MAX),
+            Some(int_interval(50, 200)),
+            false,
+            true,
+        );
+        assert_eq!(
+            Schema::intersection(vec![sorted, unique]),
+            Schema::collection(LenBound::new(2, 8), Some(int_interval(50, 100)), true, true),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "fused collection length range is empty")]
+    fn intersection_rejects_empty_collection_length_fusion() {
+        let _schema = Schema::intersection(vec![
+            Schema::collection(LenBound::new(0, 2), None, false, false),
+            Schema::collection(LenBound::new(5, 9), None, false, false),
+        ]);
+    }
+
+    // ─── Collection boundary fold. ─────────────────────────────────
+
+    fn collection_row(len: u64, admitted: bool) -> CollectionBoundary {
+        CollectionBoundary { len, admitted }
+    }
+
+    #[test]
+    fn collection_boundaries_probe_the_length_edges() {
+        let node = Schema::collection(LenBound::new(2, 5), None, false, false);
+        assert_eq!(
+            node.collection_boundaries(),
+            [
+                collection_row(1, false),
+                collection_row(2, true),
+                collection_row(3, true),
+                collection_row(5, true),
+                collection_row(6, false),
+            ],
+        );
+    }
+
+    #[test]
+    fn collection_boundaries_skip_absent_and_capped_edges() {
+        // MIN = 0 has no MIN−1 edge; an uncapped MAX yields neither
+        // the MAX edge (above the cap) nor MAX+1.
+        let node = Schema::collection(LenBound::new(0, u64::MAX), None, false, false);
+        assert_eq!(
+            node.collection_boundaries(),
+            [collection_row(0, true), collection_row(1, true)],
+        );
+    }
+
+    #[test]
+    fn collection_boundaries_cap_unique_probes_at_element_capacity() {
+        // unique over a 3-value element domain: probes above 3 items
+        // cannot be witnessed with distinct elements and are omitted.
+        let node = Schema::collection(LenBound::new(1, 10), Some(int_interval(0, 2)), false, true);
+        assert_eq!(
+            node.collection_boundaries(),
+            [
+                collection_row(0, false),
+                collection_row(1, true),
+                collection_row(2, true),
+            ],
+        );
+        // The same bound WITHOUT unique applies no capacity cap.
+        let dupes_allowed =
+            Schema::collection(LenBound::new(1, 10), Some(int_interval(0, 2)), false, false);
+        assert_eq!(
+            dupes_allowed.collection_boundaries(),
+            [
+                collection_row(0, false),
+                collection_row(1, true),
+                collection_row(2, true),
+                collection_row(10, true),
+                collection_row(11, false),
+            ],
+        );
+    }
+
+    #[test]
+    fn collection_boundaries_treat_uncountable_elements_as_uncapped() {
+        // Unbounded, float, near-universe, and non-interval element
+        // schemas have no exactly-computable distinct capacity: the
+        // matrix applies no cap (the helper contract covers it).
+        let uncapped = |element: Schema| {
+            Schema::collection(LenBound::new(1, 4), Some(element), false, true)
+                .collection_boundaries()
+                .len()
+        };
+        let half_open = Schema::interval(
+            ScalarKind::Integer,
+            Bound::Inclusive(Scalar::Int(0)),
+            Bound::Unbounded,
+        );
+        assert_eq!(uncapped(half_open), 5);
+        let float = Schema::interval(
+            ScalarKind::Float,
+            Bound::Inclusive(Scalar::Float(0.0)),
+            Bound::Inclusive(Scalar::Float(1.0)),
+        );
+        assert_eq!(uncapped(float), 5);
+        let near_universe = int_interval(i128::MIN, i128::MAX);
+        assert_eq!(uncapped(near_universe), 5);
+        let non_interval = Schema::enumerated(&["a", "b"]);
+        assert_eq!(uncapped(non_interval), 5);
+        // A width above u64::MAX is likewise uncomputable as a cap.
+        let wide = int_interval(0, i128::from(u64::MAX) + 10);
+        assert_eq!(uncapped(wide), 5);
+    }
+
+    #[test]
+    fn collection_boundaries_are_empty_for_non_collection_roots() {
+        assert_eq!(int_interval(0, 9).collection_boundaries(), []);
+    }
+
     // ─── Confluence: normal form independent of construction order.
 
     proptest::proptest! {
@@ -3342,6 +3685,51 @@ mod tests {
                         if bytes { LenUnit::Bytes } else { LenUnit::Chars },
                         &[(char::from(alpha_lo), char::from(alpha_hi))],
                         None,
+                    )
+                })
+                .collect();
+            let flat = Schema::intersection(members.clone());
+
+            let split = split.min(members.len() - 1);
+            let (left, right) = members.split_at(split);
+            let nested = Schema::intersection(vec![
+                Schema::intersection(left.to_vec()),
+                Schema::intersection(right.to_vec()),
+            ]);
+            proptest::prop_assert_eq!(&nested, &flat);
+
+            let mut reversed = members;
+            reversed.reverse();
+            proptest::prop_assert_eq!(&Schema::intersection(reversed), &flat);
+        }
+
+        /// Collection fusion is independent of member permutation
+        /// and nesting split point: length max/min, flag OR, and the
+        /// recursive element intersection are all commutative and
+        /// associative. Lengths share `8..=10` and element intervals
+        /// share zero, so fusion never empties.
+        #[test]
+        fn intersection_collection_fusion_is_confluent(
+            parts in proptest::collection::vec(
+                (
+                    0_u64..=8,            // len.lo
+                    10_u64..=20,          // len.hi
+                    proptest::bool::ANY,  // sorted
+                    proptest::bool::ANY,  // unique
+                    proptest::option::of((-50_i128..=0, 0_i128..=50)),
+                ),
+                2..6,
+            ),
+            split in 1_usize..5,
+        ) {
+            let members: Vec<Schema> = parts
+                .iter()
+                .map(|&(lo, hi, sorted, unique, element)| {
+                    Schema::collection(
+                        LenBound::new(lo, hi),
+                        element.map(|(elo, ehi)| int_interval(elo, ehi)),
+                        sorted,
+                        unique,
                     )
                 })
                 .collect();
