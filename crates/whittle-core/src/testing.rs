@@ -230,8 +230,11 @@ where
 // together through one non-generic finisher, so a single
 // deliberately-inconsistent fixture exercises every check.
 
-/// Number of strategy samples each cross-check draws. Deterministic
-/// runner, so the sample set is stable across runs.
+/// Number of strategy samples each cross-check draws. The runner is
+/// deterministic, so the sample set is stable for a given toolchain
+/// and test run (a proptest upgrade or strategy change may redraw
+/// it); that stability is a debugging convenience, not an API
+/// contract.
 const CROSS_CHECK_SAMPLES: u32 = 256;
 
 /// Panic with the collected cross-check violations, deduplicated.
