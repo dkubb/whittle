@@ -1868,8 +1868,15 @@ mod tests {
             (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
         }
 
-        fn extract_i32(_kind: ScalarKind, scalar: Scalar) -> i32 {
-            i32::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits i32")
+        #[expect(
+            clippy::return_and_then,
+            reason = "the branch-free and_then chain keeps this fn fully covered: a `?` \
+                      would add a None arm no boundary candidate reaches"
+        )]
+        fn extract_i32(_kind: ScalarKind, scalar: Scalar) -> Option<i32> {
+            scalar
+                .as_int()
+                .and_then(|widened| i32::try_from(widened).ok())
         }
 
         #[expect(
@@ -1880,8 +1887,15 @@ mod tests {
             (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
         }
 
-        fn extract_u8(_kind: ScalarKind, scalar: Scalar) -> u8 {
-            u8::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits u8")
+        #[expect(
+            clippy::return_and_then,
+            reason = "the branch-free and_then chain keeps this fn fully covered: a `?` \
+                      would add a None arm no boundary candidate reaches"
+        )]
+        fn extract_u8(_kind: ScalarKind, scalar: Scalar) -> Option<u8> {
+            scalar
+                .as_int()
+                .and_then(|widened| u8::try_from(widened).ok())
         }
 
         #[expect(
@@ -1892,8 +1906,15 @@ mod tests {
             (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
         }
 
-        fn extract_i16(_kind: ScalarKind, scalar: Scalar) -> i16 {
-            i16::try_from(scalar.as_int().expect("integer schema")).expect("endpoint fits i16")
+        #[expect(
+            clippy::return_and_then,
+            reason = "the branch-free and_then chain keeps this fn fully covered: a `?` \
+                      would add a None arm no boundary candidate reaches"
+        )]
+        fn extract_i16(_kind: ScalarKind, scalar: Scalar) -> Option<i16> {
+            scalar
+                .as_int()
+                .and_then(|widened| i16::try_from(widened).ok())
         }
 
         /// Schema endpoints pass refine and strategy samples are

@@ -50,7 +50,8 @@ pub use schema::{Schema, SchemaRule};
 pub use serde;
 #[cfg(feature = "proptest")]
 pub use testing::{
-    assert_closed_set_schema, prop_image_refines, prop_schema_cross_check, prop_total,
+    assert_closed_set_schema, assert_schema_boundary_matrix, prop_image_refines,
+    prop_schema_cross_check, prop_total,
 };
 pub use transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 /// Compile-time-validated constructor for [`primitive::Pattern`].

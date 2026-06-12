@@ -1094,8 +1094,8 @@ mod tests {
             (ScalarKind::Float, Scalar::Float(*value))
         }
 
-        fn extract_f64(_kind: ScalarKind, scalar: Scalar) -> f64 {
-            scalar.as_float().expect("float schema")
+        fn extract_f64(_kind: ScalarKind, scalar: Scalar) -> Option<f64> {
+            scalar.as_float()
         }
 
         #[expect(
@@ -1108,11 +1108,16 @@ mod tests {
 
         #[expect(
             clippy::cast_possible_truncation,
-            reason = "float schema endpoints for f32 rules originate from f32 values \
-                      widened to f64, so the narrowing cast is lossless"
+            clippy::return_and_then,
+            reason = "narrowing probe, branch-free: the total_cmp round-trip check \
+                      rejects any point f32 cannot represent losslessly, and the \
+                      and_then chain avoids a None arm no candidate reaches"
         )]
-        fn extract_f32(_kind: ScalarKind, scalar: Scalar) -> f32 {
-            scalar.as_float().expect("float schema") as f32
+        fn extract_f32(_kind: ScalarKind, scalar: Scalar) -> Option<f32> {
+            scalar.as_float().and_then(|wide| {
+                let narrow = wide as f32;
+                (f64::from(narrow).total_cmp(&wide) == core::cmp::Ordering::Equal).then_some(narrow)
+            })
         }
 
         /// Schema endpoints pass refine and strategy samples are

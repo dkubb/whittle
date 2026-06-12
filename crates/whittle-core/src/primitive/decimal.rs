@@ -794,8 +794,10 @@ mod tests {
             )
         }
 
-        fn extract_scale2(_kind: ScalarKind, scalar: Scalar) -> Decimal {
-            Decimal::from_i128_with_scale(scalar.as_int().expect("decimal schema"), 2)
+        fn extract_scale2(_kind: ScalarKind, scalar: Scalar) -> Option<Decimal> {
+            scalar
+                .as_int()
+                .map(|mantissa| Decimal::from_i128_with_scale(mantissa, 2))
         }
 
         /// Schema endpoints pass refine and strategy samples are

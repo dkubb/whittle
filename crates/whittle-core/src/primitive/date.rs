@@ -539,10 +539,11 @@ mod tests {
             )
         }
 
-        fn extract_date(_kind: ScalarKind, scalar: Scalar) -> NaiveDate {
-            let days =
-                i32::try_from(scalar.as_int().expect("date schema")).expect("endpoint fits i32");
-            NaiveDate::from_num_days_from_ce_opt(days).expect("endpoint within NaiveDate range")
+        fn extract_date(_kind: ScalarKind, scalar: Scalar) -> Option<NaiveDate> {
+            scalar
+                .as_int()
+                .and_then(|widened| i32::try_from(widened).ok())
+                .and_then(NaiveDate::from_num_days_from_ce_opt)
         }
 
         /// Schema endpoints pass refine and strategy samples are

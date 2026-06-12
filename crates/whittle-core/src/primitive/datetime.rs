@@ -562,10 +562,16 @@ mod tests {
             )
         }
 
-        fn extract_datetime(_kind: ScalarKind, scalar: Scalar) -> DateTime<Utc> {
-            let secs = i64::try_from(scalar.as_int().expect("datetime schema"))
-                .expect("endpoint fits i64");
-            DateTime::<Utc>::from_timestamp(secs, 0).expect("endpoint within DateTime range")
+        #[expect(
+            clippy::return_and_then,
+            reason = "the branch-free and_then chain keeps this fn fully covered: a `?` \
+                      would add a None arm no boundary candidate reaches"
+        )]
+        fn extract_datetime(_kind: ScalarKind, scalar: Scalar) -> Option<DateTime<Utc>> {
+            scalar
+                .as_int()
+                .and_then(|widened| i64::try_from(widened).ok())
+                .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
         }
 
         /// Schema endpoints pass refine and strategy samples are
