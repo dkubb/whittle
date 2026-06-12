@@ -29,7 +29,7 @@ use crate::primitive::collection::StableUnderElementMap;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::{PureFilter, Rule};
-use crate::schema::{Schema, SchemaRule};
+use crate::schema::{Schema, SchemaInterval, SchemaRule, integer_interval_from_bounds};
 use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 
 /// Both rules must accept. `A::refine` runs first; on success its
@@ -796,6 +796,126 @@ impl_any_schema_for_arity!(R1, R2, R3, R4, R5);
 impl_any_schema_for_arity!(R1, R2, R3, R4, R5, R6);
 impl_any_schema_for_arity!(R1, R2, R3, R4, R5, R6, R7);
 impl_any_schema_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
+// ─── `Not` / `Xor`: interval complements. ─────────────────────────
+//
+// Both operate on the `SchemaInterval` bounds vocabulary (a single
+// closed integer interval), matching their `Rule` impls' numeric-
+// only carriers. SOUNDNESS:
+//
+// - `Not<R>` admits exactly what `R` rejects and is pure (its accept
+//   path returns the input's widened round-trip), so its carried set
+//   is the interval's complement — at most two half-bounded
+//   intervals, with an empty side dropped at the `i128` extremes.
+// - `Xor<A, B>` admits where exactly one operand does:
+//   `(A ∖ B) ∪ (B ∖ A)`, computed as interval intersections with the
+//   opposite complement's pieces. The two difference sets are
+//   disjoint by construction, so the union members never overlap.
+//
+// Operands whose schemas are not single integer intervals have no
+// `SchemaInterval` impl, so these schemas are ABSENT for them — no
+// partial `schema()` anywhere.
+
+/// The complement of one closed integer interval, as 0..=2 pieces of
+/// bounds; an empty side at an `i128` extreme is dropped (the
+/// integer universe has nothing beyond it). Non-generic so every
+/// `Not`/`Xor` instantiation shares one function.
+fn integer_complement_pieces(
+    bounds: (Option<i128>, Option<i128>),
+) -> alloc::vec::Vec<(Option<i128>, Option<i128>)> {
+    let mut pieces = alloc::vec::Vec::with_capacity(2);
+    if let Some(lo) = bounds.0
+        && lo > i128::MIN
+    {
+        pieces.push((None, Some(lo - 1)));
+    }
+    if let Some(hi) = bounds.1
+        && hi < i128::MAX
+    {
+        pieces.push((Some(hi + 1), None));
+    }
+    pieces
+}
+
+/// Intersect two closed integer intervals given as bounds; `None`
+/// when the intersection is empty. Non-generic, shared by every
+/// `Xor` instantiation.
+fn intersect_integer_bounds(
+    a: (Option<i128>, Option<i128>),
+    b: (Option<i128>, Option<i128>),
+) -> Option<(Option<i128>, Option<i128>)> {
+    let lo = match (a.0, b.0) {
+        (None, other) | (other, None) => other,
+        (Some(x), Some(y)) => Some(x.max(y)),
+    };
+    let hi = match (a.1, b.1) {
+        (None, other) | (other, None) => other,
+        (Some(x), Some(y)) => Some(x.min(y)),
+    };
+    if let (Some(lo), Some(hi)) = (lo, hi)
+        && lo > hi
+    {
+        return None;
+    }
+    Some((lo, hi))
+}
+
+impl<T, R> SchemaRule<T> for Not<R>
+where
+    T: crate::primitive::Numeric + Copy,
+    R: Rule<T, Error = crate::primitive::NumericError> + SchemaInterval<T>,
+{
+    /// The complement of `R`'s interval: a union of at most two
+    /// half-bounded intervals (one when `R`'s interval reaches an
+    /// `i128` extreme).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `R`'s interval covers the whole integer universe:
+    /// its complement admits nothing, and empty admitted sets are
+    /// unrepresentable by construction (the same posture as an empty
+    /// interval fusion).
+    #[inline]
+    fn schema() -> Schema {
+        let pieces = integer_complement_pieces(R::interval_bounds());
+        Schema::union(
+            pieces
+                .into_iter()
+                .map(integer_interval_from_bounds)
+                .collect(),
+        )
+    }
+}
+
+impl<T, A, B> SchemaRule<T> for Xor<A, B>
+where
+    T: crate::primitive::Numeric + Copy,
+    A: Rule<T, Error = crate::primitive::NumericError> + SchemaInterval<T>,
+    B: Rule<T, Error = crate::primitive::NumericError> + SchemaInterval<T>,
+{
+    /// The symmetric difference of the operands' intervals,
+    /// desugared as `(A ∧ ¬B) ∨ (¬A ∧ B)` over interval pieces.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the symmetric difference is empty (the operands'
+    /// intervals are equal, so `Xor` admits nothing): empty admitted
+    /// sets are unrepresentable by construction.
+    #[inline]
+    fn schema() -> Schema {
+        let a = A::interval_bounds();
+        let b = B::interval_bounds();
+        let mut members = alloc::vec::Vec::with_capacity(4);
+        for (lhs, rhs) in [(a, b), (b, a)] {
+            for piece in integer_complement_pieces(rhs) {
+                if let Some(fused) = intersect_integer_bounds(lhs, piece) {
+                    members.push(integer_interval_from_bounds(fused));
+                }
+            }
+        }
+        Schema::union(members)
+    }
+}
 
 // ─── `PureFilter` propagation. ────────────────────────────────────
 //
@@ -2075,6 +2195,97 @@ mod tests {
             );
         }
 
+        /// `Not` over an interval rule is the interval's complement:
+        /// a union of at most two half-bounded intervals.
+        #[test]
+        fn not_schema_is_the_interval_complement() {
+            use crate::Not;
+            use crate::primitive::Within;
+
+            assert_eq!(
+                <Not<Within<10, 20>> as SchemaRule<i32>>::schema(),
+                Schema::union(vec![
+                    Schema::interval(
+                        ScalarKind::Integer,
+                        Bound::Unbounded,
+                        Bound::Inclusive(Scalar::Int(9)),
+                    ),
+                    Schema::interval(
+                        ScalarKind::Integer,
+                        Bound::Inclusive(Scalar::Int(21)),
+                        Bound::Unbounded,
+                    ),
+                ]),
+            );
+            // A half-bounded operand leaves a single complement piece.
+            assert_eq!(
+                <Not<AtLeast<5>> as SchemaRule<i32>>::schema(),
+                Schema::interval(
+                    ScalarKind::Integer,
+                    Bound::Unbounded,
+                    Bound::Inclusive(Scalar::Int(4)),
+                ),
+            );
+            assert_eq!(
+                <Not<AtMost<5>> as SchemaRule<i32>>::schema(),
+                Schema::interval(
+                    ScalarKind::Integer,
+                    Bound::Inclusive(Scalar::Int(6)),
+                    Bound::Unbounded,
+                ),
+            );
+        }
+
+        /// The complement of an everything-admitting interval admits
+        /// nothing — unrepresentable by construction.
+        #[test]
+        #[should_panic(expected = "at least one member is required")]
+        fn not_schema_panics_for_an_everything_admitting_operand() {
+            use crate::Not;
+            let _schema = <Not<AtLeast<{ i128::MIN }>> as SchemaRule<i128>>::schema();
+        }
+
+        /// `Xor` is the symmetric difference, desugared as
+        /// `(A ∧ ¬B) ∨ (¬A ∧ B)` over interval pieces.
+        #[test]
+        fn xor_schema_is_the_symmetric_difference() {
+            use crate::Xor;
+            use crate::primitive::Within;
+
+            // Inside [0, 10] both accept (rejected); outside exactly
+            // one does (admitted) — the two-tail union.
+            assert_eq!(
+                <Xor<AtLeast<0>, AtMost<10>> as SchemaRule<i32>>::schema(),
+                Schema::union(vec![
+                    Schema::interval(
+                        ScalarKind::Integer,
+                        Bound::Unbounded,
+                        Bound::Inclusive(Scalar::Int(-1)),
+                    ),
+                    Schema::interval(
+                        ScalarKind::Integer,
+                        Bound::Inclusive(Scalar::Int(11)),
+                        Bound::Unbounded,
+                    ),
+                ]),
+            );
+            // Overlapping closed intervals: the two one-sided
+            // leftovers survive, the overlap drops.
+            assert_eq!(
+                <Xor<Within<0, 10>, Within<5, 15>> as SchemaRule<i32>>::schema(),
+                Schema::union(vec![int_interval(0, 4), int_interval(11, 15)]),
+            );
+        }
+
+        /// Equal operands have an empty symmetric difference: `Xor`
+        /// admits nothing — unrepresentable by construction.
+        #[test]
+        #[should_panic(expected = "at least one member is required")]
+        fn xor_schema_panics_for_equal_operands() {
+            use crate::Xor;
+            let _schema = <Xor<AtLeast<0>, AtLeast<0>> as SchemaRule<i32>>::schema();
+        }
+
         /// `MapErr` is transparent: the mapped rule's schema IS the
         /// inner rule's schema (error mapping never moves the set).
         #[test]
@@ -2179,6 +2390,17 @@ mod tests {
             #[test]
             fn schema_cross_checks_string_conjunction() {
                 prop_string_schema_cross_check::<And<LenChars<1, 10>, EachChar<IdentChar>>>();
+            }
+
+            /// The complement and symmetric-difference schemas agree
+            /// with refine at every derived boundary, and the
+            /// filter-based Not/Xor strategies emit only members.
+            #[test]
+            fn schema_cross_checks_not_and_xor() {
+                use crate::{Not, Xor};
+
+                prop_schema_cross_check::<i32, Not<Within<10, 20>>>(embed_i32, extract_i32);
+                prop_schema_cross_check::<i32, Xor<AtLeast<0>, AtMost<10>>>(embed_i32, extract_i32);
             }
         }
     }

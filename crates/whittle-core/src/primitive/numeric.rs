@@ -8,7 +8,7 @@
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::{Refined, Rule};
-use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+use crate::schema::{Schema, SchemaInterval, SchemaRule, integer_interval_from_bounds};
 
 /// Inclusive numeric range: `MIN <= value <= MAX`.
 ///
@@ -850,12 +850,7 @@ where
 {
     #[inline]
     fn schema() -> Schema {
-        const { Self::VALID };
-        Schema::interval(
-            ScalarKind::Integer,
-            Bound::Inclusive(Scalar::Int(MIN)),
-            Bound::Inclusive(Scalar::Int(MAX)),
-        )
+        integer_interval_from_bounds(<Self as SchemaInterval<T>>::interval_bounds())
     }
 }
 
@@ -865,11 +860,7 @@ where
 {
     #[inline]
     fn schema() -> Schema {
-        Schema::interval(
-            ScalarKind::Integer,
-            Bound::Inclusive(Scalar::Int(MIN)),
-            Bound::Unbounded,
-        )
+        integer_interval_from_bounds(<Self as SchemaInterval<T>>::interval_bounds())
     }
 }
 
@@ -879,11 +870,7 @@ where
 {
     #[inline]
     fn schema() -> Schema {
-        Schema::interval(
-            ScalarKind::Integer,
-            Bound::Unbounded,
-            Bound::Inclusive(Scalar::Int(MAX)),
-        )
+        integer_interval_from_bounds(<Self as SchemaInterval<T>>::interval_bounds())
     }
 }
 
@@ -893,15 +880,7 @@ where
 {
     #[inline]
     fn schema() -> Schema {
-        const { Self::VALID };
-        // `MIN + 1` is the smallest admitted integer; VALID
-        // guarantees the addition does not overflow (the same
-        // invariant the strategy relies on).
-        Schema::interval(
-            ScalarKind::Integer,
-            Bound::Inclusive(Scalar::Int(MIN + 1)),
-            Bound::Unbounded,
-        )
+        integer_interval_from_bounds(<Self as SchemaInterval<T>>::interval_bounds())
     }
 }
 
@@ -911,14 +890,7 @@ where
 {
     #[inline]
     fn schema() -> Schema {
-        const { Self::VALID };
-        // `MAX - 1` is the largest admitted integer; VALID
-        // guarantees the subtraction does not underflow.
-        Schema::interval(
-            ScalarKind::Integer,
-            Bound::Unbounded,
-            Bound::Inclusive(Scalar::Int(MAX - 1)),
-        )
+        integer_interval_from_bounds(<Self as SchemaInterval<T>>::interval_bounds())
     }
 }
 
@@ -928,51 +900,84 @@ where
 {
     #[inline]
     fn schema() -> Schema {
-        Schema::interval(
-            ScalarKind::Integer,
-            Bound::Inclusive(Scalar::Int(N)),
-            Bound::Inclusive(Scalar::Int(N)),
-        )
+        integer_interval_from_bounds(<Self as SchemaInterval<T>>::interval_bounds())
     }
 }
 
-// `NotEqualTo<N>` is `Not<EqualTo<N>>`: the complement of a point is
-// the union of the two adjacent half-bounded intervals. At an i128
-// extreme one side is empty and the union collapses to the single
-// remaining interval. The bounds mirror `Not<R>`'s `Rule` impl
-// (`T: Numeric + Copy`, operand error `NumericError`).
-impl<T, const N: i128> SchemaRule<T> for crate::composition::Not<EqualTo<N>>
+// ─── `SchemaInterval` impls: the single determinant per rule. ─────
+//
+// Each rule's bounds read the SAME const generics `refine` compares
+// against; `schema()` above delegates here, keeping the trait's
+// soundness law (`schema() == integer interval over the bounds`)
+// structural. `Not<R>` / `Xor<A, B>` compute complements and
+// symmetric differences from these bounds (composition.rs).
+
+impl<T, const MIN: i128, const MAX: i128> SchemaInterval<T> for Within<MIN, MAX>
 where
-    T: Numeric + Copy,
+    T: Numeric,
 {
     #[inline]
-    fn schema() -> Schema {
-        point_complement_schema(N)
+    fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        const { Self::VALID };
+        (Some(MIN), Some(MAX))
     }
 }
 
-/// The complement of the single integer `point`: the union of the
-/// two adjacent half-bounded intervals, with an empty side dropped
-/// at the `i128` extremes. Non-generic so every `NotEqualTo<N>`
-/// instantiation shares one function (the per-`N` branches could
-/// never both be taken inside a single monomorphisation).
-fn point_complement_schema(point: i128) -> Schema {
-    let mut members = alloc::vec::Vec::with_capacity(2);
-    if point > i128::MIN {
-        members.push(Schema::interval(
-            ScalarKind::Integer,
-            Bound::Unbounded,
-            Bound::Inclusive(Scalar::Int(point - 1)),
-        ));
+impl<T, const MIN: i128> SchemaInterval<T> for AtLeast<MIN>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        (Some(MIN), None)
     }
-    if point < i128::MAX {
-        members.push(Schema::interval(
-            ScalarKind::Integer,
-            Bound::Inclusive(Scalar::Int(point + 1)),
-            Bound::Unbounded,
-        ));
+}
+
+impl<T, const MAX: i128> SchemaInterval<T> for AtMost<MAX>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        (None, Some(MAX))
     }
-    Schema::union(members)
+}
+
+impl<T, const MIN: i128> SchemaInterval<T> for GreaterThan<MIN>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        const { Self::VALID };
+        // `MIN + 1` is the smallest admitted integer; VALID
+        // guarantees the addition does not overflow (the same
+        // invariant the strategy relies on).
+        (Some(MIN + 1), None)
+    }
+}
+
+impl<T, const MAX: i128> SchemaInterval<T> for LessThan<MAX>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        const { Self::VALID };
+        // `MAX - 1` is the largest admitted integer; VALID
+        // guarantees the subtraction does not underflow.
+        (None, Some(MAX - 1))
+    }
+}
+
+impl<T, const N: i128> SchemaInterval<T> for EqualTo<N>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        (Some(N), Some(N))
+    }
 }
 
 // ─── `ArbitraryRule` impls. ───────────────────────────────────────
@@ -1784,7 +1789,7 @@ mod tests {
     // (behind `proptest`) are the mechanical oracle between the two
     // determinants.
 
-    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaInterval, SchemaRule};
 
     fn closed(lo: i128, hi: i128) -> Schema {
         Schema::interval(
@@ -1831,6 +1836,36 @@ mod tests {
         // The singleton rule is the degenerate interval.
         assert_eq!(<EqualTo<42> as SchemaRule<i32>>::schema(), closed(42, 42));
         assert_eq!(<EqualTo<42> as SchemaRule<u8>>::schema(), closed(42, 42));
+    }
+
+    /// The `SchemaInterval` bounds are the single determinant the
+    /// schemas delegate to — open bounds normalise here too.
+    #[test]
+    fn interval_bounds_read_the_same_consts() {
+        assert_eq!(
+            <Within<0, 100> as SchemaInterval<i32>>::interval_bounds(),
+            (Some(0), Some(100)),
+        );
+        assert_eq!(
+            <AtLeast<10> as SchemaInterval<i32>>::interval_bounds(),
+            (Some(10), None),
+        );
+        assert_eq!(
+            <AtMost<10> as SchemaInterval<i32>>::interval_bounds(),
+            (None, Some(10)),
+        );
+        assert_eq!(
+            <GreaterThan<10> as SchemaInterval<i32>>::interval_bounds(),
+            (Some(11), None),
+        );
+        assert_eq!(
+            <LessThan<100> as SchemaInterval<i32>>::interval_bounds(),
+            (None, Some(99)),
+        );
+        assert_eq!(
+            <EqualTo<42> as SchemaInterval<i32>>::interval_bounds(),
+            (Some(42), Some(42)),
+        );
     }
 
     #[test]

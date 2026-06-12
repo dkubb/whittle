@@ -41,7 +41,7 @@ pub use rule::ArbitraryRule;
 #[cfg(feature = "serde")]
 pub use rule::{DeserializeRule, parse_then_refine};
 pub use rule::{PureFilter, Refined, Rule};
-pub use schema::{Schema, SchemaRule};
+pub use schema::{Schema, SchemaInterval, SchemaRule};
 /// Re-export of `serde` so [`deserialize_rule!`] expansions resolve
 /// serde paths through `$crate` without requiring downstream crates
 /// to depend on `serde` directly.

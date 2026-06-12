@@ -2506,6 +2506,58 @@ where
     fn schema() -> Schema;
 }
 
+/// A [`SchemaRule`] whose admitted set is ONE closed integer-regime
+/// interval, exposed as plain bounds.
+///
+/// This is the vocabulary the complement-computing combinators
+/// (`Not`, `Xor`) work over: an interval's complement is at most two
+/// intervals, and a symmetric difference is at most two interval
+/// intersections — both computable on `(Option<i128>, Option<i128>)`
+/// bounds where they would be undecidable on an arbitrary schema
+/// tree. Rules whose schemas are not single integer intervals simply
+/// lack the impl, so `Not<R>` / `Xor<A, B>` schemas are ABSENT for
+/// them by construction (no partial `schema()` anywhere).
+///
+/// # Soundness obligation
+///
+/// `Self::schema()` must equal the [`ScalarKind::Integer`] interval
+/// over `interval_bounds()`. The numeric kernel keeps the law
+/// structural: each rule's `schema()` delegates to its own
+/// `interval_bounds()`, so the bounds are the single determinant
+/// (read from the same const generics `refine` compares against).
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::primitive::Within;
+/// use whittle_core::schema::SchemaInterval;
+///
+/// assert_eq!(
+///     <Within<0, 100> as SchemaInterval<i32>>::interval_bounds(),
+///     (Some(0), Some(100)),
+/// );
+/// ```
+pub trait SchemaInterval<T>: SchemaRule<T>
+where
+    T: 'static,
+{
+    /// The inclusive integer endpoints of the admitted interval
+    /// (`None` = unbounded at that end).
+    fn interval_bounds() -> (Option<i128>, Option<i128>);
+}
+
+/// Build the [`ScalarKind::Integer`] interval over a
+/// [`SchemaInterval`] rule's bounds — the delegation target that
+/// keeps the trait's soundness law structural.
+pub(crate) fn integer_interval_from_bounds(bounds: (Option<i128>, Option<i128>)) -> Schema {
+    let endpoint = |end: Option<i128>| {
+        end.map_or(Bound::Unbounded, |value| {
+            Bound::Inclusive(Scalar::Int(value))
+        })
+    };
+    Schema::interval(ScalarKind::Integer, endpoint(bounds.0), endpoint(bounds.1))
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
