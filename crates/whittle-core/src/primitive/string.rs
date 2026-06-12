@@ -1201,12 +1201,11 @@ impl ArbitraryChar for PrintableMultiline {
 /// [`BoundedText`]. Available behind the `unicode` feature.
 ///
 /// `ArbitraryRule` (behind `proptest`), `DeserializeRule` (behind
-/// `serde`), and the `StableUnder*` markers are all inherited from
-/// the underlying composition. No [`SchemaRule`] yet, deliberately:
-/// the alias is an `And`, whose schema is the `Intersection`
-/// composition — combinator territory that lands in a later stage.
-/// Special-casing the alias would fork the determinant the
-/// combinator impl will own.
+/// `serde`), the `StableUnder*` markers, and [`SchemaRule`] are all
+/// inherited from the underlying composition: the `And` combinator
+/// composes the operands' schemas as an `Intersection`, whose `Str`
+/// fusion collapses the pair into a single `Str` node (length bound
+/// × printable alphabet) — one determinant, no alias special-case.
 ///
 /// # Examples
 ///
@@ -1247,9 +1246,9 @@ pub type BoundedLine<const MAX: usize> =
 /// printable class is the default for external/provider text
 /// (tiers 1–2); narrow format grammars belong only to tier 4
 /// (we-generate / contractually-guaranteed values). Available
-/// behind the `unicode` feature. Like [`BoundedLine`], no
-/// [`SchemaRule`] until the `And` combinator's `Intersection`
-/// schema lands.
+/// behind the `unicode` feature. Like [`BoundedLine`], the
+/// [`SchemaRule`] impl is inherited from the `And` combinator and
+/// fuses to a single `Str` node.
 ///
 /// # Examples
 ///
@@ -1705,9 +1704,9 @@ impl<const LEN: usize> crate::rule::PureFilter for HexFixedAny<LEN> {}
 // the carrier-true bound: lengths to `0..=u64::MAX` (no `String`
 // exceeds a u64 length on supported targets), alphabets to the full
 // scalar-value set. `BoundedLine`/`BoundedText` are `And` aliases
-// and deliberately have NO schema yet: `And` composes schemas as
-// `Intersection`, which is combinator territory (a later stage) —
-// special-casing the aliases here would fork the determinant.
+// whose schemas come from the combinator's `Intersection`
+// composition (with `Str` fusion) — no alias special-case here, so
+// the determinant stays with the combinator impl.
 
 /// The unconstrained alphabet: every Unicode scalar value.
 fn any_char_set() -> CharSet {
@@ -2617,6 +2616,46 @@ mod tests {
                 r.as_inner().chars().all(<PrintableLine as CharPredicate>::test),
             );
         }
+    }
+
+    /// `SchemaRule` is inherited from the composition, and the
+    /// intersection's Str fusion collapses the alias to ONE Str
+    /// node: the char-length bound from `LenChars`, the alphabet
+    /// from the printable predicate's `SchemaChar` set.
+    #[cfg(feature = "unicode")]
+    #[test]
+    fn bounded_line_and_text_schemas_fuse_to_single_str_nodes() {
+        use super::{PrintableLine, PrintableMultiline, SchemaChar};
+        use crate::schema::{LenBound, LenUnit, Schema, SchemaRule};
+
+        assert_eq!(
+            <super::BoundedLine<80> as SchemaRule<String>>::schema(),
+            Schema::string(
+                LenBound::new(1, 80),
+                LenUnit::Chars,
+                <PrintableLine as SchemaChar>::char_set(),
+                None,
+            ),
+        );
+        assert_eq!(
+            <super::BoundedText<200> as SchemaRule<String>>::schema(),
+            Schema::string(
+                LenBound::new(1, 200),
+                LenUnit::Chars,
+                <PrintableMultiline as SchemaChar>::char_set(),
+                None,
+            ),
+        );
+    }
+
+    /// The fused schema agrees with the composed refine at every
+    /// derived boundary (length edges, alphabet near-miss), and the
+    /// inherited strategy emits only schema members.
+    #[cfg(all(feature = "unicode", feature = "proptest"))]
+    #[test]
+    fn bounded_line_and_text_schema_cross_checks() {
+        crate::testing::prop_string_schema_cross_check::<super::BoundedLine<8>>();
+        crate::testing::assert_string_boundary_matrix::<super::BoundedText<8>>();
     }
 
     /// `DeserializeRule` is inherited from the composition: serde

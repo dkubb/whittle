@@ -28,7 +28,8 @@ use core::marker::PhantomData;
 use crate::primitive::collection::StableUnderElementMap;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
-use crate::rule::Rule;
+use crate::rule::{PureFilter, Rule};
+use crate::schema::{Schema, SchemaRule};
 use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 
 /// Both rules must accept. `A::refine` runs first; on success its
@@ -681,6 +682,121 @@ where
 {
 }
 
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// SOUNDNESS (⟦schema()⟧ = range(refine), the trait contract), with
+// every operand bounded `PureFilter` so its accepted set EQUALS its
+// carried set (refine is the identity on admissible input, and by
+// each operand's own SchemaRule obligation both equal ⟦operand⟧):
+//
+// - `And<A, B>::refine = B ∘ A`. For pure operands,
+//   range(B ∘ A) = C(A) ∩ C(B) = ⟦A⟧ ∩ ⟦B⟧: every output passed
+//   both predicates unchanged, and every member of both sets is
+//   returned by the chain as itself. The Intersection constructor
+//   fuses what it can (same-kind intervals, Str vocabulary) and
+//   keeps the rest symbolic — either way the denotation is the
+//   intersection.
+// - `Or<A, B>` tries `A`, then `B` against the ORIGINAL input:
+//   range = C(A) ∪ C(B) = ⟦A⟧ ∪ ⟦B⟧ — the Union node.
+// - `All` / `Any` generalise the same two derivations per arity.
+// - `MapErr<R, M>` only maps the rejection error, so its range is
+//   `R`'s range for ANY `R` — transparent, no purity bound.
+//
+// The purity bounds are load-bearing, not convenience: a
+// canonicalising operand makes the set algebra WRONG, not merely
+// imprecise. `And<LenChars<3, 3>, Trim<NonEmpty>>` accepts the raw
+// input "a  " (3 chars) and carries "a" — a value in NEITHER
+// operand's set claim — while "a  " itself is in both sets but never
+// carried. Per the design's absence-over-wrong-impl rule, such
+// compositions have NO schema: the `PureFilter` bound is the
+// compile-time absence.
+
+impl<T, E, A, B> SchemaRule<T> for And<A, B>
+where
+    T: 'static,
+    E: 'static,
+    A: SchemaRule<T> + Rule<T, Error = E> + PureFilter,
+    B: SchemaRule<T> + Rule<T, Error = E> + PureFilter,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::intersection(alloc::vec![A::schema(), B::schema()])
+    }
+}
+
+impl<T, E, A, B> SchemaRule<T> for Or<A, B>
+where
+    T: 'static + Clone,
+    E: 'static,
+    A: SchemaRule<T> + Rule<T, Error = E> + PureFilter,
+    B: SchemaRule<T> + Rule<T, Error = E> + PureFilter,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::union(alloc::vec![A::schema(), B::schema()])
+    }
+}
+
+impl<T, R, M> SchemaRule<T> for MapErr<R, M>
+where
+    T: 'static,
+    R: SchemaRule<T>,
+    M: ErrorMapper<R::Error>,
+{
+    #[inline]
+    fn schema() -> Schema {
+        R::schema()
+    }
+}
+
+macro_rules! impl_all_schema_for_arity {
+    ($($Ri:ident),+ $(,)?) => {
+        impl<T, E, $($Ri),+> SchemaRule<T> for All<($($Ri,)+)>
+        where
+            T: 'static,
+            E: 'static,
+            $($Ri: SchemaRule<T> + Rule<T, Error = E> + PureFilter,)+
+        {
+            #[inline]
+            fn schema() -> Schema {
+                Schema::intersection(alloc::vec![$($Ri::schema()),+])
+            }
+        }
+    };
+}
+
+impl_all_schema_for_arity!(R1, R2);
+impl_all_schema_for_arity!(R1, R2, R3);
+impl_all_schema_for_arity!(R1, R2, R3, R4);
+impl_all_schema_for_arity!(R1, R2, R3, R4, R5);
+impl_all_schema_for_arity!(R1, R2, R3, R4, R5, R6);
+impl_all_schema_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+impl_all_schema_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
+macro_rules! impl_any_schema_for_arity {
+    ($($Ri:ident),+ $(,)?) => {
+        impl<T, E, $($Ri),+> SchemaRule<T> for Any<($($Ri,)+)>
+        where
+            T: 'static + Clone,
+            E: 'static,
+            $($Ri: SchemaRule<T> + Rule<T, Error = E> + PureFilter,)+
+        {
+            #[inline]
+            fn schema() -> Schema {
+                Schema::union(alloc::vec![$($Ri::schema()),+])
+            }
+        }
+    };
+}
+
+impl_any_schema_for_arity!(R1, R2);
+impl_any_schema_for_arity!(R1, R2, R3);
+impl_any_schema_for_arity!(R1, R2, R3, R4);
+impl_any_schema_for_arity!(R1, R2, R3, R4, R5);
+impl_any_schema_for_arity!(R1, R2, R3, R4, R5, R6);
+impl_any_schema_for_arity!(R1, R2, R3, R4, R5, R6, R7);
+impl_any_schema_for_arity!(R1, R2, R3, R4, R5, R6, R7, R8);
+
 // ─── `PureFilter` propagation. ────────────────────────────────────
 //
 // SOUNDNESS: `And` / `Or` / `All` / `Any` / `MapErr` only forward
@@ -692,37 +808,37 @@ where
 // of the input itself, regardless of what the (rejecting or
 // accepting) operands would have produced.
 
-impl<A, B> crate::rule::PureFilter for And<A, B>
+impl<A, B> PureFilter for And<A, B>
 where
-    A: crate::rule::PureFilter,
-    B: crate::rule::PureFilter,
+    A: PureFilter,
+    B: PureFilter,
 {
 }
 
-impl<A, B> crate::rule::PureFilter for Or<A, B>
+impl<A, B> PureFilter for Or<A, B>
 where
-    A: crate::rule::PureFilter,
-    B: crate::rule::PureFilter,
+    A: PureFilter,
+    B: PureFilter,
 {
 }
 
-impl<R> crate::rule::PureFilter for Not<R> {}
+impl<R> PureFilter for Not<R> {}
 
-impl<A, B> crate::rule::PureFilter for Xor<A, B> {}
+impl<A, B> PureFilter for Xor<A, B> {}
 
-impl<R, M> crate::rule::PureFilter for MapErr<R, M> where R: crate::rule::PureFilter {}
+impl<R, M> PureFilter for MapErr<R, M> where R: PureFilter {}
 
 macro_rules! impl_pure_filter_for_arity {
     ($($Ri:ident),+ $(,)?) => {
-        impl<$($Ri),+> crate::rule::PureFilter for All<($($Ri,)+)>
+        impl<$($Ri),+> PureFilter for All<($($Ri,)+)>
         where
-            $($Ri: crate::rule::PureFilter,)+
+            $($Ri: PureFilter,)+
         {
         }
 
-        impl<$($Ri),+> crate::rule::PureFilter for Any<($($Ri,)+)>
+        impl<$($Ri),+> PureFilter for Any<($($Ri,)+)>
         where
-            $($Ri: crate::rule::PureFilter,)+
+            $($Ri: PureFilter,)+
         {
         }
     };
@@ -1847,6 +1963,223 @@ mod tests {
                 bad_char.contains("bad character"),
                 "mapped error must surface, got: {bad_char}",
             );
+        }
+    }
+
+    // ─── `SchemaRule`: combinator schemas compose constructively. ──
+
+    mod schema {
+        use alloc::string::String;
+        use alloc::vec;
+
+        use super::{All, And, Any, Or};
+        use crate::primitive::{
+            AsciiAlphanumeric, AtLeast, AtMost, EachChar, EqualTo, IdentChar, LenChars, NonZero,
+        };
+        use crate::schema::SchemaRule;
+        use crate::schema::{Bound, CharSet, LenBound, LenUnit, Scalar, ScalarKind, Schema};
+
+        fn int_interval(lo: i128, hi: i128) -> Schema {
+            Schema::interval(
+                ScalarKind::Integer,
+                Bound::Inclusive(Scalar::Int(lo)),
+                Bound::Inclusive(Scalar::Int(hi)),
+            )
+        }
+
+        /// `And` over numeric operands fuses to the single interval
+        /// the equivalent nominal rule would carry: the schema-level
+        /// `And<AtLeast<0>, AtMost<100>> ≡ Within<0, 100>` law.
+        #[test]
+        fn and_schema_is_the_fused_intersection() {
+            assert_eq!(
+                <And<AtLeast<0>, AtMost<100>> as SchemaRule<i32>>::schema(),
+                int_interval(0, 100),
+            );
+        }
+
+        /// `And` over string operands rides the Str fusion: the
+        /// `BoundedLine` shape collapses to one `Str` node.
+        #[test]
+        fn and_schema_fuses_string_vocabulary() {
+            type Ident = And<LenChars<1, 10>, EachChar<IdentChar>>;
+            assert_eq!(
+                <Ident as SchemaRule<String>>::schema(),
+                Schema::string(
+                    LenBound::new(1, 10),
+                    LenUnit::Chars,
+                    CharSet::from_ranges([('0', '9'), ('A', 'Z'), ('_', '_'), ('a', 'z')]),
+                    None,
+                ),
+            );
+        }
+
+        /// `Or` is the union of its operands' sets (same-kind
+        /// operands keep every verdict decidable).
+        #[test]
+        fn or_schema_is_the_union() {
+            assert_eq!(
+                <Or<AtMost<10>, AtLeast<100>> as SchemaRule<i32>>::schema(),
+                Schema::union(vec![
+                    Schema::interval(
+                        ScalarKind::Integer,
+                        Bound::Unbounded,
+                        Bound::Inclusive(Scalar::Int(10)),
+                    ),
+                    Schema::interval(
+                        ScalarKind::Integer,
+                        Bound::Inclusive(Scalar::Int(100)),
+                        Bound::Unbounded,
+                    ),
+                ]),
+            );
+        }
+
+        /// `All` intersects every operand; `NonZero` (a `Not`
+        /// composition) contributes its two-interval union, which
+        /// the fused range then narrows.
+        #[test]
+        fn all_schema_intersects_every_operand() {
+            type R = All<(AtLeast<0>, AtMost<100>, NonZero)>;
+            assert_eq!(
+                <R as SchemaRule<i32>>::schema(),
+                Schema::intersection(vec![
+                    int_interval(0, 100),
+                    Schema::union(vec![
+                        Schema::interval(
+                            ScalarKind::Integer,
+                            Bound::Unbounded,
+                            Bound::Inclusive(Scalar::Int(-1)),
+                        ),
+                        Schema::interval(
+                            ScalarKind::Integer,
+                            Bound::Inclusive(Scalar::Int(1)),
+                            Bound::Unbounded,
+                        ),
+                    ]),
+                ]),
+            );
+        }
+
+        /// `Any` unions every operand's point set.
+        #[test]
+        fn any_schema_unions_every_operand() {
+            type R = Any<(EqualTo<1>, EqualTo<3>, EqualTo<6>)>;
+            assert_eq!(
+                <R as SchemaRule<i32>>::schema(),
+                Schema::union(vec![
+                    int_interval(1, 1),
+                    int_interval(3, 3),
+                    int_interval(6, 6),
+                ]),
+            );
+        }
+
+        /// `MapErr` is transparent: the mapped rule's schema IS the
+        /// inner rule's schema (error mapping never moves the set).
+        #[test]
+        fn map_err_schema_is_transparent() {
+            type Inner = And<LenChars<3, 3>, EachChar<AsciiAlphanumeric>>;
+            assert_eq!(
+                <super::CodeRule as SchemaRule<String>>::schema(),
+                <Inner as SchemaRule<String>>::schema(),
+            );
+        }
+
+        /// Composition schemas have no impl when an operand
+        /// canonicalises — the `PureFilter` bound is the compile-time
+        /// absence (design: absence-of-impl over a wrong impl).
+        ///
+        /// ```compile_fail
+        /// use whittle_core::{And, SchemaRule};
+        /// use whittle_core::primitive::{LenChars, NonEmpty};
+        /// use whittle_core::transform::Trim;
+        ///
+        /// fn assert_schema<R: SchemaRule<String>>() {}
+        /// // error[E0277]: Trim<NonEmpty> is not a PureFilter
+        /// assert_schema::<And<LenChars<3, 3>, Trim<NonEmpty>>>();
+        /// ```
+        const _CANONICALISING_OPERANDS_HAVE_NO_SCHEMA: () = ();
+
+        #[cfg(feature = "proptest")]
+        mod cross_checks {
+            use super::super::{All, And, Any, Or};
+            use crate::primitive::{
+                AtLeast, AtMost, EachChar, EqualTo, IdentChar, LenChars, NonZero, Within,
+            };
+            use crate::schema::{Scalar, ScalarKind};
+            use crate::testing::{
+                assert_schema_boundary_matrix, prop_schema_cross_check,
+                prop_string_schema_cross_check,
+            };
+
+            #[expect(
+                clippy::trivially_copy_pass_by_ref,
+                reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+            )]
+            fn embed_i32(value: &i32) -> (ScalarKind, Scalar) {
+                (ScalarKind::Integer, Scalar::Int(i128::from(*value)))
+            }
+
+            #[expect(
+                clippy::return_and_then,
+                reason = "the branch-free and_then chain keeps this fn fully covered: a `?` \
+                          would add a None arm no boundary candidate reaches"
+            )]
+            fn extract_i32(_kind: ScalarKind, scalar: Scalar) -> Option<i32> {
+                scalar
+                    .as_int()
+                    .and_then(|widened| i32::try_from(widened).ok())
+            }
+
+            /// Every fusion path is wired against the oracles: the
+            /// derived boundary matrix and the strategy-membership
+            /// cross-check agree with refine for conjunctions,
+            /// disjunctions, and their n-ary forms. (Conjunction
+            /// operands overlap densely — the And/All strategies
+            /// rejection-sample the opposite operand, so a sparse
+            /// intersection cannot drive the sample obligation.)
+            #[test]
+            fn schema_cross_checks_numeric_combinators() {
+                prop_schema_cross_check::<i32, And<Within<0, 100>, AtLeast<50>>>(
+                    embed_i32,
+                    extract_i32,
+                );
+                prop_schema_cross_check::<i32, Or<AtMost<10>, AtLeast<100>>>(
+                    embed_i32,
+                    extract_i32,
+                );
+                prop_schema_cross_check::<i32, All<(Within<0, 100>, AtLeast<10>, NonZero)>>(
+                    embed_i32,
+                    extract_i32,
+                );
+                prop_schema_cross_check::<i32, Any<(EqualTo<1>, EqualTo<3>, EqualTo<6>)>>(
+                    embed_i32,
+                    extract_i32,
+                );
+            }
+
+            /// The boundary matrix alone, for the standalone helper's
+            /// combinator instantiation.
+            #[test]
+            fn boundary_matrices_for_numeric_combinators() {
+                assert_schema_boundary_matrix::<i32, And<AtLeast<0>, AtMost<100>>>(
+                    embed_i32,
+                    extract_i32,
+                );
+                assert_schema_boundary_matrix::<i32, Or<AtMost<10>, AtLeast<100>>>(
+                    embed_i32,
+                    extract_i32,
+                );
+            }
+
+            /// The fused string schema agrees with the composed
+            /// refine at every derived length edge and alphabet
+            /// near-miss, and the And strategy emits only members.
+            #[test]
+            fn schema_cross_checks_string_conjunction() {
+                prop_string_schema_cross_check::<And<LenChars<1, 10>, EachChar<IdentChar>>>();
+            }
         }
     }
 }
