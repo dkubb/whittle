@@ -612,8 +612,8 @@ pub enum Schema {
         first: Option<CharSet>,
     },
     /// Strings the regular expression matches over their WHOLE span
-    /// — anchored semantics, exactly as
-    /// [`Pattern`](crate::primitive::Pattern)`::refine` checks them:
+    /// — anchored semantics, exactly as the `refine` of
+    /// [`Pattern`](crate::primitive::Pattern) checks them:
     /// the match must start at byte 0 and end at the input's last
     /// byte, even when the pattern itself carries no `^`/`$`
     /// anchors. A substring reading would overclaim the carried set.
@@ -1293,6 +1293,14 @@ impl Schema {
     ///   near-miss (an alphabet-admissible head outside the
     ///   first-character set, when the node carries one).
     ///
+    ///   Every candidate measures exactly its target length in the
+    ///   node's own [`LenUnit`]. In the byte unit the candidates are
+    ///   tiled from UTF-8 widths; an edge the available characters
+    ///   cannot tile exactly (a 2-byte-minimum alphabet against an
+    ///   odd byte target) yields NO candidate — an explicit skip,
+    ///   never an off-target probe that would test a different
+    ///   length than the edge it names.
+    ///
     /// Candidates whose membership the schema cannot decide
     /// ([`Schema::string_membership`] returns `None`) are omitted.
     /// [`Schema::Collection`] elements contribute nothing: their
@@ -1355,10 +1363,10 @@ impl Schema {
             Self::Canonicalized { inner, .. } => inner.collect_string_candidates(out),
             Self::Str {
                 len,
+                unit,
                 alphabet,
                 first,
-                ..
-            } => collect_str_candidates(*len, alphabet, first.as_ref(), out),
+            } => collect_str_candidates(*len, *unit, alphabet, first.as_ref(), out),
             // `Collection` elements have no string embedding at the
             // root (see the method docs); intervals and regexes
             // contribute nothing.
@@ -1381,21 +1389,23 @@ pub const STR_BOUNDARY_LEN_CAP: u64 = 4096;
 /// root classifies them (see [`Schema::string_boundaries`]).
 fn collect_str_candidates(
     len: LenBound,
+    unit: LenUnit,
     alphabet: &CharSet,
     first: Option<&CharSet>,
     out: &mut Vec<String>,
 ) {
     out.push(String::new());
     // Sorted canonical ranges: the first range's start is the set's
-    // smallest member. When the unit counts bytes it is also ASCII
-    // whenever ANY member is (smaller code point, fewer UTF-8
-    // bytes), so length-targeted candidates land on the byte
-    // boundary whenever the alphabet allows it; otherwise the probe
-    // is off-target but still honestly classified.
+    // smallest member — and therefore also its fewest-UTF-8-bytes
+    // member, which maximises the byte targets [`unit_candidate`]
+    // can tile exactly.
     let filler = alphabet.ranges()[0].0;
     let head = first.map_or(filler, |set| set.ranges()[0].0);
     // Length edges, capped: an absent edge (MIN = 0's MIN−1, an
-    // uncapped MAX's MAX+1) is skipped, not wrapped.
+    // uncapped MAX's MAX+1) is skipped, not wrapped. An edge the
+    // characters cannot measure exactly in the node's unit is
+    // skipped too ([`unit_candidate`] returns `None`) — absence
+    // over an off-target probe.
     let edges = [
         len.min.checked_sub(1),
         Some(len.min),
@@ -1407,43 +1417,91 @@ fn collect_str_candidates(
         if target > STR_BOUNDARY_LEN_CAP {
             continue;
         }
-        out.push(unit_candidate(head, filler, target));
+        out.extend(unit_candidate(head, filler, target, unit));
     }
     // Near-misses ride on the shortest in-bounds (non-empty) length.
     let miss_len = len.min.clamp(1, STR_BOUNDARY_LEN_CAP);
     if len.min <= STR_BOUNDARY_LEN_CAP {
         // Alphabet near-miss: the LAST character falls outside the
-        // alphabet, when an outsider exists.
+        // alphabet, when an outsider exists — an in-bounds-length
+        // prefix, then the outsider, so the candidate measures
+        // exactly `miss_len` in the node's unit. When the prefix
+        // target cannot be reached exactly (the outsider is wider
+        // than `miss_len`, or the prefix is untileable in bytes),
+        // the near-miss is skipped, not approximated.
         if let Some(outsider) = alphabet.complement_sample() {
-            let mut candidate = unit_candidate(head, filler, miss_len);
-            candidate.pop();
-            candidate.push(outsider);
-            out.push(candidate);
+            let outsider_units = match unit {
+                LenUnit::Chars => 1,
+                LenUnit::Bytes => len_utf8_u64(outsider),
+            };
+            if let Some(prefix_target) = miss_len.checked_sub(outsider_units)
+                && let Some(mut candidate) = unit_candidate(head, filler, prefix_target, unit)
+            {
+                candidate.push(outsider);
+                out.push(candidate);
+            }
         }
         // First-character near-miss: a head inside the alphabet but
-        // outside the first-character set, when one exists.
+        // outside the first-character set, when one exists (skipped
+        // when that head cannot tile `miss_len` exactly).
         if let Some(first_set) = first
             && let Some(outside_first) = alphabet.difference(first_set)
         {
-            out.push(unit_candidate(
+            out.extend(unit_candidate(
                 outside_first.ranges()[0].0,
                 filler,
                 miss_len,
+                unit,
             ));
         }
     }
 }
 
-/// Build a candidate of `target` length units: `head` first, then
-/// `filler` repeated. `target` is pre-capped by the caller, so the
-/// usize conversion cannot fail on supported targets.
-fn unit_candidate(head: char, filler: char, target: u64) -> String {
-    let target = usize::try_from(target).expect("capped candidate lengths fit usize");
-    let mut out = String::with_capacity(target);
-    for index in 0..target {
-        out.push(if index == 0 { head } else { filler });
+/// Build a candidate measuring exactly `target` in `unit`: `head`
+/// first, then `filler` repeated. `target` is pre-capped by the
+/// caller, so the usize conversion cannot fail on supported targets.
+///
+/// Returns `None` when no such string exists over the two
+/// characters — possible only in the byte unit, when the UTF-8
+/// widths cannot tile `target` exactly (a 2-byte head against a
+/// 1-byte target, a leftover the filler width does not divide).
+/// The caller skips the edge EXPLICITLY rather than emitting a
+/// probe whose measured length differs from the edge it names:
+/// every emitted candidate's unit length is exact by construction.
+#[expect(
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "the byte tiling divides only after is_multiple_of proves exact \
+              divisibility, so no remainder is ever discarded"
+)]
+fn unit_candidate(head: char, filler: char, target: u64, unit: LenUnit) -> Option<String> {
+    if target == 0 {
+        return Some(String::new());
     }
-    out
+    let filler_count = match unit {
+        LenUnit::Chars => target - 1,
+        LenUnit::Bytes => {
+            let remaining = target.checked_sub(len_utf8_u64(head))?;
+            if !remaining.is_multiple_of(len_utf8_u64(filler)) {
+                return None;
+            }
+            remaining / len_utf8_u64(filler)
+        }
+    };
+    let filler_count = usize::try_from(filler_count).expect("capped candidate lengths fit usize");
+    // `+ 4` covers the head's own UTF-8 width; the capacity is a
+    // hint, so a multibyte filler under-reserving is harmless.
+    let mut out = String::with_capacity(filler_count + 4);
+    out.push(head);
+    for _ in 0..filler_count {
+        out.push(filler);
+    }
+    Some(out)
+}
+
+/// `char::len_utf8` widened into the schema's `u64` length universe.
+const fn len_utf8_u64(c: char) -> u64 {
+    c.len_utf8() as u64
 }
 
 /// The previous representable scalar in the endpoint's regime:
@@ -3286,6 +3344,54 @@ mod tests {
                 string_boundary("a\0", false),
                 string_boundary("aa", true),
                 string_boundary("aaa", false),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_tile_byte_unit_edges_with_multibyte_fillers() {
+        // 'é' is two UTF-8 bytes. Edges 1, 3, and 5 are untileable
+        // (odd byte counts over a 2-byte-only alphabet) and are
+        // skipped explicitly; 2 and 4 tile to exact byte lengths.
+        // The alphabet near-miss is also skipped: the 1-byte
+        // outsider '\0' leaves a 1-byte prefix no 'é' can tile.
+        let accented = Schema::string(
+            LenBound::new(2, 4),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('é', 'é')]),
+            None,
+        );
+        assert_eq!(
+            accented.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("é", true),
+                string_boundary("éé", true),
+            ],
+        );
+    }
+
+    #[test]
+    fn string_boundaries_measure_byte_unit_near_misses_in_bytes() {
+        // first = {'é'} (2 bytes), alphabet adds 'a'-'z' (1 byte).
+        // MIN−1 = 0 is the empty string; MIN = 1 cannot hold the
+        // 2-byte head and is skipped; MIN+1 = 2 is "é". The
+        // alphabet near-miss rides on a zero-byte prefix plus the
+        // outsider '\0'; the first-character near-miss re-heads
+        // with 'a' and measures exactly one byte.
+        let headed = Schema::string(
+            LenBound::new(1, 1),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('a', 'z'), ('é', 'é')]),
+            Some(CharSet::from_ranges([('é', 'é')])),
+        );
+        assert_eq!(
+            headed.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("\0", false),
+                string_boundary("a", false),
+                string_boundary("é", false),
             ],
         );
     }
