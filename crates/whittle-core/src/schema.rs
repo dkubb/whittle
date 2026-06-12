@@ -278,12 +278,19 @@ pub enum LenUnit {
 
 /// Closed length range for [`Schema::Str`] and [`Schema::Collection`]
 /// nodes: `min <= length <= max`, both ends inclusive.
+///
+/// The fields are private so `lo <= hi` is an invariant, not a
+/// convention: every value routes through [`LenBound::new`], and a
+/// `LenBound` in hand IS a non-empty length range. (The accessors
+/// are named `lo`/`hi` — the module's interval-endpoint vocabulary —
+/// rather than `min`/`max`, which method resolution would lose to
+/// `Ord::min`/`Ord::max`.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LenBound {
     /// Minimum admitted length (inclusive).
-    pub min: u64,
+    lo: u64,
     /// Maximum admitted length (inclusive).
-    pub max: u64,
+    hi: u64,
 }
 
 impl LenBound {
@@ -291,7 +298,7 @@ impl LenBound {
     ///
     /// # Panics
     ///
-    /// Panics when `min > max`: an empty length range admits nothing,
+    /// Panics when `lo > hi`: an empty length range admits nothing,
     /// and empty admitted sets are unrepresentable by construction
     /// (the same posture as the compile-time `MIN <= MAX` asserts on
     /// the rules themselves).
@@ -302,16 +309,48 @@ impl LenBound {
     /// use whittle_core::schema::LenBound;
     ///
     /// let len = LenBound::new(1, 64);
-    /// assert_eq!((len.min, len.max), (1, 64));
+    /// assert_eq!((len.lo(), len.hi()), (1, 64));
     /// ```
     #[inline]
     #[must_use]
-    pub const fn new(min: u64, max: u64) -> Self {
+    pub const fn new(lo: u64, hi: u64) -> Self {
         assert!(
-            min <= max,
-            "LenBound: min must be <= max (an empty length range admits nothing)",
+            lo <= hi,
+            "LenBound: lo must be <= hi (an empty length range admits nothing)",
         );
-        Self { min, max }
+        Self { lo, hi }
+    }
+
+    /// Minimum admitted length (inclusive). Never exceeds
+    /// [`LenBound::hi`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::LenBound;
+    ///
+    /// assert_eq!(LenBound::new(1, 64).lo(), 1);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn lo(&self) -> u64 {
+        self.lo
+    }
+
+    /// Maximum admitted length (inclusive). Never falls below
+    /// [`LenBound::lo`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::LenBound;
+    ///
+    /// assert_eq!(LenBound::new(1, 64).hi(), 64);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn hi(&self) -> u64 {
+        self.hi
     }
 }
 
@@ -1407,11 +1446,11 @@ fn collect_str_candidates(
     // skipped too ([`unit_candidate`] returns `None`) — absence
     // over an off-target probe.
     let edges = [
-        len.min.checked_sub(1),
-        Some(len.min),
-        len.min.checked_add(1),
-        Some(len.max),
-        len.max.checked_add(1),
+        len.lo().checked_sub(1),
+        Some(len.lo()),
+        len.lo().checked_add(1),
+        Some(len.hi()),
+        len.hi().checked_add(1),
     ];
     for target in edges.into_iter().flatten() {
         if target > STR_BOUNDARY_LEN_CAP {
@@ -1420,8 +1459,8 @@ fn collect_str_candidates(
         out.extend(unit_candidate(head, filler, target, unit));
     }
     // Near-misses ride on the shortest in-bounds (non-empty) length.
-    let miss_len = len.min.clamp(1, STR_BOUNDARY_LEN_CAP);
-    if len.min <= STR_BOUNDARY_LEN_CAP {
+    let miss_len = len.lo().clamp(1, STR_BOUNDARY_LEN_CAP);
+    if len.lo() <= STR_BOUNDARY_LEN_CAP {
         // Alphabet near-miss: the LAST character falls outside the
         // alphabet, when an outsider exists — an in-bounds-length
         // prefix, then the outsider, so the candidate measures
@@ -1543,7 +1582,7 @@ fn str_node_admits(
         LenUnit::Bytes => value.len(),
     };
     let measured = u64::try_from(measured).expect("string lengths fit u64 on supported targets");
-    if measured < len.min || measured > len.max {
+    if measured < len.lo() || measured > len.hi() {
         return false;
     }
     if !value.chars().all(|ch| alphabet.contains(ch)) {
@@ -1741,7 +1780,8 @@ fn fmt_schema_at(
             write!(
                 f,
                 "string(len {}..={} {unit}, chars {alphabet}",
-                len.min, len.max,
+                len.lo(),
+                len.hi(),
             )?;
             if let Some(first) = first {
                 write!(f, ", first {first}")?;
@@ -1767,7 +1807,7 @@ fn fmt_schema_at(
             sorted,
             unique,
         } => {
-            write!(f, "collection(len {}..={}", len.min, len.max)?;
+            write!(f, "collection(len {}..={}", len.lo(), len.hi())?;
             if *sorted {
                 f.write_str(", sorted")?;
             }
@@ -2210,12 +2250,14 @@ mod tests {
 
     #[test]
     fn len_bound_accepts_degenerate_and_ordered_ranges() {
-        assert_eq!(LenBound::new(0, 0), LenBound { min: 0, max: 0 });
-        assert_eq!(LenBound::new(1, 64), LenBound { min: 1, max: 64 });
+        let degenerate = LenBound::new(0, 0);
+        assert_eq!((degenerate.lo(), degenerate.hi()), (0, 0));
+        let ordered = LenBound::new(1, 64);
+        assert_eq!((ordered.lo(), ordered.hi()), (1, 64));
     }
 
     #[test]
-    #[should_panic(expected = "min must be <= max")]
+    #[should_panic(expected = "lo must be <= hi")]
     fn len_bound_rejects_inverted_range() {
         let _len = LenBound::new(2, 1);
     }
