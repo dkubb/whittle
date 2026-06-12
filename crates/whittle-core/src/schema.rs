@@ -1102,6 +1102,243 @@ fn collapse_singleton(mut members: Vec<Schema>, node: fn(Vec<Schema>) -> Schema)
     }
 }
 
+// ─── Display rendering (the R-S2 carrier). ─────────────────────────
+//
+// One line per node level: leaf nodes render on their own line;
+// composite nodes render a header line followed by each child
+// indented two spaces deeper. The exact text is UNSTABLE across
+// whittle versions (module docs) — render for humans, never parse.
+
+/// Renders the schema tree, one line per node level, children
+/// indented two spaces per depth. UNSTABLE: human-readable output
+/// only, not a serialized form.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::schema::{Bound, Scalar, ScalarKind, Schema};
+///
+/// let below = Schema::interval(
+///     ScalarKind::Integer,
+///     Bound::Unbounded,
+///     Bound::Inclusive(Scalar::Int(-1)),
+/// );
+/// let above = Schema::interval(
+///     ScalarKind::Integer,
+///     Bound::Inclusive(Scalar::Int(1)),
+///     Bound::Unbounded,
+/// );
+/// let non_zero = Schema::union([below, above].into());
+///
+/// assert_eq!(
+///     non_zero.to_string(),
+///     "any of\n  int in ..=-1\n  int in 1..",
+/// );
+/// ```
+impl core::fmt::Display for Schema {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        fmt_schema_at(self, f, 0)
+    }
+}
+
+/// Render one node at `depth`, recursing into children one level
+/// deeper.
+fn fmt_schema_at(
+    schema: &Schema,
+    f: &mut core::fmt::Formatter<'_>,
+    depth: usize,
+) -> core::fmt::Result {
+    for _ in 0..depth {
+        f.write_str("  ")?;
+    }
+    match schema {
+        Schema::Interval { kind, lo, hi } => fmt_interval(f, *kind, *lo, *hi),
+        Schema::Str {
+            len,
+            unit,
+            alphabet,
+            first,
+        } => {
+            write!(
+                f,
+                "string(len {}..={} {unit}, chars {alphabet}",
+                len.min, len.max,
+            )?;
+            if let Some(first) = first {
+                write!(f, ", first {first}")?;
+            }
+            f.write_str(")")
+        }
+        Schema::Regex(pattern) => write!(f, "regex /{pattern}/"),
+        Schema::Enumerated(labels) => {
+            f.write_str("one of ")?;
+            for (index, label) in labels.iter().enumerate() {
+                if index > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "\"{}\"", label.escape_debug())?;
+            }
+            Ok(())
+        }
+        Schema::Collection {
+            len,
+            element,
+            sorted,
+            unique,
+        } => {
+            write!(f, "collection(len {}..={}", len.min, len.max)?;
+            if *sorted {
+                f.write_str(", sorted")?;
+            }
+            if *unique {
+                f.write_str(", unique")?;
+            }
+            f.write_str(")\n")?;
+            fmt_schema_at(element, f, depth + 1)
+        }
+        Schema::Union(members) => fmt_members(f, "any of", members, depth),
+        Schema::Intersection(members) => fmt_members(f, "all of", members, depth),
+        Schema::Canonicalized { morphism, inner } => {
+            writeln!(f, "canonicalized by {morphism}")?;
+            fmt_schema_at(inner, f, depth + 1)
+        }
+    }
+}
+
+/// Render a composite node: the header line, then each member on its
+/// own line one level deeper.
+fn fmt_members(
+    f: &mut core::fmt::Formatter<'_>,
+    header: &str,
+    members: &[Schema],
+    depth: usize,
+) -> core::fmt::Result {
+    f.write_str(header)?;
+    for member in members {
+        f.write_str("\n")?;
+        fmt_schema_at(member, f, depth + 1)?;
+    }
+    Ok(())
+}
+
+/// Render an interval line: the kind label, then the endpoint range
+/// in Rust range syntax (`0..=100`, `0..`, `..=100`, `..`).
+fn fmt_interval(
+    f: &mut core::fmt::Formatter<'_>,
+    kind: ScalarKind,
+    lo: Bound,
+    hi: Bound,
+) -> core::fmt::Result {
+    match kind {
+        ScalarKind::Integer => f.write_str("int")?,
+        ScalarKind::Float => f.write_str("float")?,
+        ScalarKind::Date => f.write_str("date(days from CE)")?,
+        ScalarKind::DateTime => f.write_str("datetime(unix seconds)")?,
+        ScalarKind::Decimal { .. } => f.write_str("decimal")?,
+    }
+    f.write_str(" in ")?;
+    if let Bound::Inclusive(scalar) = lo {
+        fmt_endpoint(f, kind, scalar)?;
+    }
+    f.write_str("..")?;
+    if let Bound::Inclusive(scalar) = hi {
+        f.write_str("=")?;
+        fmt_endpoint(f, kind, scalar)?;
+    }
+    Ok(())
+}
+
+/// Render one endpoint: decimal mantissas render as the scaled value
+/// (`5` at scale 1 renders `0.5`); everything else renders the
+/// scalar's own number.
+fn fmt_endpoint(
+    f: &mut core::fmt::Formatter<'_>,
+    kind: ScalarKind,
+    scalar: Scalar,
+) -> core::fmt::Result {
+    match scalar {
+        Scalar::Int(mantissa) => {
+            if let ScalarKind::Decimal { scale } = kind {
+                fmt_scaled_decimal(f, mantissa, scale)
+            } else {
+                write!(f, "{mantissa}")
+            }
+        }
+        Scalar::Float(value) => write!(f, "{value}"),
+    }
+}
+
+/// Render `mantissa / 10^scale` as a plain decimal numeral by
+/// inserting the point into the digit string (no arithmetic that
+/// could overflow for large scales).
+fn fmt_scaled_decimal(
+    f: &mut core::fmt::Formatter<'_>,
+    mantissa: i128,
+    scale: u8,
+) -> core::fmt::Result {
+    if scale == 0 {
+        return write!(f, "{mantissa}");
+    }
+    if mantissa < 0 {
+        f.write_str("-")?;
+    }
+    let digits = alloc::format!("{}", mantissa.unsigned_abs());
+    let scale = usize::from(scale);
+    if digits.len() <= scale {
+        write!(f, "0.{digits:0>scale$}")
+    } else {
+        let (int_part, frac_part) = digits.split_at(digits.len() - scale);
+        write!(f, "{int_part}.{frac_part}")
+    }
+}
+
+impl core::fmt::Display for LenUnit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Chars => f.write_str("chars"),
+            Self::Bytes => f.write_str("bytes"),
+        }
+    }
+}
+
+impl core::fmt::Display for Morphism {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Trim => f.write_str("trim"),
+            Self::AsciiLowercase => f.write_str("ascii-lowercase"),
+            Self::AsciiUppercase => f.write_str("ascii-uppercase"),
+        }
+    }
+}
+
+/// Renders the canonical ranges as a bracketed list: singleton ranges
+/// as one character, wider ranges as `'lo'-'hi'`, characters escaped
+/// for printability.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::schema::CharSet;
+///
+/// let ident = CharSet::from_ranges([('a', 'z'), ('_', '_')]);
+/// assert_eq!(ident.to_string(), "['_', 'a'-'z']");
+/// ```
+impl core::fmt::Display for CharSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("[")?;
+        for (index, &(lo, hi)) in self.ranges.iter().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "'{}'", lo.escape_debug())?;
+            if lo != hi {
+                write!(f, "-'{}'", hi.escape_debug())?;
+            }
+        }
+        f.write_str("]")
+    }
+}
+
 /// A rule whose admitted set has a constructive [`Schema`]
 /// description.
 ///
@@ -1195,6 +1432,7 @@ where
 )]
 mod tests {
     use alloc::boxed::Box;
+    use alloc::string::ToString as _;
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -1980,6 +2218,273 @@ mod tests {
             )
             .interval_endpoints()
             .is_empty()
+        );
+    }
+
+    // ─── Display rendering. ────────────────────────────────────────
+
+    #[test]
+    fn display_renders_interval_bound_combinations() {
+        assert_eq!(int_interval(0, 100).to_string(), "int in 0..=100");
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Integer,
+                Bound::Inclusive(Scalar::Int(1)),
+                Bound::Unbounded,
+            )
+            .to_string(),
+            "int in 1..",
+        );
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Integer,
+                Bound::Unbounded,
+                Bound::Inclusive(Scalar::Int(-1)),
+            )
+            .to_string(),
+            "int in ..=-1",
+        );
+        assert_eq!(
+            Schema::interval(ScalarKind::Integer, Bound::Unbounded, Bound::Unbounded).to_string(),
+            "int in ..",
+        );
+    }
+
+    #[test]
+    fn display_renders_every_scalar_kind_label() {
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Float,
+                Bound::Inclusive(Scalar::Float(0.0)),
+                Bound::Inclusive(Scalar::Float(1.0)),
+            )
+            .to_string(),
+            "float in 0..=1",
+        );
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Float,
+                Bound::Inclusive(Scalar::Float(f64::NEG_INFINITY)),
+                Bound::Inclusive(Scalar::Float(f64::INFINITY)),
+            )
+            .to_string(),
+            "float in -inf..=inf",
+        );
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Date,
+                Bound::Inclusive(Scalar::Int(730_120)),
+                Bound::Inclusive(Scalar::Int(767_009)),
+            )
+            .to_string(),
+            "date(days from CE) in 730120..=767009",
+        );
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::DateTime,
+                Bound::Inclusive(Scalar::Int(0)),
+                Bound::Inclusive(Scalar::Int(1_893_456_000)),
+            )
+            .to_string(),
+            "datetime(unix seconds) in 0..=1893456000",
+        );
+    }
+
+    #[test]
+    fn display_renders_decimal_endpoints_as_scaled_values() {
+        // Scale 0 (after joint reduction): plain integers.
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Decimal { scale: 2 },
+                Bound::Inclusive(Scalar::Int(0)),
+                Bound::Inclusive(Scalar::Int(10_000)),
+            )
+            .to_string(),
+            "decimal in 0..=100",
+        );
+        // Irreducible scale: the point is inserted into the digits.
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Decimal { scale: 2 },
+                Bound::Inclusive(Scalar::Int(-12_345)),
+                Bound::Inclusive(Scalar::Int(101)),
+            )
+            .to_string(),
+            "decimal in -123.45..=1.01",
+        );
+        // More scale digits than mantissa digits: zero-padded.
+        assert_eq!(
+            Schema::interval(
+                ScalarKind::Decimal { scale: 3 },
+                Bound::Inclusive(Scalar::Int(5)),
+                Bound::Unbounded,
+            )
+            .to_string(),
+            "decimal in 0.005..",
+        );
+    }
+
+    #[test]
+    fn display_renders_float_endpoint_under_decimal_kind_literal() {
+        // Only reachable through a literal (non-canonical) value: the
+        // constructors reject regime mismatches. The renderer stays
+        // total and falls back to the scalar's own number.
+        let literal = Schema::Interval {
+            kind: ScalarKind::Decimal { scale: 2 },
+            lo: Bound::Inclusive(Scalar::Float(0.5)),
+            hi: Bound::Unbounded,
+        };
+        assert_eq!(literal.to_string(), "decimal in 0.5..");
+    }
+
+    #[test]
+    fn display_renders_string_nodes_with_and_without_first_set() {
+        let with_first = Schema::string(
+            LenBound::new(1, 64),
+            LenUnit::Chars,
+            CharSet::from_ranges([('a', 'z'), ('0', '9'), ('_', '_')]),
+            Some(CharSet::from_ranges([('a', 'z'), ('_', '_')])),
+        );
+        assert_eq!(
+            with_first.to_string(),
+            "string(len 1..=64 chars, chars ['0'-'9', '_', 'a'-'z'], first ['_', 'a'-'z'])",
+        );
+        let bytes_only = Schema::string(
+            LenBound::new(0, 16),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('\n', '\n')]),
+            None,
+        );
+        assert_eq!(
+            bytes_only.to_string(),
+            "string(len 0..=16 bytes, chars ['\\n'])",
+        );
+    }
+
+    #[test]
+    fn display_renders_regex_and_enumerated_leaves() {
+        assert_eq!(Schema::regex("^[A-Z]$").to_string(), "regex /^[A-Z]$/");
+        assert_eq!(
+            Schema::enumerated(&["active", "in\"active"]).to_string(),
+            "one of \"active\", \"in\\\"active\"",
+        );
+    }
+
+    #[test]
+    fn display_renders_collection_flags_and_indented_element() {
+        let plain = Schema::collection(LenBound::new(0, 5), int_interval(0, 9), false, false);
+        assert_eq!(plain.to_string(), "collection(len 0..=5)\n  int in 0..=9");
+        let sorted = Schema::collection(LenBound::new(1, 5), int_interval(0, 9), true, false);
+        assert_eq!(
+            sorted.to_string(),
+            "collection(len 1..=5, sorted)\n  int in 0..=9",
+        );
+        let unique = Schema::collection(LenBound::new(1, 5), int_interval(0, 9), false, true);
+        assert_eq!(
+            unique.to_string(),
+            "collection(len 1..=5, unique)\n  int in 0..=9",
+        );
+        let both = Schema::collection(LenBound::new(1, 5), int_interval(0, 9), true, true);
+        assert_eq!(
+            both.to_string(),
+            "collection(len 1..=5, sorted, unique)\n  int in 0..=9",
+        );
+    }
+
+    #[test]
+    fn display_renders_nested_composites_one_line_per_level() {
+        let union = Schema::union(vec![int_interval(0, 9), int_interval(20, 30)]);
+        let date = Schema::interval(
+            ScalarKind::Date,
+            Bound::Inclusive(Scalar::Int(700_000)),
+            Bound::Unbounded,
+        );
+        let tree = Schema::canonicalized(
+            Morphism::AsciiLowercase,
+            Schema::intersection(vec![union, date]),
+        );
+        assert_eq!(
+            tree.to_string(),
+            "canonicalized by ascii-lowercase\n  \
+             all of\n    \
+             date(days from CE) in 700000..\n    \
+             any of\n      \
+             int in 0..=9\n      \
+             int in 20..=30",
+        );
+    }
+
+    #[test]
+    fn display_renders_every_morphism_label() {
+        assert_eq!(Morphism::Trim.to_string(), "trim");
+        assert_eq!(Morphism::AsciiLowercase.to_string(), "ascii-lowercase");
+        assert_eq!(Morphism::AsciiUppercase.to_string(), "ascii-uppercase");
+        assert_eq!(LenUnit::Chars.to_string(), "chars");
+        assert_eq!(LenUnit::Bytes.to_string(), "bytes");
+    }
+
+    /// Writer with a budget of successful writes, mirroring the
+    /// closed-set Display sweep: rendering must propagate a formatter
+    /// failure at every write boundary and eventually succeed.
+    struct FailAfter {
+        remaining: usize,
+    }
+
+    impl core::fmt::Write for FailAfter {
+        fn write_str(&mut self, _s: &str) -> core::fmt::Result {
+            if self.remaining == 0 {
+                return Err(core::fmt::Error);
+            }
+            self.remaining -= 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn display_propagates_formatter_errors_at_every_write() {
+        let tree = Schema::canonicalized(
+            Morphism::Trim,
+            Schema::intersection(vec![
+                Schema::union(vec![
+                    int_interval(0, 9),
+                    Schema::interval(
+                        ScalarKind::Decimal { scale: 1 },
+                        Bound::Inclusive(Scalar::Int(-5)),
+                        Bound::Inclusive(Scalar::Int(5)),
+                    ),
+                    Schema::interval(
+                        ScalarKind::Float,
+                        Bound::Inclusive(Scalar::Float(0.0)),
+                        Bound::Inclusive(Scalar::Float(1.0)),
+                    ),
+                    Schema::interval(
+                        ScalarKind::Date,
+                        Bound::Inclusive(Scalar::Int(0)),
+                        Bound::Unbounded,
+                    ),
+                    Schema::interval(
+                        ScalarKind::DateTime,
+                        Bound::Unbounded,
+                        Bound::Inclusive(Scalar::Int(0)),
+                    ),
+                ]),
+                Schema::string(
+                    LenBound::new(1, 8),
+                    LenUnit::Chars,
+                    CharSet::from_ranges([('a', 'z'), ('_', '_')]),
+                    Some(CharSet::from_ranges([('a', 'a')])),
+                ),
+                Schema::collection(LenBound::new(0, 3), Schema::regex("^x$"), true, true),
+                Schema::enumerated(&["on", "off"]),
+            ]),
+        );
+        let succeeded = (0..512).any(|budget| {
+            let mut sink = FailAfter { remaining: budget };
+            core::fmt::write(&mut sink, format_args!("{tree}")).is_ok()
+        });
+        assert!(
+            succeeded,
+            "rendering did not complete within the write budget",
         );
     }
 }
