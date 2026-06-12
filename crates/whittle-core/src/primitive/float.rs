@@ -1084,7 +1084,7 @@ mod tests {
     mod schema_cross_checks {
         use super::super::{Finite, InClosedRange, NotNan};
         use crate::schema::{Scalar, ScalarKind};
-        use crate::testing::prop_schema_cross_check;
+        use crate::testing::{assert_schema_boundary_matrix, prop_schema_cross_check};
 
         #[expect(
             clippy::trivially_copy_pass_by_ref,
@@ -1136,6 +1136,22 @@ mod tests {
             prop_schema_cross_check::<f32, NotNan>(embed_f32, extract_f32);
             prop_schema_cross_check::<f32, Finite>(embed_f32, extract_f32);
             prop_schema_cross_check::<f32, InClosedRange<0, 1, 1, 1>>(embed_f32, extract_f32);
+        }
+
+        /// The schema-derived R-T1 boundary matrix. Each endpoint is
+        /// stepped by one f64 ULP (`next_up`/`next_down`); the f32
+        /// carrier skips neighbours it cannot represent losslessly,
+        /// so its matrix tests the exact endpoints only.
+        #[test]
+        fn boundary_matrices_for_float_rules() {
+            assert_schema_boundary_matrix::<f64, NotNan>(embed_f64, extract_f64);
+            assert_schema_boundary_matrix::<f64, Finite>(embed_f64, extract_f64);
+            assert_schema_boundary_matrix::<f64, InClosedRange<-1, 2, 3, 4>>(
+                embed_f64,
+                extract_f64,
+            );
+            assert_schema_boundary_matrix::<f32, Finite>(embed_f32, extract_f32);
+            assert_schema_boundary_matrix::<f32, InClosedRange<0, 1, 1, 1>>(embed_f32, extract_f32);
         }
     }
 

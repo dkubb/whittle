@@ -13,7 +13,8 @@
 )]
 
 use whittle::primitive::{LenChars, NumericError, Within};
-use whittle::testing::{prop_image_refines, prop_total};
+use whittle::schema::{Scalar, ScalarKind};
+use whittle::testing::{assert_schema_boundary_matrix, prop_image_refines, prop_total};
 use whittle::{Refined, Rule};
 
 /// A booked-seat count for a 100-seat cabin.
@@ -80,4 +81,33 @@ fn rule_membership_check_matches_harness_semantics() {
         <Within<0, 100> as Rule<u8>>::refine(101_u8).unwrap_err(),
         NumericError::OutOfRange { value: 101 },
     );
+}
+
+#[test]
+fn booked_seats_boundary_matrix_is_schema_derived() {
+    // ─── R-T1, schema-derived: obligation 1 (constructor
+    //     faithfulness) without restating a single bound. The
+    //     matrix (−1, 0, 1, 99, 100, 101 — with −1 skipped because
+    //     u8 cannot represent it) and every expected verdict are
+    //     read off `Within<0, 100>`'s schema; `refine` must agree
+    //     at each point. The exact reject VARIANT stays pinned by
+    //     `rule_membership_check_matches_harness_semantics` above —
+    //     the matrix asserts placement only.
+    assert_schema_boundary_matrix::<u8, Within<0, 100>>(
+        |seats| (ScalarKind::Integer, Scalar::Int(i128::from(*seats))),
+        extract_u8,
+    );
+}
+
+/// Partial inverse of the embedding: `None` for boundary points u8
+/// cannot represent (the matrix skips them).
+#[expect(
+    clippy::return_and_then,
+    reason = "the branch-free and_then chain keeps this fn fully covered: a `?` \
+              would add a None arm no boundary candidate reaches"
+)]
+fn extract_u8(_kind: ScalarKind, scalar: Scalar) -> Option<u8> {
+    scalar
+        .as_int()
+        .and_then(|widened| u8::try_from(widened).ok())
 }

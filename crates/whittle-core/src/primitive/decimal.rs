@@ -781,7 +781,7 @@ mod tests {
     mod schema_cross_checks {
         use super::super::DecimalInRange;
         use crate::schema::{Scalar, ScalarKind};
-        use crate::testing::prop_schema_cross_check;
+        use crate::testing::{assert_schema_boundary_matrix, prop_schema_cross_check};
         use rust_decimal::Decimal;
 
         /// Embedding for scale-2 fixtures: strategy samples and
@@ -809,6 +809,21 @@ mod tests {
                 extract_scale2,
             );
             prop_schema_cross_check::<Decimal, DecimalInRange<-9_999, 9_999, 2>>(
+                embed_scale2,
+                extract_scale2,
+            );
+        }
+
+        /// The schema-derived R-T1 boundary matrix over the
+        /// mantissa-at-scale encoding: each endpoint and its ±1-ULP
+        /// (one step at the schema's scale) neighbours.
+        #[test]
+        fn boundary_matrices_for_decimal_rules() {
+            assert_schema_boundary_matrix::<Decimal, DecimalInRange<1, 9_999, 2>>(
+                embed_scale2,
+                extract_scale2,
+            );
+            assert_schema_boundary_matrix::<Decimal, DecimalInRange<-9_999, 9_999, 2>>(
                 embed_scale2,
                 extract_scale2,
             );

@@ -552,7 +552,7 @@ mod tests {
     mod schema_cross_checks {
         use super::super::{DateTimeAtLeast, DateTimeAtMost, DateTimeInRange};
         use crate::schema::{Scalar, ScalarKind};
-        use crate::testing::prop_schema_cross_check;
+        use crate::testing::{assert_schema_boundary_matrix, prop_schema_cross_check};
         use chrono::{DateTime, Utc};
 
         fn embed_datetime(value: &DateTime<Utc>) -> (ScalarKind, Scalar) {
@@ -599,6 +599,25 @@ mod tests {
                 extract_datetime,
             );
             prop_schema_cross_check::<DateTime<Utc>, DateTimeInRange<0, 60>>(
+                embed_datetime,
+                extract_datetime,
+            );
+        }
+
+        /// The schema-derived R-T1 boundary matrix over the
+        /// unix-seconds encoding: each endpoint and its ±1-second
+        /// neighbours, placement read off the schema.
+        #[test]
+        fn boundary_matrices_for_datetime_rules() {
+            assert_schema_boundary_matrix::<DateTime<Utc>, DateTimeAtLeast<1_704_067_200>>(
+                embed_datetime,
+                extract_datetime,
+            );
+            assert_schema_boundary_matrix::<DateTime<Utc>, DateTimeAtMost<1_893_456_000>>(
+                embed_datetime,
+                extract_datetime,
+            );
+            assert_schema_boundary_matrix::<DateTime<Utc>, DateTimeInRange<0, 60>>(
                 embed_datetime,
                 extract_datetime,
             );

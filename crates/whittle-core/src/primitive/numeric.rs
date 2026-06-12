@@ -1858,7 +1858,7 @@ mod tests {
     mod schema_cross_checks {
         use super::super::{AtLeast, AtMost, EqualTo, GreaterThan, LessThan, NonZero, Within};
         use crate::schema::{Scalar, ScalarKind};
-        use crate::testing::prop_schema_cross_check;
+        use crate::testing::{assert_schema_boundary_matrix, prop_schema_cross_check};
 
         #[expect(
             clippy::trivially_copy_pass_by_ref,
@@ -1942,6 +1942,26 @@ mod tests {
             prop_schema_cross_check::<u8, LessThan<100>>(embed_u8, extract_u8);
             prop_schema_cross_check::<u8, EqualTo<42>>(embed_u8, extract_u8);
             prop_schema_cross_check::<i16, NonZero>(embed_i16, extract_i16);
+        }
+
+        /// The schema-derived R-T1 boundary matrix: MIN−1/MIN/MAX/
+        /// MAX+1 placement read off each rule's schema, with no
+        /// bound restated at the test site. Exact reject variants
+        /// stay pinned by the hand-written tests in the parent
+        /// module — the matrix asserts placement only.
+        #[test]
+        fn boundary_matrices_for_numeric_rules() {
+            assert_schema_boundary_matrix::<i32, Within<-5, 5>>(embed_i32, extract_i32);
+            assert_schema_boundary_matrix::<i32, AtLeast<10>>(embed_i32, extract_i32);
+            assert_schema_boundary_matrix::<i32, AtMost<10>>(embed_i32, extract_i32);
+            assert_schema_boundary_matrix::<i32, GreaterThan<0>>(embed_i32, extract_i32);
+            assert_schema_boundary_matrix::<i32, LessThan<0>>(embed_i32, extract_i32);
+            assert_schema_boundary_matrix::<i32, EqualTo<7>>(embed_i32, extract_i32);
+            assert_schema_boundary_matrix::<i16, NonZero>(embed_i16, extract_i16);
+            // Narrow carrier: −1 (Within's MIN−1) and 256 (AtMost
+            // <255>'s MAX+1) are unrepresentable in u8 and skipped.
+            assert_schema_boundary_matrix::<u8, Within<0, 100>>(embed_u8, extract_u8);
+            assert_schema_boundary_matrix::<u8, AtMost<255>>(embed_u8, extract_u8);
         }
     }
 

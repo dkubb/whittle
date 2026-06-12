@@ -525,7 +525,7 @@ mod tests {
     mod schema_cross_checks {
         use super::super::{DateAtLeast, DateAtMost, DateInRange};
         use crate::schema::{Scalar, ScalarKind};
-        use crate::testing::prop_schema_cross_check;
+        use crate::testing::{assert_schema_boundary_matrix, prop_schema_cross_check};
         use chrono::{Datelike as _, NaiveDate};
 
         #[expect(
@@ -559,6 +559,25 @@ mod tests {
                 extract_date,
             );
             prop_schema_cross_check::<NaiveDate, DateInRange<0, 1>>(embed_date, extract_date);
+        }
+
+        /// The schema-derived R-T1 boundary matrix over the
+        /// days-from-CE encoding: each endpoint and its ±1-day
+        /// neighbours, placement read off the schema.
+        #[test]
+        fn boundary_matrices_for_date_rules() {
+            assert_schema_boundary_matrix::<NaiveDate, DateAtLeast<730_120>>(
+                embed_date,
+                extract_date,
+            );
+            assert_schema_boundary_matrix::<NaiveDate, DateAtMost<767_009>>(
+                embed_date,
+                extract_date,
+            );
+            assert_schema_boundary_matrix::<NaiveDate, DateInRange<730_120, 767_009>>(
+                embed_date,
+                extract_date,
+            );
         }
     }
 
