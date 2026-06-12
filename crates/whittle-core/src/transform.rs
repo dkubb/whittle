@@ -17,7 +17,8 @@ use core::marker::PhantomData;
 
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
-use crate::rule::Rule;
+use crate::rule::{PureFilter, Rule};
+use crate::schema::{Morphism, Schema, SchemaRule};
 
 /// Marker: rules that admit a value `v` also admit `v.trim()`.
 ///
@@ -213,6 +214,61 @@ where
         // require either reusing `raw`'s buffer (drains/copies) or
         // a non-`String` carrier — out of scope for the transformer.
         R::refine(raw.trim().to_string())
+    }
+}
+
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// Each transformer's schema is a `Canonicalized` node over the inner
+// rule's schema. SOUNDNESS (⟦schema()⟧ = range(refine), where the
+// node denotes the morphism's fixed points within the inner set):
+//
+// With `R: PureFilter` (refine is the identity on admissible input),
+// `Transformer<R>::refine = R::refine ∘ m` has
+// `range = { m(x) | m(x) ∈ C(R) } = Fix(m) ∩ C(R)`: every output is
+// a morphism image (hence a fixed point — m is idempotent) the inner
+// rule admitted unchanged, and every admissible fixed point is its
+// own preimage. That is EXACTLY the `Canonicalized` denotation, so
+// the schema is sound with no approximation. Without the purity
+// bound the inner rule could move values after the morphism and the
+// fixed-point algebra would stop describing the carried set — such
+// compositions have no schema (absence-of-impl over a wrong impl).
+//
+// The matching `StableUnder*` marker is also required: it proves the
+// morphism maps the inner rule's admitted set INTO the carried set
+// (`m(C(R)) ⊆ Fix(m) ∩ C(R)`), so a non-empty inner set cannot pair
+// with an EMPTY carried set — empty admitted sets stay
+// unrepresentable, the invariant every schema constructor upholds —
+// and it keeps the schema's vocabulary aligned with the
+// `ArbitraryRule` impls, which carry the same bound.
+
+impl<R> SchemaRule<String> for AsciiLowercase<R>
+where
+    R: SchemaRule<String> + PureFilter + StableUnderAsciiLowercase,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::canonicalized(Morphism::AsciiLowercase, R::schema())
+    }
+}
+
+impl<R> SchemaRule<String> for AsciiUppercase<R>
+where
+    R: SchemaRule<String> + PureFilter + StableUnderAsciiUppercase,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::canonicalized(Morphism::AsciiUppercase, R::schema())
+    }
+}
+
+impl<R> SchemaRule<String> for Trim<R>
+where
+    R: SchemaRule<String> + PureFilter + StableUnderTrim,
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::canonicalized(Morphism::Trim, R::schema())
     }
 }
 
@@ -429,6 +485,74 @@ mod tests {
         let r: Refined<String, Trim<AsciiLowercase<HexFixedAny<4>>>> =
             Refined::try_new("  ABCD  ".to_string()).unwrap();
         assert_eq!(r.as_inner(), "abcd");
+    }
+
+    // ─── `SchemaRule`: Canonicalized over the inner schema. ──────
+
+    /// Each transformer records its morphism over the inner rule's
+    /// schema — the carried set is the morphism's fixed points
+    /// within it, which the membership asserts below sample on both
+    /// sides of the fixed-point gate.
+    #[test]
+    fn transformer_schemas_are_canonicalized_nodes() {
+        use super::{AsciiLowercase, AsciiUppercase};
+        use crate::primitive::{AsciiAlphanumeric, EachChar};
+        use crate::schema::{Morphism, Schema, SchemaRule};
+
+        type Alnum = EachChar<AsciiAlphanumeric>;
+        let trimmed = <Trim<Alnum> as SchemaRule<String>>::schema();
+        assert_eq!(
+            trimmed,
+            Schema::canonicalized(Morphism::Trim, <Alnum as SchemaRule<String>>::schema()),
+        );
+        assert_eq!(trimmed.string_membership("abc"), Some(true));
+        assert_eq!(trimmed.string_membership(" abc"), Some(false));
+
+        let lowered = <AsciiLowercase<Alnum> as SchemaRule<String>>::schema();
+        assert_eq!(
+            lowered,
+            Schema::canonicalized(
+                Morphism::AsciiLowercase,
+                <Alnum as SchemaRule<String>>::schema(),
+            ),
+        );
+        assert_eq!(lowered.string_membership("abc"), Some(true));
+        assert_eq!(lowered.string_membership("aBc"), Some(false));
+
+        let raised = <AsciiUppercase<Alnum> as SchemaRule<String>>::schema();
+        assert_eq!(
+            raised,
+            Schema::canonicalized(
+                Morphism::AsciiUppercase,
+                <Alnum as SchemaRule<String>>::schema(),
+            ),
+        );
+        assert_eq!(raised.string_membership("ABC"), Some(true));
+        assert_eq!(raised.string_membership("AbC"), Some(false));
+    }
+
+    /// The carried-set oracle over canonicalising rules: every
+    /// derived boundary verdict matches refine's carried output, and
+    /// every strategy sample is a fixed-point member.
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn transformer_schema_cross_checks() {
+        use super::{AsciiLowercase, AsciiUppercase};
+        use crate::primitive::{AsciiAlphanumeric, EachChar};
+        use crate::testing::prop_string_schema_cross_check;
+
+        prop_string_schema_cross_check::<Trim<EachChar<AsciiAlphanumeric>>>();
+        prop_string_schema_cross_check::<AsciiLowercase<EachChar<AsciiAlphanumeric>>>();
+        prop_string_schema_cross_check::<AsciiUppercase<EachChar<AsciiAlphanumeric>>>();
+    }
+
+    #[cfg(all(feature = "proptest", feature = "hex"))]
+    #[test]
+    fn transformer_schema_cross_checks_hex() {
+        use crate::testing::prop_string_schema_cross_check;
+
+        prop_string_schema_cross_check::<AsciiLowercase<HexFixedLower<4>>>();
+        prop_string_schema_cross_check::<AsciiUppercase<HexFixedAny<4>>>();
     }
 
     // ─── Proptest: stored carrier must be canonical. ─────────────
