@@ -279,9 +279,8 @@ pub trait ArbitraryChar: CharPredicate {
 /// A [`CharPredicate`] whose admissible set is expressible as a
 /// constructive [`CharSet`].
 ///
-/// The per-character analogue of
-/// [`SchemaRule`](crate::schema::SchemaRule), and the vocabulary the
-/// string schemas' `Str` nodes are built from.
+/// The per-character analogue of [`SchemaRule`], and the vocabulary
+/// the string schemas' `Str` nodes are built from.
 ///
 /// # Soundness obligation
 ///

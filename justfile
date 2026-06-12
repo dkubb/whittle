@@ -9,8 +9,8 @@ default:
     @just --list
 
 # Run every gate in `ci` order: fmt-check, lint, test,
-# test-default-build, docs.
-ci: fmt-check lint test test-default-build docs
+# test-default-build, doc-build, docs.
+ci: fmt-check lint test test-default-build doc-build docs
 
 # Markdown lint over the committed Markdown set. `git ls-files` is
 # the single determinant: tracked files are linted, local-only
@@ -38,6 +38,9 @@ test:
 test-default-build:
     cargo test -p whittle-core --no-run
 
-# Build the rustdoc tree without dependencies.
+# Build the rustdoc tree without dependencies. Part of `ci`: the
+# workspace denies `rustdoc::all`, so a broken intra-doc link fails
+# this gate instead of surviving until someone runs `cargo doc` by
+# hand.
 doc-build:
     cargo doc --workspace --all-features --no-deps

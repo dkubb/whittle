@@ -758,9 +758,9 @@ fn char_set_disagreements(
 ///
 /// # Panics
 ///
-/// Panics with the disagreeing code points (capped at
-/// [`SCHEMA_CHAR_MAX_VIOLATIONS`]) when the two determinants
-/// diverge.
+/// Panics with the disagreeing code points (capped at a fixed
+/// reporting limit, `SCHEMA_CHAR_MAX_VIOLATIONS` in the source)
+/// when the two determinants diverge.
 ///
 /// # Examples
 ///
