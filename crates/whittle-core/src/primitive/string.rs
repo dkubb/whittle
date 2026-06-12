@@ -990,6 +990,94 @@ impl ArbitraryChar for PrintableMultiline {
     }
 }
 
+/// Bounded single-line text: 1..=`MAX` chars, every char a
+/// [`PrintableLine`] character (no newlines, no control or
+/// invisible-formatting characters).
+///
+/// Alias for `And<LenChars<1, MAX>, EachChar<PrintableLine>>` — the
+/// universal default for external/provider strings under the
+/// four-tier policy: opaque or undocumented provider values (tiers
+/// 1–2) get a char-length bound plus this broad printable class;
+/// documented discriminating structure (tier 3) is parsed
+/// explicitly; a *narrow* format grammar is reserved for values we
+/// generate or that are contractually guaranteed (tier 4) — the
+/// provider owns its alphabet, so a narrow charset on received text
+/// is brittle. For fields where newlines are content, use
+/// [`BoundedText`]. Available behind the `unicode` feature.
+///
+/// `ArbitraryRule` (behind `proptest`), `DeserializeRule` (behind
+/// `serde`), and the `StableUnder*` markers are all inherited from
+/// the underlying composition.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "unicode")] {
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{BoundedLine, StringError};
+///
+/// let ok: Refined<String, BoundedLine<16>>
+///     = Refined::try_new("Hello, world!".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "Hello, world!");
+///
+/// // Reject: empty (the length bound starts at 1).
+/// let err = Refined::<String, BoundedLine<16>>::try_new(
+///     String::new(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::CharCountOutOfRange { actual: 0 });
+///
+/// // Reject: newline is not a single-line character.
+/// let err = Refined::<String, BoundedLine<16>>::try_new(
+///     "line1\nline2".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 5 });
+/// # }
+/// ```
+#[cfg(feature = "unicode")]
+pub type BoundedLine<const MAX: usize> =
+    crate::composition::And<LenChars<1, MAX>, EachChar<PrintableLine>>;
+
+/// Bounded multi-line text: 1..=`MAX` chars, every char a
+/// [`PrintableMultiline`] character (newlines admitted; other
+/// control and invisible-formatting characters rejected).
+///
+/// Alias for `And<LenChars<1, MAX>, EachChar<PrintableMultiline>>`
+/// — the multi-line variant of [`BoundedLine`], for fields where
+/// newlines are part of the content (descriptions, free-form
+/// notes). Same tier policy as [`BoundedLine`]: this broad
+/// printable class is the default for external/provider text
+/// (tiers 1–2); narrow format grammars belong only to tier 4
+/// (we-generate / contractually-guaranteed values). Available
+/// behind the `unicode` feature.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "unicode")] {
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{BoundedText, StringError};
+///
+/// let ok: Refined<String, BoundedText<32>>
+///     = Refined::try_new("line1\nline2".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "line1\nline2");
+///
+/// // Reject: over the char bound.
+/// let err = Refined::<String, BoundedText<4>>::try_new(
+///     "12345".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::CharCountOutOfRange { actual: 5 });
+///
+/// // Reject: tab is still a control character.
+/// let err = Refined::<String, BoundedText<32>>::try_new(
+///     "a\tb".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 1 });
+/// # }
+/// ```
+#[cfg(feature = "unicode")]
+pub type BoundedText<const MAX: usize> =
+    crate::composition::And<LenChars<1, MAX>, EachChar<PrintableMultiline>>;
+
 /// Predicate: printable Unicode character by general category.
 ///
 /// Rejects characters whose Unicode general category is one of:
@@ -2151,6 +2239,40 @@ mod tests {
         let bad: Result<Refined<String, EachChar<PrintableMultiline>>, _> =
             Refined::try_new("a\u{200B}b".to_string());
         assert_eq!(bad.unwrap_err(), StringError::BadChar { offset: 1 });
+    }
+
+    // ─── BoundedLine / BoundedText (unicode feature). The aliases
+    //     name the And<LenChars<1, MAX>, EachChar<Printable*>>
+    //     composition; admit/reject behaviour is pinned by their
+    //     doctests, and the tests below verify each inherited
+    //     capability (ArbitraryRule, DeserializeRule) once. ────────
+
+    #[cfg(all(feature = "unicode", feature = "proptest"))]
+    proptest::proptest! {
+        /// `ArbitraryRule` is inherited from the composition: the
+        /// blanket `Arbitrary` impl generates admissible values.
+        #[test]
+        fn arbitrary_bounded_line_admissible(
+            r in proptest::arbitrary::any::<Refined<String, super::BoundedLine<8>>>()
+        ) {
+            use super::PrintableLine;
+            let count = r.as_inner().chars().count();
+            proptest::prop_assert!((1..=8).contains(&count));
+            proptest::prop_assert!(
+                r.as_inner().chars().all(<PrintableLine as CharPredicate>::test),
+            );
+        }
+    }
+
+    /// `DeserializeRule` is inherited from the composition: serde
+    /// ingress routes through the same admit/reject boundary.
+    #[cfg(all(feature = "unicode", feature = "serde"))]
+    #[test]
+    fn bounded_text_deserialize_admits_and_rejects() {
+        let ok: Refined<String, super::BoundedText<16>> =
+            serde_json::from_str("\"line1\\nline2\"").unwrap();
+        assert_eq!(ok.as_inner(), "line1\nline2");
+        serde_json::from_str::<Refined<String, super::BoundedText<16>>>("\"a\\tb\"").unwrap_err();
     }
 
     // ─── PrintableChar (unicode feature). ────────────────────────

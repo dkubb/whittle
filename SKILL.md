@@ -211,6 +211,14 @@ return `StringError`):
 - `HexFixedAny<LEN>` (feature `hex`) — exactly `LEN` mixed-case hex chars.
 - `HexFixedNormalized<LEN>` (feature `hex`) — type alias for
   `AsciiLowercase<HexFixedAny<LEN>>`; admits any case, stores lowercase.
+- `BoundedLine<MAX>` (feature `unicode`) — type alias for
+  `And<LenChars<1, MAX>, EachChar<PrintableLine>>`; the
+  external/provider-string default (bounded length + broad printable
+  class, single-line).
+- `BoundedText<MAX>` (feature `unicode`) — type alias for
+  `And<LenChars<1, MAX>, EachChar<PrintableMultiline>>`; the
+  multi-line variant of `BoundedLine` for fields where newlines are
+  content.
 
 Float (`crates/whittle-core/src/primitive/float.rs`, `Rule<F: Float>`,
 return `FloatError`; `Float` implemented for `f32`, `f64`, sealed):
@@ -747,8 +755,9 @@ Workspace root `Cargo.toml` lists workspace-level features
 
 - `hex` — enables `HexChar`, `HexFixedLower<LEN>`, `HexFixedAny<LEN>`,
   `HexFixedNormalized<LEN>`. No external deps.
-- `unicode` — enables `PrintableLine`, `PrintableMultiline`, and
-  `PrintableChar`. Pulls in `unicode-general-category` for the
+- `unicode` — enables `PrintableLine`, `PrintableMultiline`,
+  `PrintableChar`, and the `BoundedLine<MAX>` / `BoundedText<MAX>`
+  aliases. Pulls in `unicode-general-category` for the
   `PrintableChar` General-Category lookup; `PrintableLine` and
   `PrintableMultiline` remain dep-free hardcoded subsets.
 - `decimal` — enables `DecimalPositive`, `DecimalScale<S>`,

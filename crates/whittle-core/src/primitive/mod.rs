@@ -50,7 +50,7 @@ pub use string::{
     IdentDashChar, IdentStart, LenBytes, LenChars, NonControl, NonEmpty, RejectsTrimWhitespace,
     StringError,
 };
+#[cfg(feature = "unicode")]
+pub use string::{BoundedLine, BoundedText, PrintableChar, PrintableLine, PrintableMultiline};
 #[cfg(feature = "hex")]
 pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
-#[cfg(feature = "unicode")]
-pub use string::{PrintableChar, PrintableLine, PrintableMultiline};
