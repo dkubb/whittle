@@ -711,7 +711,7 @@ enum SchemaRepr {
     /// See [`SchemaView::Collection`].
     Collection {
         len: LenBound,
-        element: Box<Schema>,
+        element: Option<Box<Schema>>,
         sorted: bool,
         unique: bool,
     },
@@ -801,8 +801,12 @@ pub enum SchemaView<'schema> {
     Collection {
         /// Admitted item-count range.
         len: LenBound,
-        /// Schema every element satisfies.
-        element: &'schema Schema,
+        /// Schema every element satisfies; `None` when the rule
+        /// constrains no element-level property (a pure length /
+        /// ordering / uniqueness rule such as
+        /// [`LenItems`](crate::primitive::LenItems)) — every carrier
+        /// element is admitted.
+        element: Option<&'schema Schema>,
         /// Elements are sorted ascending
         /// ([`Sorted`](crate::primitive::Sorted)).
         sorted: bool,
@@ -996,8 +1000,9 @@ impl Schema {
         }
     }
 
-    /// Build a collection schema from its length bound, element
-    /// schema, and ordering/uniqueness invariants.
+    /// Build a collection schema from its length bound, optional
+    /// element schema (`None` admits every carrier element), and
+    /// ordering/uniqueness invariants.
     ///
     /// # Examples
     ///
@@ -1006,23 +1011,27 @@ impl Schema {
     ///
     /// let bytes = Schema::collection(
     ///     LenBound::new(1, 32),
-    ///     Schema::interval(
+    ///     Some(Schema::interval(
     ///         ScalarKind::Integer,
     ///         Bound::Inclusive(Scalar::Int(0)),
     ///         Bound::Inclusive(Scalar::Int(255)),
-    ///     ),
+    ///     )),
     ///     true,
     ///     true,
     /// );
     /// assert_eq!(bytes, bytes.clone());
+    ///
+    /// // A pure length bound: no element constraint to record.
+    /// let batch = Schema::collection(LenBound::new(1, 16), None, false, false);
+    /// assert_eq!(batch, batch.clone());
     /// ```
     #[inline]
     #[must_use]
-    pub fn collection(len: LenBound, element: Self, sorted: bool, unique: bool) -> Self {
+    pub fn collection(len: LenBound, element: Option<Self>, sorted: bool, unique: bool) -> Self {
         Self {
             repr: SchemaRepr::Collection {
                 len,
-                element: Box::new(element),
+                element: element.map(Box::new),
                 sorted,
                 unique,
             },
@@ -1251,7 +1260,7 @@ impl Schema {
                 unique,
             } => SchemaView::Collection {
                 len: *len,
-                element,
+                element: element.as_deref(),
                 sorted: *sorted,
                 unique: *unique,
             },
@@ -1310,7 +1319,9 @@ impl Schema {
                 }
             }
             SchemaRepr::Collection { element, .. } => {
-                element.collect_interval_endpoints(endpoints);
+                if let Some(element) = element {
+                    element.collect_interval_endpoints(endpoints);
+                }
             }
             SchemaRepr::Canonicalized { inner, .. } => {
                 inner.collect_interval_endpoints(endpoints);
@@ -2043,8 +2054,16 @@ fn fmt_schema_at(
             if *unique {
                 f.write_str(", unique")?;
             }
-            f.write_str(")\n")?;
-            fmt_schema_at(element, f, depth + 1)
+            f.write_str(")")?;
+            // An element-less node ends at its own line: there is no
+            // element constraint to render.
+            match element {
+                Some(element) => {
+                    f.write_str("\n")?;
+                    fmt_schema_at(element, f, depth + 1)
+                }
+                None => Ok(()),
+            }
         }
         SchemaRepr::Union(members) => fmt_members(f, "any of", members, depth),
         SchemaRepr::Intersection(members) => fmt_members(f, "all of", members, depth),
@@ -2584,12 +2603,12 @@ mod tests {
                 first: Some(&first),
             },
         );
-        let list = Schema::collection(LenBound::new(0, 8), ident.clone(), false, true);
+        let list = Schema::collection(LenBound::new(0, 8), Some(ident.clone()), false, true);
         assert_eq!(
             list.view(),
             SchemaView::Collection {
                 len: LenBound::new(0, 8),
-                element: &ident,
+                element: Some(&ident),
                 sorted: false,
                 unique: true,
             },
@@ -2985,16 +3004,31 @@ mod tests {
             SchemaView::Enumerated(&["on", "off"]),
         );
 
-        let collection = Schema::collection(LenBound::new(0, 3), interval.clone(), true, false);
+        let collection =
+            Schema::collection(LenBound::new(0, 3), Some(interval.clone()), true, false);
         assert_eq!(
             collection.view(),
             SchemaView::Collection {
                 len: LenBound::new(0, 3),
-                element: &interval,
+                element: Some(&interval),
                 sorted: true,
                 unique: false,
             },
         );
+
+        // Element-less collection: the view carries the absence.
+        let unconstrained = Schema::collection(LenBound::new(1, 4), None, false, false);
+        assert_eq!(
+            unconstrained.view(),
+            SchemaView::Collection {
+                len: LenBound::new(1, 4),
+                element: None,
+                sorted: false,
+                unique: false,
+            },
+        );
+        // ... and it contributes no interval endpoints.
+        assert_eq!(unconstrained.interval_endpoints(), []);
 
         let low = int_interval(0, 1);
         let high = int_interval(5, 9);
@@ -3054,7 +3088,7 @@ mod tests {
             enumerated.scalar_membership(ScalarKind::Integer, &Scalar::Int(0)),
             None,
         );
-        let collection = Schema::collection(LenBound::new(0, 1), percent, false, false);
+        let collection = Schema::collection(LenBound::new(0, 1), Some(percent), false, false);
         assert_eq!(
             collection.scalar_membership(ScalarKind::Integer, &Scalar::Int(50)),
             None,
@@ -3125,7 +3159,12 @@ mod tests {
             Schema::intersection(vec![
                 union,
                 date,
-                Schema::collection(LenBound::new(0, 3), int_interval(0, 255), false, false),
+                Schema::collection(
+                    LenBound::new(0, 3),
+                    Some(int_interval(0, 255)),
+                    false,
+                    false,
+                ),
                 Schema::regex("^x$"),
             ]),
         );
@@ -3578,7 +3617,7 @@ mod tests {
         assert_eq!(
             Schema::collection(
                 LenBound::new(0, 1),
-                Schema::enumerated(&["on"]),
+                Some(Schema::enumerated(&["on"])),
                 false,
                 false
             )
@@ -3859,7 +3898,7 @@ mod tests {
         assert_eq!(
             Schema::collection(
                 LenBound::new(0, 1),
-                Schema::enumerated(&["on"]),
+                Some(Schema::enumerated(&["on"])),
                 false,
                 false
             )
@@ -4039,23 +4078,26 @@ mod tests {
 
     #[test]
     fn display_renders_collection_flags_and_indented_element() {
-        let plain = Schema::collection(LenBound::new(0, 5), int_interval(0, 9), false, false);
+        let plain = Schema::collection(LenBound::new(0, 5), Some(int_interval(0, 9)), false, false);
         assert_eq!(plain.to_string(), "collection(len 0..=5)\n  int in 0..=9");
-        let sorted = Schema::collection(LenBound::new(1, 5), int_interval(0, 9), true, false);
+        let sorted = Schema::collection(LenBound::new(1, 5), Some(int_interval(0, 9)), true, false);
         assert_eq!(
             sorted.to_string(),
             "collection(len 1..=5, sorted)\n  int in 0..=9",
         );
-        let unique = Schema::collection(LenBound::new(1, 5), int_interval(0, 9), false, true);
+        let unique = Schema::collection(LenBound::new(1, 5), Some(int_interval(0, 9)), false, true);
         assert_eq!(
             unique.to_string(),
             "collection(len 1..=5, unique)\n  int in 0..=9",
         );
-        let both = Schema::collection(LenBound::new(1, 5), int_interval(0, 9), true, true);
+        let both = Schema::collection(LenBound::new(1, 5), Some(int_interval(0, 9)), true, true);
         assert_eq!(
             both.to_string(),
             "collection(len 1..=5, sorted, unique)\n  int in 0..=9",
         );
+        // Element-less: the node renders on its own single line.
+        let unconstrained = Schema::collection(LenBound::new(1, 5), None, false, true);
+        assert_eq!(unconstrained.to_string(), "collection(len 1..=5, unique)");
     }
 
     #[test]
@@ -4141,7 +4183,7 @@ mod tests {
                     CharSet::from_ranges([('a', 'z'), ('_', '_')]),
                     Some(CharSet::from_ranges([('a', 'a')])),
                 ),
-                Schema::collection(LenBound::new(0, 3), Schema::regex("^x$"), true, true),
+                Schema::collection(LenBound::new(0, 3), Some(Schema::regex("^x$")), true, true),
                 Schema::enumerated(&["on", "off"]),
             ]),
         );
