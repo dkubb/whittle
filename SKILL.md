@@ -104,13 +104,24 @@ the domain; `Refined<T, R>` is implementation.
   and length narrowing (`LenChars`/`LenBytes`/`LenItems`); an invalid
   widening (target does not contain the source range) is a compile error
   at the `weaken` call site via the `const VALID` monomorphisation gate.
-- `refinement!` (macro, `crates/whittle-core/src/macros.rs:69`): expands
-  `pub Foo: Inner, Rule;` to `pub struct Foo(Refined<Inner, Rule>)` plus
-  `try_new`, `as_inner`, `into_inner`. Inherited attrs (`#[derive(...)]`,
-  doc comments) pass through to the generated struct. The macro does not
-  flatten errors — `Foo::try_new` returns `<Rule as Rule<Inner>>::Error`
-  unchanged. When the rule is a composition and you need a flat domain
-  error, hand-write the newtype.
+- `refinement!` (macro, `crates/whittle-core/src/macros.rs:345`): two
+  forms. The simple form expands `pub Foo: Inner, Rule;` to
+  `pub struct Foo(Refined<Inner, Rule>)` plus `try_new`, `as_inner`,
+  `into_inner`, with `<Rule as Rule<Inner>>::Error` returned unchanged.
+  The **error-block form** — the recommended shape for composed rules —
+  appends `error SourceErr => pub FooError { ... }` and additionally
+  generates the flat domain error enum (hand-rolled `Display` +
+  `core::error::Error`, per-arm display literals, doc passthrough per
+  variant and field), an `ErrorMapper` impl on the enum itself (the
+  newtype wraps `Refined<Inner, MapErr<Rule, FooError>>`, so the
+  mapping has one determinant shared by `try_new` and serde ingress),
+  `AsRef<Inner>`, opt-in carrier `Display` via `impl Display;`, and —
+  behind the `serde` feature — transparent `Serialize`/`Deserialize`
+  whose rejection text at ingress is the domain `Display` string. The
+  `unreachable` arm lists residual source variants explicitly (no `_`
+  catch-all): a new source variant breaks the declaration at compile
+  time. Inherited attrs (`#[derive(...)]`, doc comments) pass through
+  to the generated items in both forms.
 - `ClosedSet` + `closed_set!` (`crates/whittle-core/src/closed_set.rs`,
   macro in `crates/whittle-core/src/macros.rs`): closed-set enums —
   wire string ↔ variant, declared once. Not a `Rule`/`Refined` pair:
@@ -570,8 +581,12 @@ impl in `crates/whittle-core/src/rule.rs`.
 
 For hand-written newtypes around `Refined`, derive `serde::Deserialize`
 on the newtype to forward to `Refined<T, R>::deserialize`. The
-`refinement!` macro generates a tuple newtype around `Refined`; serde
-derives flow through the same path.
+`refinement!` simple form generates a tuple newtype around `Refined`;
+serde derives flow through the same path. The error-block form emits
+the serde impls itself (do not also derive them): because its inner
+rule is `MapErr<Rule, FooError>`, a deserialize-time rejection
+surfaces the domain error's `Display` text instead of the raw rule
+text — the ingress diagnostics match `try_new`'s.
 
 ### Property-based testing
 
@@ -768,11 +783,13 @@ features are additive.
   leak as above. Use the `refinement!` macro or hand-write a tuple
   newtype.
 - Do not expose the rules' shared error enum directly as your
-  domain error. Wrap it in a named domain enum inside `try_new`
-  even when both inner rules already share the same flat enum
-  (`StringError`, `NumericError`, etc.) — the rename is the
-  contract. For `Or<A, B>`, do not expose the raw `[E; 2]` pair;
-  collapse it into a single named variant.
+  domain error. Map it into a named domain enum — the
+  `refinement!` error block declares that mapping once — even when
+  both inner rules already share the same flat enum (`StringError`,
+  `NumericError`, etc.); the rename is the contract. For
+  `Or<A, B>`, do not expose the raw `[E; 2]` pair; collapse it into
+  a single named variant (hand-written; the error block maps a
+  single shared enum, not the positional pair).
 - Do not re-validate downstream. The whole point of the carrier is that
   `&Refined<T, R>` witnesses the invariant. If a function takes
   `&Refined<String, R>`, it does not need to re-check the rule. (If you
@@ -803,26 +820,30 @@ features are additive.
    - Inner rule's error is already flat AND domain-meaningful (e.g. you
      used a single primitive like `Within<0, 100>` with its own
      `NumericError`): reuse it.
-   - Inner rule is an `And` / `Or` composition: write a flat domain
-     enum with `Debug + PartialEq + Eq` plus `Display` + `Error` impls
-     (hand-rolled, or via any derive macro you prefer — see the
-     "Error derive macros are your choice" note below). For
-     `And<A, B>`, the composition's `Self::Error` is the rules' shared
-     flat enum, so the match is a flat 1:1 mapping. For `Or<A, B>`,
-     it is
-     `[E; 2]` — destructure the array and produce your flat variant.
+   - Inner rule is an `And` / `All` composition: declare a flat
+     domain enum in the `refinement!` error block — the composition's
+     `Self::Error` is the rules' shared flat enum, so the arms are a
+     flat 1:1 mapping and the macro generates the enum, `Display`,
+     `Error`, and the mapping from that one declaration. For
+     `Or<A, B>` the error is `[E; 2]` — hand-write the newtype,
+     destructure the array, and produce your flat variant (see the
+     "Error derive macros are your choice" note below for the
+     hand-written enum's impls).
 4. Implement:
-   - For single-error rules, `refinement! { pub Foo: Inner, Rule; }` is
+   - For single-error rules whose flat enum is domain-meaningful,
+     the simple form `refinement! { pub Foo: Inner, Rule; }` is
      enough — it generates the newtype + `try_new` + `as_inner` +
      `into_inner` and forwards the error unchanged.
-   - For composition-flattening, hand-write
-     `pub struct Foo(Refined<Inner, Rule>);` plus the flat error enum
-     plus a `try_new` that calls `Refined::try_new` and match-flattens
-     the error. The `refinement!` macro cannot flatten — that is a
-     deliberate limitation; macro complexity does not pay for the corner
-     case.
-   - Hand-write `Display`, `AsRef`, `From`, etc. as needed. The macro
-     does not generate them.
+   - For composition-flattening, use the error-block form: the same
+     declaration plus `error SourceErr => pub FooError { ... }`
+     generates the newtype, the flat enum, `Display`/`Error`, the
+     single `ErrorMapper` determinant, `AsRef`, opt-in carrier
+     `Display` (`impl Display;`), and serde impls. List the residual
+     source variants in the `unreachable` arm (omit it for a total
+     mapping). Hand-write the newtype only for `Or<...>`'s `[E; 2]`
+     pair collapse.
+   - Hand-write `From` and other conversions as needed; neither form
+     generates them.
 5. Tests:
    - Admit and reject per error variant. For composition-flattening
      newtypes, hit every `match` arm.
@@ -847,10 +868,13 @@ The `Rule` trait does NOT require any specific derive — `Rule::Error`
 only needs
 `Debug + Display + core::error::Error`. Your domain errors can use
 `thiserror`, `snafu`, `miette`, or hand-roll — whittle is agnostic.
-The test corpus under `tests/` uses `thiserror` for brevity (it is a
-workspace `[dev-dependencies]` entry, never a production
+Parts of the test corpus under `tests/` use `thiserror` for brevity
+(it is a workspace `[dev-dependencies]` entry, never a production
 dependency), proving the derive integrates cleanly without forcing
-it on downstream consumers.
+it on downstream consumers. Enums generated by the `refinement!`
+error block are the exception: their `Display` + `Error` impls are
+already emitted, so adding `thiserror::Error` through the attribute
+passthrough is a conflict.
 
 ## Examples
 
@@ -880,10 +904,10 @@ A whittle domain type is well-formed when:
 - The inner `Refined` field is private. Construction goes through
   `try_new`; access goes through `as_inner` / `into_inner`.
 - The public error type is a flat enum with `Debug + PartialEq + Eq`
-  and `Display` + `Error` impls (derived with any macro you prefer or
-  hand-written). The rules' shared error enum (or `[E; 2]` for `Or`)
-  is mapped to named domain variants — the underlying enum is not
-  the public surface.
+  and `Display` + `Error` impls (generated by the `refinement!` error
+  block, derived with any macro you prefer, or hand-written). The
+  rules' shared error enum (or `[E; 2]` for `Or`) is mapped to named
+  domain variants — the underlying enum is not the public surface.
 - Doctests cover at least one admit case and one reject case.
 - If `proptest` is on, an `Arbitrary` round-trip test confirms every
   generated value satisfies the invariant.

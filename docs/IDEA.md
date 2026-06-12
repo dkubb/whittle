@@ -438,6 +438,17 @@ single source of truth, every artifact a refined named type needs:
 - the schema reflection;
 - the implication edges declared in the macro input.
 
+[Conformance note 2026-06-11: the `refinement!` error-block form
+generates the first five artifacts from one declaration — the
+newtype, the typed error enum (with `Display` / `core::error::Error`
+impls and a single `ErrorMapper` impl as the one mapping
+determinant), the `Deserialize` impl routed through the rule (so
+ingress rejections carry the domain diagnostics), and the read-only
+delegating surface (`AsRef`, opt-in `Display`, derive passthrough).
+Schema reflection and macro-declared implication edges remain
+planned milestones (ARCHITECTURE §15.1, §15.3); this section is not
+yet fully satisfied.]
+
 The narrowing morphism MUST be expressed as named, ordered steps.
 Type-level composition satisfies this requirement: transformer rules
 (`Trim<R>`, `AsciiLowercase<R>`, ...) and validation rules

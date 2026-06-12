@@ -907,6 +907,8 @@ with `#[macro_export]`; the only proc-macro is `pattern!` in
 
 ### 13.1. refinement!
 
+The macro has two forms. The **simple form**:
+
 ```rust
 refinement! {
     /// User-supplied display name. Always at least one char.
@@ -915,25 +917,79 @@ refinement! {
 }
 ```
 
-The macro expands to a tuple struct wrapping `Refined<Inner, Rule>` and
-three inherent methods — `try_new`, `as_inner`, `into_inner` — with the
-inner field private, so the named newtype inherits the smart-constructor
-guarantee ([IDEA.md](IDEA.md) §5.2). Standard trait impls are forwarded
-from `Refined` and selected by the user-supplied `#[derive(...)]`
-passthrough; `Display`, `AsRef`, serde impls, and the rest of the
-delegating surface stay hand-written. `Inner` and `Rule` are separated
+expands to a tuple struct wrapping `Refined<Inner, Rule>` and three
+inherent methods — `try_new`, `as_inner`, `into_inner` — with the
+inner field private, so the named newtype inherits the
+smart-constructor guarantee ([IDEA.md](IDEA.md) §5.2). Standard trait
+impls are forwarded from `Refined` and selected by the user-supplied
+`#[derive(...)]` passthrough; `Display`, `AsRef`, serde impls, and the
+rest of the delegating surface stay hand-written, and `try_new`
+returns the rule's error unchanged. `Inner` and `Rule` are separated
 by a comma because Rust's macro follow-set rules forbid `ty` followed
 by `in`.
+
+The **error-block form** appends an `error` mapping block:
+
+```rust
+refinement! {
+    /// IATA-ish flight code: 3..=8 ASCII alphanumeric chars.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub FlightCode: String, And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>;
+    impl Display;
+
+    /// Flat domain error for [`FlightCode`].
+    error StringError => pub FlightCodeError {
+        /// Length (in characters) outside `3..=8`.
+        StringError::CharCountOutOfRange { actual } => Length {
+            /// Observed character count.
+            actual: usize,
+        }: "flight code length {actual} not in 3..=8",
+        /// Character at the offset is not ASCII alphanumeric.
+        StringError::BadChar { offset } => BadChar {
+            /// UTF-8 byte offset of the rejected character.
+            offset: usize,
+        }: "flight code character at byte offset {offset} is not ASCII alphanumeric",
+        unreachable StringError::ByteLenOutOfRange { .. }
+            | StringError::Empty
+            | StringError::BadFirstChar
+            | StringError::BadHexLength { .. },
+    }
+}
+```
+
+and additionally generates the flat domain error enum
+(`#[derive(Debug, PartialEq, Eq)]` plus attribute passthrough),
+hand-rolled `Display` / `core::error::Error` impls from the per-arm
+literals (no thiserror in generated code; a thiserror derive through
+the passthrough is a documented conflict), and an
+`impl ErrorMapper<SourceErr> for DomainErr` with `type Error = Self` —
+the enum is **its own mapper**. The newtype wraps
+`Refined<Inner, MapErr<Rule, DomainErr>>`, so the generated `try_new`
+is `Refined::try_new(raw).map(Self)` with no mapping match in it:
+the `ErrorMapper` impl is the single determinant, and construction,
+serde deserialisation, and `ArbitraryRule` all inherit it through
+`MapErr` (Section 8.2's default path runs the mapping at deserialize
+time, so ingress rejections carry the domain `Display` text). The
+error-block form also emits `impl AsRef<Inner>`, an opt-in carrier
+`Display` behind the `impl Display;` token, and — behind whittle's
+`serde` feature, like `closed_set!`'s glue — transparent
+`Serialize` / `Deserialize` impls forwarding to the inner `Refined`.
+
+The `unreachable` arm takes the explicit residual variant list, never
+a `_` catch-all (rejected at expansion time): whittle's error enums
+are closed sums, so a new source variant breaks every declaration at
+compile time, and a residual pattern repeating a mapped variant trips
+the `unreachable_patterns` deny emitted inside the generated mapper.
+A total mapping omits the arm. For `Or<...>` compositions (`[E; 2]`)
+a public domain API still hand-writes the newtype and collapses the
+pair into named variants.
 
 The narrowing pipeline is the composed rule type itself — transformer
 and validation rules composed in declaration order — per
 [IDEA.md](IDEA.md) §5.10 as amended; the macro accepts that composed
-type as its single source of truth and has no step DSL. Generated
-`try_new` returns the rule's error unchanged: for single primitives and
-shared-error `And` chains that is the flat domain enum; for `Or<...>`
-compositions (`[E; 2]`) a public domain API usually hand-writes the
-newtype and collapses the pair into named variants instead. Generation
-of the remaining IDEA §5.10 artifacts is queued (Section 15).
+type as its single source of truth and has no step DSL. Generation of
+the remaining IDEA §5.10 artifacts (schema reflection, declared
+implication edges) is queued (Section 15.3).
 
 ### 13.2. deserialize_rule!
 
@@ -1071,12 +1127,12 @@ adoption lands rather than speculatively.
 
 ### 15.3. refinement! Generation-Completeness
 
-[IDEA.md](IDEA.md) §5.10. Today's `refinement!` generates the newtype
-and construction surface (Section 13.1). The remaining §5.10 artifacts
-— the named typed-error enum with mapped variants, the `Deserialize`
-impl, the read-only delegating surface, schema reflection, and declared
-implication edges — are queued as `refinement!` v2, generated from the
-same single declaration.
+[IDEA.md](IDEA.md) §5.10. The error-block form (Section 13.1)
+generates the newtype, the named typed-error enum with mapped
+variants, the `Deserialize` impl, and the read-only delegating
+surface from one declaration. The remaining §5.10 artifacts — schema
+reflection (Section 15.1) and declared implication edges — are queued,
+generated from the same single declaration when they land.
 
 ### 15.4. Enum-Subset Markers
 
