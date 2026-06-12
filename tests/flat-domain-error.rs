@@ -9,90 +9,77 @@
 //! still leaks implementation choices the newtype should encapsulate.
 //!
 //! The fix — and the pattern to copy whenever a domain type wraps
-//! a composed rule — is:
+//! a composed rule — is the `refinement!` **error-block form**. One
+//! declaration generates:
 //!
-//! 1. Define a nominal newtype with a private field.
-//! 2. Define a flat domain error enum with one variant per
-//!    distinguishable failure mode.
-//! 3. Hand-write `try_new` that pattern-matches the rules' shared
-//!    flat enum into the domain variants.
+//! 1. The nominal newtype with a private field (`try_new`,
+//!    `as_inner`, `into_inner`, `AsRef`, and — via the opt-in
+//!    `impl Display;` token — a carrier-forwarding `Display`).
+//! 2. The flat domain error enum with one variant per
+//!    distinguishable failure mode, with hand-rolled `Display` and
+//!    `core::error::Error` impls — no error-derive macro involved.
+//!    (Do not add `thiserror::Error` through the attribute
+//!    passthrough; the impls are already emitted.)
+//! 3. An `ErrorMapper` impl on the enum itself — the single place
+//!    the `StringError`-to-domain mapping lives. The newtype wraps
+//!    `Refined<String, MapErr<..., FlightCodeError>>`, so `try_new`
+//!    (and, with the `serde` feature, deserialisation) inherits the
+//!    mapping with no hand-written match anywhere.
 //!
 //! Callers then see `FlightCodeError::Length` or
 //! `FlightCodeError::BadChar`, never the underlying `StringError`
 //! variants the implementation happens to use.
 //!
-//! This example uses **`thiserror`** to derive `Display` + `Error`
-//! on the flat domain error — it is the most ergonomic option when
-//! it is already in your stack. Whittle does not require any
-//! specific derive macro; the `Rule` trait only needs
-//! `Debug + Display + core::error::Error` on `Rule::Error`, so
-//! hand-rolled `impl Display + impl Error` works just as well.
+//! The `unreachable` arm lists the residual `StringError` variants
+//! the composition cannot produce — explicitly, with no `_`
+//! catch-all. Whittle's error enums are closed sums, so when
+//! `StringError` gains a variant this declaration stops compiling:
+//! the new failure mode must be mapped or declared residual, never
+//! silently absorbed.
 
 #![expect(
     clippy::unwrap_used,
     clippy::disallowed_methods,
-    clippy::missing_errors_doc,
-    missing_docs,
-    reason = "integration test: unwrap keeps the focus on the API; pedagogical try_new omits doc"
+    reason = "integration test: unwrap keeps the focus on the API"
 )]
 
 use core::error::Error;
 
 use whittle::primitive::{AsciiAlphanumeric, EachChar, LenChars, StringError};
-use whittle::{And, Refined};
+use whittle::{And, refinement};
 
-/// The nominal newtype.
-///
-/// The inner `Refined<...>` is private so callers cannot bypass
-/// `try_new`. The composition (IATA-ish flight code shape: 3..=8
-/// ASCII alphanumeric chars) is anonymous and lives inside the
-/// `Refined<T, ...>` field.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FlightCode(Refined<String, And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>>);
+refinement! {
+    /// The nominal newtype.
+    ///
+    /// The inner `Refined<...>` is private so callers cannot bypass
+    /// `try_new`. The composition (IATA-ish flight code shape: 3..=8
+    /// ASCII alphanumeric chars) is anonymous and lives inside the
+    /// `Refined<T, ...>` field.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub FlightCode: String, And<LenChars<3, 8>, EachChar<AsciiAlphanumeric>>;
+    impl Display;
 
-/// Flat domain error. One variant per externally distinguishable
-/// failure mode. Callers match these; the rule composition and the
-/// underlying `StringError` enum are implementation details.
-///
-/// `thiserror` is one option for the `Display` + `Error` impls;
-/// whittle does not require any specific derive macro — hand-rolled
-/// `impl Display + impl Error` works too.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub enum FlightCodeError {
-    /// String length (in characters) is outside `3..=8`.
-    #[error("flight code length {actual} not in 3..=8")]
-    Length { actual: usize },
-    /// Character at the given UTF-8 byte offset is not ASCII
-    /// alphanumeric.
-    #[error("flight code character at byte offset {offset} is not ASCII alphanumeric")]
-    BadChar { offset: usize },
-}
-
-impl FlightCode {
-    /// Validate `raw` and wrap. Both inner rules share
-    /// `StringError`, so the match is a flat 1:1 mapping into the
-    /// domain enum — no positional wrapping.
-    pub fn try_new(raw: String) -> Result<Self, FlightCodeError> {
-        Refined::try_new(raw)
-            .map(Self)
-            .map_err(|err: StringError| match err {
-                StringError::CharCountOutOfRange { actual } => FlightCodeError::Length { actual },
-                StringError::BadChar { offset } => FlightCodeError::BadChar { offset },
-                // `LenChars` + `EachChar` emits only the two variants
-                // above; the remaining ones are unreachable.
-                StringError::ByteLenOutOfRange { .. }
-                | StringError::Empty
-                | StringError::BadFirstChar
-                | StringError::BadHexLength { .. } => {
-                    unreachable!("composition emits only CharCountOutOfRange and BadChar")
-                }
-            })
-    }
-
-    /// Borrow the inner string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_inner()
+    /// Flat domain error. One variant per externally distinguishable
+    /// failure mode. Callers match these; the rule composition and the
+    /// underlying `StringError` enum are implementation details.
+    error StringError => pub FlightCodeError {
+        /// String length (in characters) is outside `3..=8`.
+        StringError::CharCountOutOfRange { actual } => Length {
+            /// Observed character count of the offending string.
+            actual: usize,
+        }: "flight code length {actual} not in 3..=8",
+        /// Character at the given UTF-8 byte offset is not ASCII
+        /// alphanumeric.
+        StringError::BadChar { offset } => BadChar {
+            /// UTF-8 byte offset of the rejected character.
+            offset: usize,
+        }: "flight code character at byte offset {offset} is not ASCII alphanumeric",
+        // `LenChars` + `EachChar` emits only the two variants above;
+        // the remaining ones are residual.
+        unreachable StringError::ByteLenOutOfRange { .. }
+            | StringError::Empty
+            | StringError::BadFirstChar
+            | StringError::BadHexLength { .. },
     }
 }
 
@@ -100,7 +87,13 @@ impl FlightCode {
 fn flight_code_admits_valid_alphanumeric_input() {
     // Admit: 6 alphanumerics.
     let code = FlightCode::try_new("BA2490".to_string()).unwrap();
-    assert_eq!(code.as_str(), "BA2490");
+    assert_eq!(code.as_inner(), "BA2490");
+
+    // The generated `AsRef<String>` and opt-in `Display` borrow and
+    // render the same inner value.
+    let inner: &String = code.as_ref();
+    assert_eq!(inner, "BA2490");
+    assert_eq!(code.to_string(), "BA2490");
 }
 
 #[test]
@@ -121,10 +114,9 @@ fn flight_code_rejects_bad_character_with_flat_offset_error() {
 #[test]
 fn flight_code_error_implements_display_and_error_traits() {
     // The flat error implements `Display` and `Error`, so it works
-    // with `?`, `anyhow`, and stdlib error machinery. The derive
-    // macro is your choice — `thiserror` here, but hand-rolled
-    // `impl Display + impl Error` would satisfy whittle's `Rule`
-    // trait too.
+    // with `?`, `anyhow`, and stdlib error machinery. Both impls are
+    // generated from the declaration: the per-arm string literal is
+    // the `Display` text, no error-derive macro required.
     let bad_char = FlightCode::try_new("BA 490".to_string()).unwrap_err();
     let _: &dyn Error = &bad_char;
     assert_eq!(

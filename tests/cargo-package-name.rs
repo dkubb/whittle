@@ -3,22 +3,23 @@
 //! Cargo-style identifier rules: the name is 1..=64 characters
 //! long, the first character must be `[A-Za-z0-9]`, and subsequent
 //! characters may also include `_` and `-`. The underlying
-//! composition is
-//! `And<LenChars<1, 64>,
-//!      And<FirstChar<AsciiAlphanumeric>, EachChar<IdentDashChar>>>`,
-//! wrapped in a nominal newtype with a flat error.
+//! composition is the flat n-ary chain
+//! `All<(LenChars<1, 64>, FirstChar<AsciiAlphanumeric>, EachChar<IdentDashChar>)>`,
+//! wrapped in a nominal newtype with a flat error — all generated
+//! from one `refinement!` error-block declaration.
 //!
 //! The length bound matters: without it,
-//! `And<FirstChar<...>, EachChar<...>>` admits the empty string,
-//! because `FirstChar` is vacuous on empty input and `EachChar` is
-//! vacuous on empty input. Composing with `LenChars<1, 64>` first
-//! closes that gap and also caps the upper bound at 64 characters
-//! (Cargo's actual limit).
+//! `FirstChar<...>` and `EachChar<...>` admit the empty string,
+//! because both are vacuous on empty input. Putting `LenChars<1, 64>`
+//! first closes that gap and also caps the upper bound at 64
+//! characters (Cargo's actual limit).
 //!
-//! This example uses `thiserror` to derive `Display` + `Error` on
-//! the flat domain error — convenient when it is already in your
-//! stack. Whittle is agnostic about error-derive macros: hand-rolled
-//! `impl Display + impl Error` works just as well.
+//! The error block maps the rules' shared `StringError` into the
+//! domain enum once; `try_new` contains no match. `Display` and
+//! `core::error::Error` on the enum are generated from the per-arm
+//! literals — whittle needs no error-derive macro, and adding
+//! `thiserror::Error` through the attribute passthrough would
+//! conflict with the emitted impls.
 //!
 //! Use this whenever you need to validate Cargo crate names,
 //! DNS-label-style identifiers, or any "URL-slug" shape where the
@@ -27,8 +28,6 @@
 #![expect(
     clippy::unwrap_used,
     clippy::disallowed_methods,
-    clippy::missing_errors_doc,
-    missing_docs,
     reason = "integration test: unwrap keeps the focus on the API"
 )]
 
@@ -37,76 +36,44 @@ use core::error::Error;
 use whittle::primitive::{
     AsciiAlphanumeric, EachChar, FirstChar, IdentDashChar, LenChars, StringError,
 };
-use whittle::{And, Refined};
+use whittle::{All, refinement};
 
-/// Nominal Cargo-package-name newtype.
-///
-/// The inner `Refined<...>` is private so callers cannot bypass
-/// `try_new`. The inner rule composition is anonymous: `LenChars`
-/// runs first so empty input is rejected before the head/body
-/// predicates would vacuously accept it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::type_complexity,
-    reason = "the composition is intentionally inlined and anonymous; naming it would invite the leaky `pub type` anti-pattern"
-)]
-pub struct CargoPackageName(
-    Refined<
-        String,
-        And<LenChars<1, 64>, And<FirstChar<AsciiAlphanumeric>, EachChar<IdentDashChar>>>,
-    >,
-);
+refinement! {
+    /// Nominal Cargo-package-name newtype.
+    ///
+    /// The inner `Refined<...>` is private so callers cannot bypass
+    /// `try_new`. The inner rule composition is anonymous: `LenChars`
+    /// runs first so empty input is rejected before the head/body
+    /// predicates would vacuously accept it.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub CargoPackageName: String,
+        All<(LenChars<1, 64>, FirstChar<AsciiAlphanumeric>, EachChar<IdentDashChar>)>;
 
-/// Flat domain error. One variant per externally distinguishable
-/// failure mode; the underlying composition and `StringError` enum
-/// are implementation details.
-///
-/// `thiserror` is one option for the `Display` + `Error` impls;
-/// whittle does not require any specific derive macro — hand-rolled
-/// `impl Display + impl Error` works too.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub enum CargoPackageNameError {
-    /// Length (in characters) is outside `1..=64`. Carries the
-    /// actual character count so callers can produce precise
-    /// diagnostics.
-    #[error("cargo package name length {actual} not in 1..=64")]
-    Length { actual: usize },
-    /// First character is not `[A-Za-z0-9]` (e.g. leading `-` or
-    /// `_`).
-    #[error("cargo package name must start with an ASCII alphanumeric character")]
-    BadFirstChar,
-    /// A non-head character is not `[A-Za-z0-9_-]`. Carries the
-    /// UTF-8 byte offset of the offending character.
-    #[error(
-        "cargo package name contains a character outside [A-Za-z0-9_-] at byte offset {offset}"
-    )]
-    BadChar { offset: usize },
-}
-
-impl CargoPackageName {
-    /// Validate `raw` and wrap. Every rule in the composition
-    /// produces `StringError`, so the match is a flat 1:1 mapping
-    /// into the domain enum — no positional indirection.
-    pub fn try_new(raw: String) -> Result<Self, CargoPackageNameError> {
-        use CargoPackageNameError as E;
-        Refined::try_new(raw)
-            .map(Self)
-            .map_err(|err: StringError| match err {
-                StringError::CharCountOutOfRange { actual } => E::Length { actual },
-                StringError::BadFirstChar => E::BadFirstChar,
-                StringError::BadChar { offset } => E::BadChar { offset },
-                StringError::ByteLenOutOfRange { .. }
-                | StringError::Empty
-                | StringError::BadHexLength { .. } => unreachable!(
-                    "composition emits only CharCountOutOfRange, BadFirstChar, and BadChar"
-                ),
-            })
-    }
-
-    /// Borrow the inner string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_inner()
+    /// Flat domain error. One variant per externally distinguishable
+    /// failure mode; the underlying composition and `StringError` enum
+    /// are implementation details.
+    error StringError => pub CargoPackageNameError {
+        /// Length (in characters) is outside `1..=64`. Carries the
+        /// actual character count so callers can produce precise
+        /// diagnostics.
+        StringError::CharCountOutOfRange { actual } => Length {
+            /// Observed character count of the offending string.
+            actual: usize,
+        }: "cargo package name length {actual} not in 1..=64",
+        /// First character is not `[A-Za-z0-9]` (e.g. leading `-` or
+        /// `_`).
+        StringError::BadFirstChar => BadFirstChar:
+            "cargo package name must start with an ASCII alphanumeric character",
+        /// A non-head character is not `[A-Za-z0-9_-]`. Carries the
+        /// UTF-8 byte offset of the offending character.
+        StringError::BadChar { offset } => BadChar {
+            /// UTF-8 byte offset of the offending character.
+            offset: usize,
+        }: "cargo package name contains a character outside [A-Za-z0-9_-] at byte offset {offset}",
+        // The composition emits only the three variants above.
+        unreachable StringError::ByteLenOutOfRange { .. }
+            | StringError::Empty
+            | StringError::BadHexLength { .. },
     }
 }
 
@@ -114,11 +81,11 @@ impl CargoPackageName {
 fn cargo_package_name_admits_typical_crate_names() {
     // Admit: a typical Cargo crate name.
     let ok = CargoPackageName::try_new("my-crate_42".to_string()).unwrap();
-    assert_eq!(ok.as_str(), "my-crate_42");
+    assert_eq!(ok.as_inner(), "my-crate_42");
 
     // Admit: leading digit is fine — `AsciiAlphanumeric` covers it.
     let digit_head = CargoPackageName::try_new("2fa-helper".to_string()).unwrap();
-    assert_eq!(digit_head.as_str(), "2fa-helper");
+    assert_eq!(digit_head.as_inner(), "2fa-helper");
 }
 
 #[test]
@@ -157,9 +124,9 @@ fn cargo_package_name_rejects_dot_in_body_with_bad_char_offset() {
 #[test]
 fn cargo_package_name_error_implements_display_and_error() {
     // The flat error implements `Display` and `Error`, so it works
-    // with `?`, `anyhow`, and the stdlib error machinery. The
-    // derive macro is your choice — `thiserror` here, hand-rolled
-    // elsewhere; whittle accepts either.
+    // with `?`, `anyhow`, and the stdlib error machinery — both
+    // impls generated from the declaration's per-arm literals, no
+    // derive macro involved.
     let _: &dyn Error = &CargoPackageNameError::BadFirstChar;
     let rendered = CargoPackageNameError::Length { actual: 0 }.to_string();
     assert_eq!(rendered, "cargo package name length 0 not in 1..=64");
