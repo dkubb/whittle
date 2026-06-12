@@ -3663,6 +3663,27 @@ mod tests {
     }
 
     #[test]
+    fn string_boundaries_skip_byte_unit_near_miss_wider_than_min_length() {
+        // ASCII-saturated alphabet: the smallest outsider is U+0080,
+        // two UTF-8 bytes — wider than the 1-byte in-bounds length,
+        // so the alphabet near-miss is skipped explicitly.
+        let ascii = Schema::string(
+            LenBound::new(1, 1),
+            LenUnit::Bytes,
+            CharSet::from_ranges([('\0', '\u{7F}')]),
+            None,
+        );
+        assert_eq!(
+            ascii.string_boundaries(),
+            [
+                string_boundary("", false),
+                string_boundary("\0", true),
+                string_boundary("\0\0", false),
+            ],
+        );
+    }
+
+    #[test]
     fn string_boundaries_measure_byte_unit_near_misses_in_bytes() {
         // first = {'é'} (2 bytes), alphabet adds 'a'-'z' (1 byte).
         // MIN−1 = 0 is the empty string; MIN = 1 cannot hold the
