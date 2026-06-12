@@ -21,13 +21,12 @@
 //! +262_142-12-31]`; values outside that range are caught at compile
 //! time via `const { NaiveDate::from_num_days_from_ce_opt(...) }`.
 
-#[cfg(feature = "proptest")]
-use chrono::Datelike;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
 
 /// Flat domain error for date rules.
 #[derive(Debug, PartialEq, Eq)]
@@ -236,6 +235,49 @@ pub trait ArbitraryDate: Rule<NaiveDate> {
     fn arbitrary_date() -> Self::Strategy;
 }
 
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// Date schemas are integer intervals of kind `Date` whose endpoints
+// are days from CE — read back from the SAME bound consts `refine`
+// compares against (`MIN_DATE` / `MAX_DATE`), so the compile-time
+// range validation is forced here exactly as it is in `refine`.
+
+impl<const MIN_DAYS_FROM_CE: i32> SchemaRule<NaiveDate> for DateAtLeast<MIN_DAYS_FROM_CE> {
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::Date,
+            Bound::Inclusive(Scalar::Int(i128::from(Self::MIN_DATE.num_days_from_ce()))),
+            Bound::Unbounded,
+        )
+    }
+}
+
+impl<const MAX_DAYS_FROM_CE: i32> SchemaRule<NaiveDate> for DateAtMost<MAX_DAYS_FROM_CE> {
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::Date,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(i128::from(Self::MAX_DATE.num_days_from_ce()))),
+        )
+    }
+}
+
+impl<const MIN_DAYS_FROM_CE: i32, const MAX_DAYS_FROM_CE: i32> SchemaRule<NaiveDate>
+    for DateInRange<MIN_DAYS_FROM_CE, MAX_DAYS_FROM_CE>
+{
+    #[inline]
+    fn schema() -> Schema {
+        let () = Self::VALID;
+        Schema::interval(
+            ScalarKind::Date,
+            Bound::Inclusive(Scalar::Int(i128::from(MIN_DAYS_FROM_CE))),
+            Bound::Inclusive(Scalar::Int(i128::from(MAX_DAYS_FROM_CE))),
+        )
+    }
+}
+
 // ─── Serde `DeserializeRule` impls: default parse-then-refine.
 //      Applicable only when `chrono`'s own `serde` support is
 //      enabled by the consumer (the `NaiveDate: Deserialize<'de>`
@@ -435,6 +477,88 @@ mod tests {
             value: ymd(1999, 12, 31),
         };
         assert_eq!(err.to_string(), "date 1999-12-31 out of admissible range");
+    }
+
+    // ─── SchemaRule: the constructive descriptions. ────────────────
+
+    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+
+    fn date_interval(lo: Bound, hi: Bound) -> Schema {
+        Schema::interval(ScalarKind::Date, lo, hi)
+    }
+
+    #[test]
+    fn schema_reads_the_same_bounds_refine_reads() {
+        assert_eq!(
+            <DateAtLeast<730_120> as SchemaRule<NaiveDate>>::schema(),
+            date_interval(Bound::Inclusive(Scalar::Int(730_120)), Bound::Unbounded),
+        );
+        assert_eq!(
+            <DateAtLeast<739_034> as SchemaRule<NaiveDate>>::schema(),
+            date_interval(Bound::Inclusive(Scalar::Int(739_034)), Bound::Unbounded),
+        );
+        assert_eq!(
+            <DateAtMost<767_009> as SchemaRule<NaiveDate>>::schema(),
+            date_interval(Bound::Unbounded, Bound::Inclusive(Scalar::Int(767_009))),
+        );
+        assert_eq!(
+            <DateAtMost<730_120> as SchemaRule<NaiveDate>>::schema(),
+            date_interval(Bound::Unbounded, Bound::Inclusive(Scalar::Int(730_120))),
+        );
+        assert_eq!(
+            <DateInRange<730_120, 767_009> as SchemaRule<NaiveDate>>::schema(),
+            date_interval(
+                Bound::Inclusive(Scalar::Int(730_120)),
+                Bound::Inclusive(Scalar::Int(767_009)),
+            ),
+        );
+        assert_eq!(
+            <DateInRange<0, 1> as SchemaRule<NaiveDate>>::schema(),
+            date_interval(
+                Bound::Inclusive(Scalar::Int(0)),
+                Bound::Inclusive(Scalar::Int(1)),
+            ),
+        );
+    }
+
+    #[cfg(feature = "proptest")]
+    mod schema_cross_checks {
+        use super::super::{DateAtLeast, DateAtMost, DateInRange};
+        use crate::schema::{Scalar, ScalarKind};
+        use crate::testing::prop_schema_cross_check;
+        use chrono::{Datelike as _, NaiveDate};
+
+        #[expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "matches the helper's fn(&T) embedding signature over a generic carrier"
+        )]
+        fn embed_date(value: &NaiveDate) -> (ScalarKind, Scalar) {
+            (
+                ScalarKind::Date,
+                Scalar::Int(i128::from(value.num_days_from_ce())),
+            )
+        }
+
+        fn extract_date(_kind: ScalarKind, scalar: Scalar) -> NaiveDate {
+            let days =
+                i32::try_from(scalar.as_int().expect("date schema")).expect("endpoint fits i32");
+            NaiveDate::from_num_days_from_ce_opt(days).expect("endpoint within NaiveDate range")
+        }
+
+        /// Schema endpoints pass refine and strategy samples are
+        /// schema members, two instantiations per date rule.
+        #[test]
+        fn schema_cross_checks_date_rules() {
+            prop_schema_cross_check::<NaiveDate, DateAtLeast<730_120>>(embed_date, extract_date);
+            prop_schema_cross_check::<NaiveDate, DateAtLeast<739_034>>(embed_date, extract_date);
+            prop_schema_cross_check::<NaiveDate, DateAtMost<767_009>>(embed_date, extract_date);
+            prop_schema_cross_check::<NaiveDate, DateAtMost<730_120>>(embed_date, extract_date);
+            prop_schema_cross_check::<NaiveDate, DateInRange<730_120, 767_009>>(
+                embed_date,
+                extract_date,
+            );
+            prop_schema_cross_check::<NaiveDate, DateInRange<0, 1>>(embed_date, extract_date);
+        }
     }
 
     // ─── Arbitrary strategy soundness. ────────────────────────────

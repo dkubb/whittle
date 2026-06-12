@@ -15,6 +15,7 @@ use rust_decimal::Decimal;
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
 
 /// Maximum scale supported by `rust_decimal::Decimal`.
 ///
@@ -364,6 +365,40 @@ pub trait ArbitraryDecimal: Rule<Decimal> {
     fn arbitrary_decimal() -> Self::Strategy;
 }
 
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// `DecimalInRange` is the decimal range rule: its schema is an
+// integer interval of kind `Decimal { scale }` whose endpoints are
+// the SAME mantissa consts `refine` compares against; the
+// constructor canonically reduces the scale, so two rules denoting
+// the same value range compare equal regardless of declared scale
+// (`DecimalInRange<0, 10_000, 2>` ≡ `DecimalInRange<0, 100, 0>`).
+//
+// The other decimal rules deliberately have NO schema:
+//
+// - `DecimalScale` / `DecimalPrecision` constrain the
+//   *representation* (digits after the point, significant-digit
+//   count), not a value range — no interval describes them.
+// - `DecimalPositive` admits `value > 0`, whose exact constructive
+//   form is `[1e-28, +∞)` (the smallest positive decimal); at scale
+//   28 the membership embedding overflows the schema's `i128`
+//   mantissa universe for general values, so the description waits
+//   for vocabulary that can decide it honestly.
+
+impl<const MIN_REPR: i128, const MAX_REPR: i128, const SCALE: u8> SchemaRule<Decimal>
+    for DecimalInRange<MIN_REPR, MAX_REPR, SCALE>
+{
+    #[inline]
+    fn schema() -> Schema {
+        let () = Self::VALID;
+        Schema::interval(
+            ScalarKind::Decimal { scale: SCALE },
+            Bound::Inclusive(Scalar::Int(MIN_REPR)),
+            Bound::Inclusive(Scalar::Int(MAX_REPR)),
+        )
+    }
+}
+
 // ─── Serde `DeserializeRule` impls: default parse-then-refine.
 //      Applicable only when `rust_decimal`'s own `serde` support is
 //      enabled by the consumer (the `Decimal: Deserialize<'de>`
@@ -706,6 +741,76 @@ mod tests {
             value: Decimal::new(1234, 2),
         };
         assert_eq!(err.to_string(), "value 12.34 out of admissible range");
+    }
+
+    // ─── SchemaRule: the constructive descriptions. ────────────────
+
+    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+
+    #[test]
+    fn schema_reads_the_same_mantissas_refine_reads() {
+        assert_eq!(
+            <DecimalInRange<1, 9_999, 2> as SchemaRule<Decimal>>::schema(),
+            Schema::interval(
+                ScalarKind::Decimal { scale: 2 },
+                Bound::Inclusive(Scalar::Int(1)),
+                Bound::Inclusive(Scalar::Int(9_999)),
+            ),
+        );
+        assert_eq!(
+            <DecimalInRange<-9_999, 9_999, 2> as SchemaRule<Decimal>>::schema(),
+            Schema::interval(
+                ScalarKind::Decimal { scale: 2 },
+                Bound::Inclusive(Scalar::Int(-9_999)),
+                Bound::Inclusive(Scalar::Int(9_999)),
+            ),
+        );
+    }
+
+    #[test]
+    fn schema_reduces_equal_value_ranges_to_one_canonical_form() {
+        // 0.00..=100.00 at scale 2 admits exactly the decimals that
+        // 0..=100 at scale 0 admits; the canonical schema agrees.
+        assert_eq!(
+            <DecimalInRange<0, 10_000, 2> as SchemaRule<Decimal>>::schema(),
+            <DecimalInRange<0, 100, 0> as SchemaRule<Decimal>>::schema(),
+        );
+    }
+
+    #[cfg(feature = "proptest")]
+    mod schema_cross_checks {
+        use super::super::DecimalInRange;
+        use crate::schema::{Scalar, ScalarKind};
+        use crate::testing::prop_schema_cross_check;
+        use rust_decimal::Decimal;
+
+        /// Embedding for scale-2 fixtures: strategy samples and
+        /// extracted endpoints are always `from_i128_with_scale(m, 2)`
+        /// values, so the mantissa at scale 2 is exact.
+        fn embed_scale2(value: &Decimal) -> (ScalarKind, Scalar) {
+            (
+                ScalarKind::Decimal { scale: 2 },
+                Scalar::Int(value.mantissa()),
+            )
+        }
+
+        fn extract_scale2(_kind: ScalarKind, scalar: Scalar) -> Decimal {
+            Decimal::from_i128_with_scale(scalar.as_int().expect("decimal schema"), 2)
+        }
+
+        /// Schema endpoints pass refine and strategy samples are
+        /// schema members, two irreducible-scale instantiations.
+        #[test]
+        fn schema_cross_checks_decimal_range_rules() {
+            prop_schema_cross_check::<Decimal, DecimalInRange<1, 9_999, 2>>(
+                embed_scale2,
+                extract_scale2,
+            );
+            prop_schema_cross_check::<Decimal, DecimalInRange<-9_999, 9_999, 2>>(
+                embed_scale2,
+                extract_scale2,
+            );
+        }
     }
 
     // ─── Arbitrary strategy soundness. ────────────────────────────

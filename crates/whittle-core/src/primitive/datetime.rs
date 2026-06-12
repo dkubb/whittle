@@ -29,6 +29,7 @@ use chrono::{DateTime, Utc};
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
 
 /// Flat domain error for `DateTime<Utc>` rules.
 #[derive(Debug, PartialEq, Eq)]
@@ -242,6 +243,54 @@ pub trait ArbitraryDateTime: Rule<DateTime<Utc>> {
     fn arbitrary_datetime() -> Self::Strategy;
 }
 
+// ─── `SchemaRule` impls. ──────────────────────────────────────────
+//
+// Datetime schemas are integer intervals of kind `DateTime` whose
+// endpoints are seconds since the Unix epoch — read back from the
+// SAME bound consts `refine` compares against (`MIN_DATETIME` /
+// `MAX_DATETIME`), so the compile-time range validation is forced
+// here exactly as it is in `refine`.
+
+impl<const MIN_SECS_SINCE_EPOCH: i64> SchemaRule<DateTime<Utc>>
+    for DateTimeAtLeast<MIN_SECS_SINCE_EPOCH>
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::DateTime,
+            Bound::Inclusive(Scalar::Int(i128::from(Self::MIN_DATETIME.timestamp()))),
+            Bound::Unbounded,
+        )
+    }
+}
+
+impl<const MAX_SECS_SINCE_EPOCH: i64> SchemaRule<DateTime<Utc>>
+    for DateTimeAtMost<MAX_SECS_SINCE_EPOCH>
+{
+    #[inline]
+    fn schema() -> Schema {
+        Schema::interval(
+            ScalarKind::DateTime,
+            Bound::Unbounded,
+            Bound::Inclusive(Scalar::Int(i128::from(Self::MAX_DATETIME.timestamp()))),
+        )
+    }
+}
+
+impl<const MIN_SECS_SINCE_EPOCH: i64, const MAX_SECS_SINCE_EPOCH: i64> SchemaRule<DateTime<Utc>>
+    for DateTimeInRange<MIN_SECS_SINCE_EPOCH, MAX_SECS_SINCE_EPOCH>
+{
+    #[inline]
+    fn schema() -> Schema {
+        let () = Self::VALID;
+        Schema::interval(
+            ScalarKind::DateTime,
+            Bound::Inclusive(Scalar::Int(i128::from(MIN_SECS_SINCE_EPOCH))),
+            Bound::Inclusive(Scalar::Int(i128::from(MAX_SECS_SINCE_EPOCH))),
+        )
+    }
+}
+
 // ─── Serde `DeserializeRule` impls: default parse-then-refine.
 //      Applicable only when `chrono`'s own `serde` support is
 //      enabled by the consumer (the `DateTime<Utc>:
@@ -449,6 +498,105 @@ mod tests {
             err.to_string(),
             "datetime 2023-12-31 23:59:59 UTC out of admissible range",
         );
+    }
+
+    // ─── SchemaRule: the constructive descriptions. ────────────────
+
+    use crate::schema::{Bound, Scalar, ScalarKind, Schema, SchemaRule};
+
+    fn datetime_interval(lo: Bound, hi: Bound) -> Schema {
+        Schema::interval(ScalarKind::DateTime, lo, hi)
+    }
+
+    #[test]
+    fn schema_reads_the_same_bounds_refine_reads() {
+        assert_eq!(
+            <DateTimeAtLeast<1_704_067_200> as SchemaRule<DateTime<Utc>>>::schema(),
+            datetime_interval(
+                Bound::Inclusive(Scalar::Int(1_704_067_200)),
+                Bound::Unbounded,
+            ),
+        );
+        assert_eq!(
+            <DateTimeAtLeast<0> as SchemaRule<DateTime<Utc>>>::schema(),
+            datetime_interval(Bound::Inclusive(Scalar::Int(0)), Bound::Unbounded),
+        );
+        assert_eq!(
+            <DateTimeAtMost<1_893_456_000> as SchemaRule<DateTime<Utc>>>::schema(),
+            datetime_interval(
+                Bound::Unbounded,
+                Bound::Inclusive(Scalar::Int(1_893_456_000)),
+            ),
+        );
+        assert_eq!(
+            <DateTimeAtMost<0> as SchemaRule<DateTime<Utc>>>::schema(),
+            datetime_interval(Bound::Unbounded, Bound::Inclusive(Scalar::Int(0))),
+        );
+        assert_eq!(
+            <DateTimeInRange<1_704_067_200, 1_893_456_000> as SchemaRule<DateTime<Utc>>>::schema(),
+            datetime_interval(
+                Bound::Inclusive(Scalar::Int(1_704_067_200)),
+                Bound::Inclusive(Scalar::Int(1_893_456_000)),
+            ),
+        );
+        assert_eq!(
+            <DateTimeInRange<0, 60> as SchemaRule<DateTime<Utc>>>::schema(),
+            datetime_interval(
+                Bound::Inclusive(Scalar::Int(0)),
+                Bound::Inclusive(Scalar::Int(60)),
+            ),
+        );
+    }
+
+    #[cfg(feature = "proptest")]
+    mod schema_cross_checks {
+        use super::super::{DateTimeAtLeast, DateTimeAtMost, DateTimeInRange};
+        use crate::schema::{Scalar, ScalarKind};
+        use crate::testing::prop_schema_cross_check;
+        use chrono::{DateTime, Utc};
+
+        fn embed_datetime(value: &DateTime<Utc>) -> (ScalarKind, Scalar) {
+            (
+                ScalarKind::DateTime,
+                Scalar::Int(i128::from(value.timestamp())),
+            )
+        }
+
+        fn extract_datetime(_kind: ScalarKind, scalar: Scalar) -> DateTime<Utc> {
+            let secs = i64::try_from(scalar.as_int().expect("datetime schema"))
+                .expect("endpoint fits i64");
+            DateTime::<Utc>::from_timestamp(secs, 0).expect("endpoint within DateTime range")
+        }
+
+        /// Schema endpoints pass refine and strategy samples are
+        /// schema members, two instantiations per datetime rule.
+        #[test]
+        fn schema_cross_checks_datetime_rules() {
+            prop_schema_cross_check::<DateTime<Utc>, DateTimeAtLeast<1_704_067_200>>(
+                embed_datetime,
+                extract_datetime,
+            );
+            prop_schema_cross_check::<DateTime<Utc>, DateTimeAtLeast<0>>(
+                embed_datetime,
+                extract_datetime,
+            );
+            prop_schema_cross_check::<DateTime<Utc>, DateTimeAtMost<1_893_456_000>>(
+                embed_datetime,
+                extract_datetime,
+            );
+            prop_schema_cross_check::<DateTime<Utc>, DateTimeAtMost<0>>(
+                embed_datetime,
+                extract_datetime,
+            );
+            prop_schema_cross_check::<DateTime<Utc>, DateTimeInRange<1_704_067_200, 1_893_456_000>>(
+                embed_datetime,
+                extract_datetime,
+            );
+            prop_schema_cross_check::<DateTime<Utc>, DateTimeInRange<0, 60>>(
+                embed_datetime,
+                extract_datetime,
+            );
+        }
     }
 
     // ─── Arbitrary strategy soundness. ────────────────────────────
