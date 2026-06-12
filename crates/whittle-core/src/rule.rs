@@ -24,8 +24,8 @@ use core::marker::PhantomData;
 /// this obligation; the type system cannot verify it.
 ///
 /// `'static` on the trait is on the rule marker `R`. `T: 'static` is
-/// required because the `Schema` reflection (to be added in a later
-/// commit) uses `TypeId::of::<T>()`.
+/// required by the schema reflection surface
+/// ([`SchemaRule`](crate::SchemaRule)'s bounds).
 pub trait Rule<T>: Sized + 'static
 where
     T: 'static,

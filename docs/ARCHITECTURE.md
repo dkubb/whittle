@@ -120,7 +120,7 @@ Reference inputs are:
 - the `branded` crate, whose nominal-newtype structure informs the
   delegating surface domain newtypes expose;
 - the Effect.Schema library, whose schema-as-value design informs the
-  planned schema reflection (Section 15);
+  shipped schema reflection (Section 15.1);
 - the [DESIGN.md](DESIGN.md) sketch that preceded this document, which
   this document supersedes for architectural commitments.
 
@@ -316,13 +316,16 @@ error on rejection. Rules whose narrowing is purely a predicate return
 admissible — is [IDEA.md](IDEA.md) §5.1 and is discharged by property
 test for every library-supplied rule (Section 14).
 
-`T: 'static` is required so the planned schema reflection (Section 15)
-can use `TypeId::of::<T>()`. Refined types in practice are owned types
-(`String`, `i64`, `Decimal`, ...), not borrows, so the bound costs
-nothing today.
+`T: 'static` is required by the schema reflection surface (the
+`SchemaRule` bounds, Section 15.1). Refined types in practice are
+owned types (`String`, `i64`, `Decimal`, ...), not borrows, so the
+bound costs nothing today.
 
-There is no `schema()` method on `Rule`; schema reflection is unbuilt
-(Section 15).
+There is no `schema()` method on `Rule` itself: schema reflection is
+the additive per-rule `SchemaRule` trait (Section 15.1), so a rule
+WITHOUT a schema is a compile-time fact — the [IDEA.md](IDEA.md)
+§5.10 audit boundary — rather than a method returning an opaque
+marker.
 
 ### 8.2. DeserializeRule (serde feature)
 
@@ -383,8 +386,10 @@ localized test-time panic, never as silently dropped samples. The
 blanket impl performs no rejection sampling; composition rules MAY
 filter their operands' strategies, primitive rules MUST be
 constructive. This is the per-rule mechanism sanctioned by
-[IDEA.md](IDEA.md) §5.11 as amended; derivation from a reflected schema
-is the destination (Section 15).
+[IDEA.md](IDEA.md) §5.11 as amended; derivation from the shipped
+reflected schema remains the destination, with the schema-derived
+cross-check oracles in `whittle_core::testing` as the consistency
+proof until each family converts (Section 15.1).
 
 Bounded numeric strategies are edge-biased: samples concentrate on the
 admissible region's boundaries, where off-by-one defects live.
@@ -987,9 +992,11 @@ pair into named variants.
 The narrowing pipeline is the composed rule type itself — transformer
 and validation rules composed in declaration order — per
 [IDEA.md](IDEA.md) §5.10 as amended; the macro accepts that composed
-type as its single source of truth and has no step DSL. Generation of
-the remaining IDEA §5.10 artifacts (schema reflection, declared
-implication edges) is queued (Section 15.3).
+type as its single source of truth and has no step DSL. Schema
+reflection ships as the per-rule `SchemaRule` trait that composed
+rule types carry without macro generation (Section 15.1); generation
+of the remaining IDEA §5.10 artifact (declared implication edges) is
+queued (Section 15.3).
 
 ### 13.2. deserialize_rule!
 
@@ -1097,24 +1104,56 @@ push fails.
 ## 15. Planned Milestones
 
 This section collects the designs that [IDEA.md](IDEA.md) requires or
-admits but that are not yet built. Each entry names its evidence
-trigger. Nothing in this section is implemented; earlier revisions of
-this document carried concrete sketches for some of them (a `Schema`
-enum, a `StrategyFromSchema` trait, a `RuleWith` family, a
-`refinement!` step DSL), which are retrievable from git history but are
-not normative.
+admits but that are not yet built, plus the shipped schema reflection
+surface (Section 15.1) whose remaining follow-ups stay planned. Each
+planned entry names its evidence trigger. Earlier revisions of this
+document carried concrete sketches (a `StrategyFromSchema` trait, a
+`RuleWith` family, a `refinement!` step DSL), which are retrievable
+from git history but are not normative.
 
-### 15.1. Schema Reflection
+### 15.1. Schema Reflection (shipped)
 
-[IDEA.md](IDEA.md) §5.9. A runtime-introspectable schema per rule,
-sufficient to drive derived property strategies (the §5.11 destination;
-per-rule `ArbitraryRule` impls are the sanctioned interim per the
-amendment), JSON Schema generation, human-readable rule descriptions,
-and schema equality. It is also the intended carrier for the dogfooding
-audit's residual-set reporting (R-S2), storage-constraint
-synchronisation (R-S4), and boundary-matrix generation (R-T1). Build it
-constructor-by-constructor; each schema constructor that lands SHOULD
-convert its rule family from hand-written to derived generation.
+[IDEA.md](IDEA.md) §5.9, SHIPPED. `whittle_core::schema` carries the
+constructive description of a rule's admitted set: an opaque,
+canonical-by-construction `Schema` value — intervals over a typed
+scalar universe (integer, float, date, sub-second-exact datetime
+ticks, decimal), string length × alphabet nodes, regex fragments
+with whole-string semantics, enumerated label sets, collections,
+unions, and intersections with interval / `Str` / `Collection`
+fusion, plus canonicalisation morphisms whose carried set is the
+morphism's fixed points within the inner set. Trees are read through
+the borrowed closed-sum `SchemaView`, rendered via an UNSTABLE
+`Display`, and compared by structural `Eq`/`Ord` (sound but
+incomplete: canonical-equal implies equal sets, never the converse).
+
+Rules opt in through `SchemaRule` (soundness obligation:
+`⟦schema()⟧ = range(refine)`, the carried set); combinators compose
+schemas over `PureFilter` operands; `SchemaInterval` feeds the
+`Not`/`Xor` complement schemas; `SchemaChar` supplies per-character
+vocabulary. Absence of an impl is the §5.10 audit boundary:
+hand-written `refine` logic has no schema and renders as
+`opaque (hand-written refine)` in the `admitted_set!`
+residual-states report (R-S2). Derived consumers shipped with it:
+the R-T1 boundary matrices and §5.11 cross-check oracles in
+`whittle_core::testing` (scalar, string, closed-set, and collection
+variants). The `whittle_core::schema` rustdoc is the authoritative
+surface description.
+
+Remaining follow-ups, planned with triggers:
+
+- **Derived generation replacing hand-written strategies** (the
+  §5.11 SHOULD's destination): per-family conversions once the
+  generalized boundary-bias policy over `Interval` nodes is proven
+  equal-or-better per family; until then the cross-check oracles are
+  the consistency proof between the two determinants.
+- **`schemars` export**: deferred with Section 15.6 (no consumer
+  demand).
+- **Lean export posture**: the designated rigorous-export shape — a
+  derived view, optional dev-time tooling, never a required
+  dependency. Triggers: the first non-decidable vocabulary addition,
+  or the first fusion bug the proptest oracles miss.
+  Decidable-fragment exact decision procedures in Rust are the
+  cheaper upgrade if `Eq` incompleteness bites first.
 
 ### 15.2. Contextual Rules
 
@@ -1130,9 +1169,11 @@ adoption lands rather than speculatively.
 [IDEA.md](IDEA.md) §5.10. The error-block form (Section 13.1)
 generates the newtype, the named typed-error enum with mapped
 variants, the `Deserialize` impl, and the read-only delegating
-surface from one declaration. The remaining §5.10 artifacts — schema
-reflection (Section 15.1) and declared implication edges — are queued,
-generated from the same single declaration when they land.
+surface from one declaration. Schema reflection has shipped outside
+the macro (composed rule types carry `SchemaRule` impls directly,
+Section 15.1); the remaining §5.10 artifact — declared implication
+edges — is queued, generated from the same single declaration when
+it lands.
 
 ### 15.4. Enum-Subset Markers
 
@@ -1155,9 +1196,11 @@ inversion or JSON Schema generation).
 ### 15.6. Ecosystem Integrations
 
 [IDEA.md](IDEA.md) §3 names `quickcheck`, `schemars`, and `sqlx` as
-optional integration targets. None has consumer demand yet; `schemars`
-additionally depends on schema reflection (Section 15.1). Each would be
-a Cargo feature, with impls hosted wherever the orphan rule requires.
+optional integration targets. None has consumer demand yet;
+`schemars`'s dependency on schema reflection is now satisfied
+(Section 15.1), so consumer demand is its only remaining trigger.
+Each would be a Cargo feature, with impls hosted wherever the orphan
+rule requires.
 
 ## 16. References
 

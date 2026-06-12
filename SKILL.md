@@ -727,6 +727,13 @@ rule is), the matrix is **derived**, not hand-written:
 - `whittle::testing::assert_string_boundary_matrix::<R>()` is the
   string-carrier sibling: length edges, alphabet near-misses,
   first-character near-misses, and enumerated label near-misses.
+  Its observable is CARRIED-SET membership (refine accepts AND
+  returns the candidate unchanged), so canonicalising rules
+  (`Trim<R>` and the case foldings) are testable too.
+- `whittle::testing::assert_collection_boundary_matrix::<T, R>`
+  (taking `make_element` and `try_extract`) is the `Vec<T>` sibling:
+  schema-derived length edges plus one reject probe per carried
+  constraint (duplicate pair, descending pair, element outsider).
 - `prop_schema_cross_check` / `prop_string_schema_cross_check`
   bundle the same matrix with the strategy-samples-are-members
   obligation when the rule is also `ArbitraryRule`.
@@ -744,9 +751,14 @@ reject test per conversion asserting the **exact error variant**
 error contract is not derivable from the schema and stays the
 caller's line.
 
-For a conversion whose rule has no schema (hand-written `refine`,
-combinator compositions until their schemas land), fall back to the
-manual five cases: accept at MIN, accept at MAX, reject at MIN − 1
+Combinator compositions carry derived schemas too: `And`/`All`
+compose as fused intersections, `Or`/`Any` as unions, `Not`/`Xor` as
+interval complements, `MapErr` transparently, and the transformers
+as `Canonicalized` nodes — so their matrices derive like any other
+rule's. For a conversion whose rule genuinely has no schema
+(hand-written `refine`; a composition with a canonicalising operand,
+which the `PureFilter` bound deliberately excludes), fall back to
+the manual five cases: accept at MIN, accept at MAX, reject at MIN − 1
 (unrepresentable for `MIN = 0` length rules — document the skip),
 reject at MAX + 1, and one charset/class miss, each reject pinning
 the exact variant.
