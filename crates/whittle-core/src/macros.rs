@@ -110,6 +110,14 @@
 ///   serde deserialisation, proptest's `ArbitraryRule`) inherit it
 ///   through the `MapErr` rule;
 /// - `impl AsRef<Inner>` borrowing the inner value;
+/// - when whittle's `serde` feature is enabled, transparent
+///   `Serialize` / `Deserialize` impls forwarding to the inner
+///   `Refined`. The wire shape is the bare carrier value, and —
+///   because the inner rule is `MapErr<Rule, NameError>` — a
+///   deserialize-time rejection renders the **domain** error's
+///   `Display` text, not the raw rule text. Do not add
+///   `#[derive(serde::Serialize, serde::Deserialize)]` through the
+///   attribute passthrough; the impls are already emitted;
 /// - with the optional `impl Display;` token, a carrier `Display`
 ///   forwarding to `Inner`'s. It is opt-in because not every
 ///   carrier is `Display` (`Vec<i32>` is not).
@@ -199,6 +207,46 @@
 /// let err = FlightCode::try_new("AB".to_string()).unwrap_err();
 /// assert_eq!(err, FlightCodeError::Length { actual: 2 });
 /// assert_eq!(err.to_string(), "flight code length 2 not in 3..=8");
+/// ```
+///
+/// With the `serde` feature, rejection at ingress carries the same
+/// domain diagnostics as `try_new` — both paths run the one
+/// `ErrorMapper` impl:
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// use whittle_core::primitive::{LenChars, StringError};
+/// use whittle_core::refinement;
+///
+/// refinement! {
+///     /// Display name: 3..=32 chars.
+///     #[derive(Debug, Clone, PartialEq, Eq)]
+///     pub UserName: String, LenChars<3, 32>;
+///
+///     /// Flat domain error for [`UserName`].
+///     error StringError => pub UserNameError {
+///         /// Length (in characters) outside `3..=32`.
+///         StringError::CharCountOutOfRange { actual } => Length {
+///             /// Observed character count.
+///             actual: usize,
+///         }: "user name length {actual} not in 3..=32",
+///         unreachable StringError::ByteLenOutOfRange { .. }
+///             | StringError::Empty
+///             | StringError::BadChar { .. }
+///             | StringError::BadFirstChar
+///             | StringError::BadHexLength { .. },
+///     }
+/// }
+///
+/// // Admit: the wire shape is the bare carrier value.
+/// let name: UserName = serde_json::from_str(r#""Alice""#).unwrap();
+/// assert_eq!(serde_json::to_string(&name).unwrap(), r#""Alice""#);
+///
+/// // Reject: the ingress message is the domain `Display` text, not
+/// // the raw rule text ("character count 2 not in admissible range").
+/// let err = serde_json::from_str::<UserName>(r#""AB""#).unwrap_err();
+/// assert_eq!(err.to_string(), "user name length 2 not in 3..=32");
+/// # }
 /// ```
 ///
 /// Two arms cannot target the same domain variant — the macro
@@ -387,6 +435,8 @@ macro_rules! refinement {
             maps = [],
             $($body)+
         }
+
+        $crate::__refinement_serde!($name, $inner, $rule, $error);
     };
 
     // ─── Internal: error-block muncher. ───────────────────────────
@@ -607,6 +657,56 @@ macro_rules! refinement {
             }
         }
     };
+}
+
+/// Internal `refinement!` helper: emits the transparent `Serialize`
+/// / `Deserialize` impls for an error-block newtype. Defined as a
+/// separate macro so its expansion follows **whittle's** own `serde`
+/// feature (resolved when whittle-core is compiled) rather than a
+/// feature of the downstream crate expanding `refinement!`.
+///
+/// `Serialize` forwards to the inner `Refined` (the wire shape is
+/// the bare carrier value). `Deserialize` forwards to
+/// `Refined<Inner, MapErr<Rule, Error>>::deserialize`, so a
+/// rejection at ingress renders the **domain** error's `Display`
+/// text — the same diagnostics `try_new` returns, because both paths
+/// share the one `ErrorMapper` impl.
+#[cfg(feature = "serde")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __refinement_serde {
+    ($name:ident, $inner:ty, $rule:ty, $error:ident) => {
+        impl $crate::serde::Serialize for $name {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error>
+            where
+                S: $crate::serde::Serializer,
+            {
+                $crate::serde::Serialize::serialize(&self.0, serializer)
+            }
+        }
+
+        impl<'de> $crate::serde::Deserialize<'de> for $name {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
+            where
+                D: $crate::serde::Deserializer<'de>,
+            {
+                let refined: $crate::Refined<$inner, $crate::MapErr<$rule, $error>> =
+                    $crate::serde::Deserialize::deserialize(deserializer)?;
+                ::core::result::Result::Ok(Self(refined))
+            }
+        }
+    };
+}
+
+/// Internal `refinement!` helper: no-op arm used when whittle's
+/// `serde` feature is disabled.
+#[cfg(not(feature = "serde"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __refinement_serde {
+    ($name:ident, $inner:ty, $rule:ty, $error:ident) => {};
 }
 
 /// Implement [`crate::DeserializeRule`] for a rule via the default
@@ -1204,6 +1304,45 @@ mod tests {
     #[should_panic(expected = "cannot produce this source-error variant")]
     fn refinement_error_block_collection_residual_arm_panics() {
         TestRosterError::map_error(CollectionError::NoMatchingItem);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn refinement_error_block_serde_round_trips_the_bare_carrier() {
+        // The emitted impls are transparent: the wire shape is the
+        // carrier value, with no rule-marker noise.
+        let code = TestCode::try_new("BA2490".to_string()).unwrap();
+        let code_json = serde_json::to_string(&code).unwrap();
+        assert_eq!(code_json, r#""BA2490""#);
+        let code_back: TestCode = serde_json::from_str(&code_json).unwrap();
+        assert_eq!(code_back, code);
+
+        let score = TestScore::try_new(42_i32).unwrap();
+        let score_json = serde_json::to_string(&score).unwrap();
+        assert_eq!(score_json, "42");
+        let score_back: TestScore = serde_json::from_str(&score_json).unwrap();
+        assert_eq!(score_back, score);
+
+        let roster = TestRoster::try_new(vec![7_i32, 9]).unwrap();
+        let roster_json = serde_json::to_string(&roster).unwrap();
+        assert_eq!(roster_json, "[7,9]");
+        let roster_back: TestRoster = serde_json::from_str(&roster_json).unwrap();
+        assert_eq!(roster_back, roster);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn refinement_error_block_serde_rejects_with_domain_text_at_ingress() {
+        // Deserialize-time rejection surfaces the DOMAIN `Display`
+        // string — the `MapErr` mapping runs at ingress — not the
+        // raw rule text ("character count 2 not in admissible
+        // range"). Exact-match assertions pin the full message.
+        let code_err = serde_json::from_str::<TestCode>(r#""AB""#).unwrap_err();
+        assert_eq!(code_err.to_string(), "code length 2 not in 3..=8");
+        let score_err = serde_json::from_str::<TestScore>("101").unwrap_err();
+        assert_eq!(score_err.to_string(), "score 101 not in 0..=100");
+        let roster_err = serde_json::from_str::<TestRoster>("[]").unwrap_err();
+        assert_eq!(roster_err.to_string(), "roster needs 1 to 3 players");
     }
 
     proptest::proptest! {
