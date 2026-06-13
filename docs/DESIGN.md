@@ -12,7 +12,8 @@
 
 Whittle is a Rust library that takes untrusted raw values at the edge of
 a program and produces *refined values* whose invariants the rest of the
-program can trust without re-checking. A single declaration drives:
+program can trust without re-checking. A rule/newtype declaration can
+drive:
 
 - the typed newtype that wraps the raw inner value;
 - the smart constructor that narrows the raw input into the refined
@@ -25,8 +26,9 @@ program can trust without re-checking. A single declaration drives:
 
 The kernel is **parse-don't-validate** with type narrowing: every rule
 is a morphism that maps a larger raw state space into a smaller
-admissible one. The carrier's bytes are unchanged after construction
-(zero-cost layout), and downstream code does no further checks.
+admissible one. `Refined<T, R>` adds no runtime bytes to the carrier;
+pure filters preserve the input bytes, while transformers store the
+canonical value they produce. Downstream code does no further checks.
 
 Whittle does **not** attempt to be a compiler-assisted refinement-type
 system in the Liquid Haskell sense. There is no SMT solver, no rustc
@@ -131,10 +133,13 @@ Domain types are newtypes over `Refined<T, R>`, never type aliases:
 pub struct AttributeName(Refined<String, AttributeNameRule>);
 ```
 
-The macro (Section 14 of ARCHITECTURE) generates the newtype, the
-`try_new`, the named error alias, the `Deserialize` impl, the
-`AsRef<str>`/`Display`/`Debug` pass-throughs, and the schema reflection
-from one source of truth.
+The `refinement!` macro (ARCHITECTURE Section 13.1) generates the
+newtype, `try_new`, `as_inner`, and `into_inner`. Its error-block form
+also generates the named domain error enum, `Display` /
+`core::error::Error`, the `ErrorMapper` impl used by construction and
+serde ingress, `AsRef`, optional carrier `Display`, and serde glue when
+the `serde` feature is enabled. Schema reflection is not emitted by the
+macro; it comes from `SchemaRule` impls on the composed rule type.
 
 The discipline is: **the type-alias form is forbidden**. Declaring
 `pub type AttributeName = Refined<String, AttributeNameRule>;` leaks
@@ -149,33 +154,43 @@ For common shapes, the library provides ready-made rules so users do
 not implement `Rule<T>` by hand for every domain type:
 
 ```rust
-// Numeric range bounds.
-Within<MIN, MAX>, AtLeast<MIN>, AtMost<MAX>, NonZero, Positive, Negative
+// Numeric range bounds and aliases.
+Within<MIN, MAX>, AtLeast<MIN>, AtMost<MAX>,
+GreaterThan<MIN>, LessThan<MAX>, EqualTo<N>, NotEqualTo<N>,
+NonZero, Positive, Negative
 
-// Float-specific. `InClosedRange` covers f64; `InClosedRangeF32`
-// is the u32-parameterised companion for f32.
-Finite, NotNan, InClosedRange<MIN_BITS, MAX_BITS>
+// Float-specific.
+Finite, NotNan, NotInfinite,
+InClosedRange<MIN_NUMERATOR, MIN_DENOMINATOR, MAX_NUMERATOR, MAX_DENOMINATOR>
 
 // Decimal-specific (rust_decimal feature).
-DecimalPrecision<P>, DecimalScale<S>, DecimalPositive
+DecimalPrecision<P>, DecimalScale<S>, DecimalPositive,
+DecimalInRange<MIN_REPR, MAX_REPR, SCALE>
 
-// String grammar. Each canonicalising rule has a pure-filter variant
-// that rejects non-canonical input instead of normalising.
+// String grammar and predicates.
 LenChars<MIN, MAX>, LenBytes<MIN, MAX>, NonEmpty, EachChar<P>,
-Trim, IsTrimmed, LowerCase, IsLowerCase, UpperCase, IsUpperCase,
-NfcNormalised, IsNfcNormalised, AsciiOnly
+FirstChar<P>, CharLiteral<CH>, CharEither<A, B>, CharExcept<A, B>,
+AsciiGraphic, AsciiAlphanumeric, AsciiAlphabetic, AsciiUppercase,
+AsciiLowercase, AsciiDigit, IdentChar, IdentStart, IdentDashChar,
+NonControl
+
+// Feature-gated string and pattern rules.
+HexChar, HexFixedLower<LEN>, HexFixedAny<LEN>, HexFixedNormalized<LEN>,
+PrintableLine, PrintableMultiline, PrintableChar,
+BoundedLine<MAX>, BoundedText<MAX>, Pattern<RE>
 
 // Collections.
 LenItems<MIN, MAX>, AllItems<R>, UniqueByKey<T, F>, Sorted<T, K>,
-SortedBy<T, C>
+NoneOf<P>, AnyOf<P>
 
-// Enum subsets — declared via the `subset_of!` macro, which
-// generates a per-subset marker type and its Rule impl:
-//   subset_of!(NonCleanFileState, FileState,
-//              [Dirty, Fixing, Testing, FileGreen, Failed]);
+// Closed provider token sets.
+closed_set! { pub enum ActivityStatus { Active = "active" } }
 
-// Composition.
-And<A, B>, Or<A, B>     // n-ary is binary-nested by the macro
+// Composition, transformers, and schema reflection.
+And<A, B>, Or<A, B>, MapErr<R, M>,
+Not<R>, Xor<A, B>, // numeric carriers
+All<(R1, ..., RN)>, Any<(R1, ..., RN)>,
+Trim<R>, AsciiLowercase<R>, AsciiUppercase<R>, SchemaRule<T>
 ```
 
 Domain types newtype over these:
@@ -183,42 +198,39 @@ Domain types newtype over these:
 ```rust
 pub struct Port(Refined<u16, AtLeast<1>>);
 pub struct Percent(Refined<u8, Within<0, 100>>);
-// 0.0..=1.0 expressed as bit patterns of f64; the closed_range!
-// helper macro emits the right MIN_BITS/MAX_BITS constants.
+// 0.0..=1.0 expressed as numerator/denominator endpoint pairs.
 pub struct Probability(
-    Refined<f64, And<InClosedRange<0x0000_0000_0000_0000,
-                                   0x3FF0_0000_0000_0000>, NotNan>>,
+    Refined<f64, And<InClosedRange<0, 1, 1, 1>, NotNan>>,
 );
 ```
 
 ## Composition: normalisation and validation in one pipeline
 
 Real refinements often combine canonicalisation with validation. A doc
-title trims whitespace, normalises Unicode, then checks the result is
-1..=200 characters of non-control text. The macro expresses this as a
-named pipeline:
+title trims whitespace, then checks the result is 1..=200 printable
+line characters. The macro accepts the composed rule type as the single
+determinant:
 
 ```rust
+use whittle::{All, refinement};
+use whittle::primitive::{EachChar, LenChars, NonEmpty, PrintableLine};
+use whittle::transform::Trim;
+
 refinement! {
-    pub struct DocTitle(String) {
-        normalize: trim,
-        normalize: nfc,
-        min_chars: 1,
-        max_chars: 200,
-        each_char: non_control,
-    }
+    pub DocTitle: String,
+        All<(Trim<NonEmpty>, LenChars<1, 200>, EachChar<PrintableLine>)>;
 }
 ```
 
-The steps run in declaration order. Normalisation steps come first
-because canonicalisation should happen before bounds-checking — trimming
-to "" first lets `min_chars: 1` reject what would otherwise have been
-" " (a single space).
+The operands run in tuple order. Canonicalisation steps come first
+because bounds and character checks should see the carried value —
+trimming to `""` first lets `NonEmpty` reject what would otherwise have
+been `" "` (a single space).
 
-A closure escape hatch (`custom_refine:`) is available for cases the
-structured vocabulary cannot express. The escape hatch is visibly
-distinct in the macro syntax so audit tooling can tell which
-refinements skipped the structured pipeline.
+For cases the structural vocabulary cannot express, write a hand-written
+`Rule<T>` impl and use it as the rule type. That absence is visible to
+schema tooling: no `SchemaRule` impl exists unless the rule author
+provides one.
 
 ## Subtyping: implication
 
@@ -250,12 +262,11 @@ re-running its narrowing on the upcast value.
 
 Library-supplied implication edges cover the common cases —
 `Within<0, 50>: Implies<Within<0, 100>>`, `Positive: Implies<NonZero>`,
-`AtLeast<10>: Implies<AtLeast<5>>` — through macro expansion. Edges
-for arbitrary user rules are written by the user; implication is
-*not* derived automatically from rule structure (Unicode NFC
-normalisation, for example, does not imply absence of leading or
-trailing whitespace, so an automatically-derived edge from
-`NfcNormalised` to `IsTrimmed` would be unsound).
+`AtLeast<10>: Implies<AtLeast<5>>` — for numeric and length families.
+Edges for arbitrary user rules are written by the user; implication is
+*not* derived automatically from rule structure. Canonicalising
+transformers are especially sensitive because the target rule may need
+properties of the carried form, not just accept/reject containment.
 
 Formally, `S: Implies<W>` requires the implementer to discharge
 three obligations: (1) every value `S` admits also satisfies `W`
@@ -267,10 +278,12 @@ upcast value (so `weaken` can skip narrowing).
 
 ## Contextual rules
 
-Some invariants only make sense relative to a runtime environment. "This
-`Vec` index is valid for *this* slice." "This `AttributeName` is present
-in *this* `Schema`." "This `f64` is a member of *this* probability
-distribution that sums to 1." A second trait expresses these:
+Some invariants only make sense relative to a runtime environment.
+"This `Vec` index is valid for *this* slice." "This `AttributeName` is
+present in *this* schema." "This value is valid for the configuration
+loaded at startup." Whittle does not ship contextual carriers today;
+ARCHITECTURE Section 15.2 keeps that design as a planned milestone with
+an evidence trigger.
 
 ```rust
 pub trait RuleWith<T: 'static, Env: 'static>: Sized + 'static {
@@ -281,35 +294,10 @@ pub trait RuleWith<T: 'static, Env: 'static>: Sized + 'static {
 
 Contextual rules do not emit a default schema. Their admitted set
 depends on a runtime environment, so the absence of `SchemaRule` is the
-audit boundary: residual-state reports render the rule as
-`opaque (hand-written refine)` by dispatch, with no `Opaque` or
-`ContextOpaque` schema node.
-
-Two carriers, one for borrowed environments and one for owned ones:
-
-- the **borrowed carrier** ties the proof to a borrow lifetime —
-  `PhantomData<&'a Env>` plus the inner value, `#[repr(transparent)]`
-  over `T`; the proof remains valid as long as the borrow does;
-- the **owned carrier** stores the environment value alongside the
-  inner value (not `#[repr(transparent)]`), so the proof identifies
-  the specific environment used at construction time.
-
-Adapted from the `witnessed` crate's `WitnessIn` pattern, with the
-fix that the owned carrier stores the environment rather than only
-its phantom type. The earlier phantom-handle design could not
-distinguish "constructed against this `Arc<X>`" from "constructed
-against that `Arc<X>`"; storing the value fixes the proof identity.
-
-The borrowed carrier preserves a **lifetime proof, not a
-value-identity proof**: it certifies that the refined value was
-constructed against the borrowed environment, and the proof is valid
-for as long as the borrow lives. The owned carrier's proof is a
-**construction-time snapshot**: if the stored environment is
-internally mutable, subsequent mutations MAY invalidate the proof
-against the *current* state even though it remained valid against
-the *original* state. Consumers needing live-environment guarantees
-MUST use the borrowed carrier *and* an environment type whose
-relevant state cannot mutate through shared references.
+audit boundary. Until `RuleWith` lands, dynamic or cross-field
+invariants belong in the parent smart constructor. The current
+residual-state report renders absence as `opaque (hand-written refine)`,
+with no `Opaque` or `ContextOpaque` schema node.
 
 ## Schema reflection drives the rest
 
@@ -382,54 +370,44 @@ real code in real consumers.
 
 ## Open questions
 
-Open questions are tracked authoritatively in
-[ARCHITECTURE.md](ARCHITECTURE.md) Section 17. Highlights:
+Open questions are tracked authoritatively as planned milestones in
+[ARCHITECTURE.md](ARCHITECTURE.md) Section 15. Highlights:
 
-- The exact shape of the step-vocabulary registration mechanism for
-  cross-crate user-defined named steps.
-- Schema description for contextual rules (currently
-  no `SchemaRule` impl).
+- Contextual rules (`RuleWith`) and their carriers.
+- Macro-declared implication edges.
+- Enum-side subset markers, if overlapping foreign subsets ever need
+  them.
 - Generic-const-expr implication edges (blocked on stable Rust).
-- `no_std` support for the kernel.
+- Ecosystem exports such as `schemars` JSON Schema fragments.
 
 ## Minimal example, end to end
 
 ```rust
-use proptest::prelude::*;
+use whittle::All;
+use whittle::primitive::{EachChar, LenChars, NonEmpty, PrintableLine};
 use whittle::refinement;
+use whittle::transform::Trim;
+
+type BoundedPrintableRule =
+    All<(Trim<NonEmpty>, LenChars<1, 100>, EachChar<PrintableLine>)>;
 
 refinement! {
-    /// A 1..=100 character string of non-control, NFC-normalised
-    /// Unicode. Trims leading/trailing whitespace as part of refining.
-    pub struct BoundedPrintable(String) {
-        normalize: trim,
-        normalize: nfc,
-        min_chars: 1,
-        max_chars: 100,
-        each_char: non_control,
-    }
+    /// A 1..=100 printable-line string. Leading/trailing whitespace is
+    /// trimmed before validation.
+    pub BoundedPrintable: String, BoundedPrintableRule;
 }
 
 fn handle_request(body: &str) -> Result<(), MyError> {
     // Construction routes through the rule.
     let title = BoundedPrintable::try_new(body.to_string())?;
-    // Or, deserialised from JSON, the same validation runs.
-    let parsed: BoundedPrintable = serde_json::from_str(r#""hello""#)?;
     do_something_with(&title);
     Ok(())
 }
-
-// Property-test integration (proptest feature):
-proptest! {
-    #[test]
-    fn round_trip(s in any::<BoundedPrintable>()) {
-        // s is a valid BoundedPrintable by construction.
-        let json = serde_json::to_string(&s).unwrap();
-        let back: BoundedPrintable = serde_json::from_str(&json).unwrap();
-        assert_eq!(s.as_str(), back.as_str());
-    }
-}
 ```
+
+Serde and property-test integration are shown in the runnable corpus:
+`tests/serde-roundtrip.rs`, `tests/proptest-arbitrary.rs`, and
+`tests/property-harness.rs`.
 
 That's the whole library, at sketch level: a single declaration, one
 constructor surface, a refined value that the rest of the program can

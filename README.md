@@ -54,7 +54,8 @@ whittle = "0.0"
 
 `whittle` is `#![no_std]` with `extern crate alloc`. Default features
 are empty; opt in to `serde`, `proptest`, `hex`, `unicode`,
-`decimal`, or `chrono` as needed.
+`decimal`, `chrono`, or `regex` as needed. The `regex` feature is the
+only feature that pulls in `std`.
 
 ## A minute of code
 
@@ -72,9 +73,10 @@ let err = Refined::<String, NonEmpty>::try_new(String::new()).unwrap_err();
 assert_eq!(err, StringError::Empty);
 ```
 
-That is the whole API surface: a marker rule, a carrier, `try_new`,
-and `as_inner` / `into_inner`. Everything else is rules that ship
-with the crate, or rules you write yourself.
+That is the kernel: a marker rule, a carrier, `try_new`, and
+`as_inner` / `into_inner`. The rest of the surface is deliberately
+small: shipped rule families, composition operators, closed-set enums,
+schema reflection, macros, and optional `serde` / `proptest` glue.
 
 ## The pattern that scales
 
@@ -146,7 +148,8 @@ can map 1:1 into its domain variants.
   `MAX_DENOMINATOR`) — numerator / denominator pairs since Rust
   2024 lacks `f64` const generics.
 - **String** — `LenChars`, `LenBytes`, `NonEmpty`, `EachChar<P>`,
-  `FirstChar<P>`.
+  `FirstChar<P>`, built-in `CharPredicate` markers, and the
+  `SchemaChar` opt-in for predicates with reflectable character sets.
 - **Collection** (`Vec<T>`) — `LenItems`, `AllItems<R>`,
   `UniqueByKey`, `Distinct`, `Sorted`, `NoneOf<P>`, `AnyOf<P>`.
 - **Path** (`String`) — `RelativePath`.
@@ -157,21 +160,37 @@ can map 1:1 into its domain variants.
 - **Transformers** (`Rule<String>`) — `Trim<R>`, `AsciiLowercase<R>`,
   `AsciiUppercase<R>`. Normalise input before delegating, so the
   stored carrier is the canonical form.
+- **Schema reflection** — `SchemaRule<T>` opt-in descriptions for
+  expressible rules; `Schema` values drive boundary matrices, schema
+  cross-checks, residual-state reports, human-readable descriptions,
+  and schema equality / ordering.
+- **Closed sets** — `ClosedSet` plus `closed_set!` for provider wire
+  tokens where the enum itself is the constructive target, not a
+  `Refined<String, _>` wrapper.
+- **Macros** — `refinement!` for nominal newtypes,
+  `deserialize_rule!` for default serde gating, `closed_set!`, and
+  feature-gated `pattern!` for compile-time-validated regex rules.
 
 Behind Cargo features:
 
-- `hex` — `HexChar`, fixed-length hex strings (no extra deps).
-- `unicode` — Unicode-category predicates like `PrintableChar`.
+- `hex` — `HexChar`, `HexFixedLower`, `HexFixedAny`, and
+  `HexFixedNormalized` (no extra deps).
+- `unicode` — `PrintableLine`, `PrintableMultiline`,
+  `PrintableChar`, plus `BoundedLine` / `BoundedText`.
 - `decimal` — `DecimalPositive`, `DecimalScale<S>`,
   `DecimalPrecision<P>`, `DecimalInRange<...>`.
 - `chrono` — `DateAtLeast`, `DateAtMost`, `DateInRange`, plus the
   `DateTime<Utc>` analogues.
+- `regex` — `Pattern<const RE: &'static str>` and `pattern!`.
+  `Pattern` is a whole-string rule for positional grammars that the
+  character-class primitives cannot express ergonomically.
 - `serde` — `Serialize` / `Deserialize` for `Refined<T, R>`.
   Deserialisation routes through `try_new`, so bad payloads are
   rejected with the rule's own error.
 - `proptest` — `Arbitrary` for `Refined<T, R>`. Every generated
   value satisfies the rule by construction; no `prop_assume!`
-  filtering needed downstream.
+  filtering needed downstream. The `whittle::testing` helpers add
+  property harnesses and schema-derived boundary matrices.
 
 [`SKILL.md`](SKILL.md) has the full primitive catalogue, predicate
 list, and the process for adding a new domain type.

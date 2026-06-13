@@ -306,7 +306,7 @@ for a caller to construct a useful error message or branch on the cause.
 
 Stringified-error patterns (a single error variant carrying a formatted
 message) are NOT RECOMMENDED for library-provided rules. User-defined
-rules MAY use any error type that implements `std::error::Error`.
+rules MAY use any error type that implements `core::error::Error`.
 
 Named domain newtypes MUST expose their error under a named alias so
 that call sites need not name the rule type. The exposed name MUST live
@@ -338,10 +338,10 @@ The library MUST provide a set of rule primitives covering at least:
   observed case, so (b) waits for the documented hard case:
   overlapping subsets of one (typically foreign) enum where
   per-subset local enums explode combinatorially.];
-- binary composition operators (`And`, `Or`); n-ary composition is
-  expressible by nesting (the declarative macro performs the nesting
-  on the user's behalf) so a single domain type can layer length,
-  character class, and additional predicates without bespoke code.
+- binary composition operators (`And`, `Or`) and n-ary tuple-based
+  composition (`All`, `Any`, arities 2..=8), so a single domain type
+  can layer length, character class, and additional predicates without
+  bespoke code.
 
 Library-supplied rules MUST themselves satisfy every requirement in
 this document, including the typed-error and reflectable-schema rules.

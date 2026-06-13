@@ -69,7 +69,8 @@ side with a clone of the original input and returns `[E; 2]` when
 both reject. There is no positional `Left`/`Right` wrapping in the
 composition's `Self::Error` — the rules' flat error enum surfaces to
 callers as-is. N-ary `All<(...)>` / `Any<(...)>` operators are
-planned follow-up.
+available for arities 2..=8 when binary nesting would obscure the
+domain shape.
 
 Transformers (`AsciiLowercase<R>`, `AsciiUppercase<R>`, `Trim<R>`, see
 `crates/whittle-core/src/transform.rs`) normalise before delegating to
@@ -606,8 +607,9 @@ does no rejection sampling — it maps the rule's strategy through
 strategy (range, regex, vec-of-element). Composition retains a bounded
 amount of filtering: `And<A, B>`'s strategy filters `A`'s output through
 `B::refine`. Place the narrowing rule on the *left* so the filter rate
-stays tractable. For sparse intersections, a future n-ary `All<(...)>`
-may admit direct intersection generators.
+stays tractable. `All<(...)>` gives a flatter type surface for n-ary
+composition, but direct intersection generators remain future work for
+sparse intersections.
 
 Each primitive rule's strategy targets the admissible region directly.
 Rules over dense regions (`NotNan`, `NonZero`, `NoneOf<P>`, ...) use a
@@ -995,7 +997,9 @@ more `#[test]` functions whose bodies are the demonstration. Run them
 with `cargo nextest run --workspace --all-features` or
 `cargo test --tests --all-features`. Bare `cargo test` and
 `cargo nextest run` also pass: feature-gated integration tests
-(`serde-roundtrip`, `proptest-arbitrary`, `hex-and-normalization`) are
+(`closed-set-serde`, `hex-and-normalization`, `pattern-macro`,
+`property-harness`, `proptest-arbitrary`, `serde-roundtrip`,
+`transformer-newtype`) are
 declared with `required-features` in the root `Cargo.toml`, so Cargo
 skips them when the relevant feature is off. Nextest's profile defaults
 live in `.config/nextest.toml`. (If absent, the kernel's own doctests in
