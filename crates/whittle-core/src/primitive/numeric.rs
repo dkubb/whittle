@@ -599,60 +599,210 @@ impl<const MIN: i128, const MAX: i128> Within<MIN, MAX> {
 
     const_within_constructor!(
         /// Const-capable construction for `i16` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<i16, Within<-10, 10>> =
+        ///     match Within::<-10, 10>::try_new_i16(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_i16,
         i16
     );
 
     const_within_constructor!(
         /// Const-capable construction for `i32` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<i32, Within<-10, 10>> =
+        ///     match Within::<-10, 10>::try_new_i32(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_i32,
         i32
     );
 
     const_within_constructor!(
         /// Const-capable construction for `i64` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<i64, Within<-10, 10>> =
+        ///     match Within::<-10, 10>::try_new_i64(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_i64,
         i64
     );
 
     const_within_constructor!(
         /// Const-capable construction for `i128` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<i128, Within<-10, 10>> =
+        ///     match Within::<-10, 10>::try_new_i128(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_i128,
         i128
     );
 
     const_within_constructor!(
         /// Const-capable construction for `isize` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<isize, Within<-10, 10>> =
+        ///     match Within::<-10, 10>::try_new_isize(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_isize,
         isize
     );
 
     const_within_constructor!(
         /// Const-capable construction for `u8` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<u8, Within<0, 10>> =
+        ///     match Within::<0, 10>::try_new_u8(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_u8,
         u8
     );
 
     const_within_constructor!(
         /// Const-capable construction for `u16` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<u16, Within<0, 10>> =
+        ///     match Within::<0, 10>::try_new_u16(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_u16,
         u16
     );
 
     const_within_constructor!(
         /// Const-capable construction for `u32` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<u32, Within<0, 10>> =
+        ///     match Within::<0, 10>::try_new_u32(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_u32,
         u32
     );
 
     const_within_constructor!(
         /// Const-capable construction for `u64` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<u64, Within<0, 10>> =
+        ///     match Within::<0, 10>::try_new_u64(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_u64,
         u64
     );
 
     const_within_constructor!(
         /// Const-capable construction for `usize` carriers.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use whittle_core::Refined;
+        /// use whittle_core::primitive::Within;
+        ///
+        /// const OK: Refined<usize, Within<0, 10>> =
+        ///     match Within::<0, 10>::try_new_usize(7) {
+        ///         Ok(value) => value,
+        ///         Err(_) => panic!("invalid literal"),
+        ///     };
+        ///
+        /// assert_eq!(*OK.as_inner(), 7);
+        /// ```
         try_new_usize,
         usize
     );
