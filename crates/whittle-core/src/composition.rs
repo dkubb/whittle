@@ -207,6 +207,38 @@ pub trait ErrorMapper<E>: 'static {
     type Error;
 
     /// Convert an inner rule error into the mapped error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::ErrorMapper;
+    /// use whittle_core::primitive::StringError;
+    ///
+    /// #[derive(Debug, PartialEq, Eq)]
+    /// enum CodeError {
+    ///     BadLength,
+    ///     BadInput,
+    /// }
+    ///
+    /// enum CodeErrorMapper {}
+    ///
+    /// impl ErrorMapper<StringError> for CodeErrorMapper {
+    ///     type Error = CodeError;
+    ///
+    ///     fn map_error(error: StringError) -> Self::Error {
+    ///         match error {
+    ///             StringError::CharCountOutOfRange { .. } => CodeError::BadLength,
+    ///             _ => CodeError::BadInput,
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let value = CodeErrorMapper::map_error(
+    ///     StringError::CharCountOutOfRange { actual: 2 },
+    /// );
+    ///
+    /// assert_eq!(value, CodeError::BadLength);
+    /// ```
     fn map_error(error: E) -> Self::Error;
 }
 
