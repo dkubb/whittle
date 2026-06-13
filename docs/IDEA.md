@@ -431,6 +431,12 @@ refinements inherit schema reflection when their composed rule provides
 it; opaque custom `refine` bodies express schema absence by omitting the
 schema trait. The schema MUST be sufficient to drive:
 
+[Amended 2026-06-13: the original text required every rule to emit a
+schema. The shipped contract distinguishes expressible structural
+vocabularies from opaque hand-written `refine` bodies: library rules
+with structural vocabularies emit schemas, while opaque bodies signal
+absence by omitting the schema trait.]
+
 - boundary matrices and schema cross-checks that compare the structural
   description with the executable rule;
 - residual-state reporting for rules whose admitted set is absent or
