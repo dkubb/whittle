@@ -262,6 +262,28 @@ impl<E: ClosedSet> ClosedSetError<E> {
 
 impl<E> ClosedSetError<E> {
     /// The offending input, truncated to a 64-character bound.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::ClosedSet;
+    /// use whittle_core::closed_set;
+    ///
+    /// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// enum Toggle {
+    ///     On,
+    ///     Off,
+    /// }
+    ///
+    /// impl ClosedSet for Toggle {
+    ///     const MEMBERS: &'static [(&'static str, Self)] =
+    ///         &[("on", Self::On), ("off", Self::Off)];
+    /// }
+    ///
+    /// let error = closed_set::parse::<Toggle>("missing").unwrap_err();
+    ///
+    /// assert_eq!(error.value(), "missing");
+    /// ```
     #[inline]
     #[must_use]
     pub fn value(&self) -> &str {
@@ -270,6 +292,28 @@ impl<E> ClosedSetError<E> {
 
     /// The expected set: a `'static` borrow of the rejecting
     /// [`ClosedSet::MEMBERS`] table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::ClosedSet;
+    /// use whittle_core::closed_set;
+    ///
+    /// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// enum Toggle {
+    ///     On,
+    ///     Off,
+    /// }
+    ///
+    /// impl ClosedSet for Toggle {
+    ///     const MEMBERS: &'static [(&'static str, Self)] =
+    ///         &[("on", Self::On), ("off", Self::Off)];
+    /// }
+    ///
+    /// let error = closed_set::parse::<Toggle>("missing").unwrap_err();
+    ///
+    /// assert_eq!(error.expected(), Toggle::MEMBERS);
+    /// ```
     #[inline]
     #[must_use]
     pub const fn expected(&self) -> &'static [(&'static str, E)] {
@@ -520,6 +564,35 @@ where
 ///
 /// Propagates the serializer's own error; the wire form itself is
 /// total (see [`as_str`]).
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// use whittle_core::ClosedSet;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// enum Toggle {
+///     On,
+///     Off,
+/// }
+///
+/// impl ClosedSet for Toggle {
+///     const MEMBERS: &'static [(&'static str, Self)] =
+///         &[("on", Self::On), ("off", Self::Off)];
+/// }
+///
+/// #[derive(serde::Serialize)]
+/// struct Payload {
+///     #[serde(with = "whittle_core::closed_set")]
+///     toggle: Toggle,
+/// }
+///
+/// let value = serde_json::to_string(&Payload { toggle: Toggle::On }).unwrap();
+///
+/// assert_eq!(value, r#"{"toggle":"on"}"#);
+/// # }
+/// ```
 #[cfg(feature = "serde")]
 #[inline]
 pub fn serialize<E, S>(value: &E, serializer: S) -> Result<S::Ok, S::Error>
@@ -572,6 +645,35 @@ impl<E: ClosedSet> serde::de::Visitor<'_> for ClosedSetVisitor<E> {
 ///
 /// Returns the deserializer's error for non-string input, and the
 /// rendered [`ClosedSetError`] when the string is not a member.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// use whittle_core::ClosedSet;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// enum Toggle {
+///     On,
+///     Off,
+/// }
+///
+/// impl ClosedSet for Toggle {
+///     const MEMBERS: &'static [(&'static str, Self)] =
+///         &[("on", Self::On), ("off", Self::Off)];
+/// }
+///
+/// #[derive(serde::Deserialize)]
+/// struct Payload {
+///     #[serde(with = "whittle_core::closed_set")]
+///     toggle: Toggle,
+/// }
+///
+/// let value: Payload = serde_json::from_str(r#"{"toggle":"on"}"#).unwrap();
+///
+/// assert_eq!(value.toggle, Toggle::On);
+/// # }
+/// ```
 #[cfg(feature = "serde")]
 #[inline]
 pub fn deserialize<'de, E, D>(deserializer: D) -> Result<E, D::Error>
