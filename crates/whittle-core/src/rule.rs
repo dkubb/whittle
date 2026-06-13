@@ -481,6 +481,24 @@ where
     /// when the decoded value is inadmissible under the rule (the
     /// rule's typed error rendered through
     /// `serde::de::Error::custom`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "serde")] {
+    /// use whittle_core::{DeserializeRule, Refined};
+    /// use whittle_core::primitive::Within;
+    ///
+    /// let mut deserializer = serde_json::Deserializer::from_str("42");
+    /// let value: Refined<i32, Within<0, 100>> =
+    ///     <Within<0, 100> as DeserializeRule<'_, i32>>::deserialize_refined(
+    ///         &mut deserializer,
+    ///     )
+    ///     .unwrap();
+    ///
+    /// assert_eq!(*value.as_inner(), 42);
+    /// # }
+    /// ```
     fn deserialize_refined<D>(deserializer: D) -> Result<Refined<T, Self>, D::Error>
     where
         D: serde::Deserializer<'de>;
