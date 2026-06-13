@@ -28,8 +28,20 @@ use syn::{LitStr, parse_macro_input};
 ///
 /// Use it anywhere a `Pattern` type is expected, for example:
 ///
-/// ```ignore
-/// type Name = whittle::pattern!(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$");
+/// ```
+/// # #![feature(adt_const_params, unsized_const_params)]
+/// # #![expect(incomplete_features, reason = "doctest stand-in for whittle Pattern")]
+/// # extern crate self as whittle;
+/// # pub mod primitive {
+/// #     pub struct Pattern<const RE: &'static str>;
+/// # }
+/// use whittle_macros::pattern;
+///
+/// type Name = pattern!(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$");
+///
+/// fn main() {
+///     let _type_name = core::any::type_name::<Name>();
+/// }
 /// ```
 ///
 /// [`Pattern<RE>`]: ../whittle_core/primitive/pattern/struct.Pattern.html
