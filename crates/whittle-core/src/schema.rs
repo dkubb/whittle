@@ -2702,6 +2702,20 @@ where
     ///
     /// See the trait docs for the soundness obligation relating the
     /// returned schema to [`Rule::refine`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Within;
+    /// use whittle_core::schema::{Scalar, ScalarKind, SchemaRule};
+    ///
+    /// let value = <Within<0, 100> as SchemaRule<i32>>::schema();
+    ///
+    /// assert_eq!(
+    ///     value.scalar_membership(ScalarKind::Integer, &Scalar::Int(42)),
+    ///     Some(true),
+    /// );
+    /// ```
     fn schema() -> Schema;
 }
 
@@ -2742,6 +2756,17 @@ where
 {
     /// The inclusive integer endpoints of the admitted interval
     /// (`None` = unbounded at that end).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Within;
+    /// use whittle_core::schema::SchemaInterval;
+    ///
+    /// let value = <Within<0, 100> as SchemaInterval<i32>>::interval_bounds();
+    ///
+    /// assert_eq!(value, (Some(0), Some(100)));
+    /// ```
     fn interval_bounds() -> (Option<i128>, Option<i128>);
 }
 
@@ -2781,6 +2806,17 @@ pub struct AdmittedSet<T, R>(PhantomData<fn() -> (T, R)>);
 
 impl<T, R> AdmittedSet<T, R> {
     /// Build the probe (no data — the types are the payload).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Within;
+    /// use whittle_core::schema::AdmittedSet;
+    ///
+    /// let value = AdmittedSet::<i32, Within<0, 100>>::new();
+    ///
+    /// assert_eq!(core::mem::size_of_val(&value), 0);
+    /// ```
     #[must_use]
     pub const fn new() -> Self {
         Self(PhantomData)
@@ -2798,6 +2834,18 @@ impl<T, R> Default for AdmittedSet<T, R> {
 /// whenever `R: SchemaRule<T>` — see [`crate::admitted_set!`].
 pub trait DescribeAdmitted {
     /// Render the admitted set's constructive description.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Within;
+    /// use whittle_core::schema::{AdmittedSet, DescribeAdmitted};
+    ///
+    /// let probe = AdmittedSet::<i32, Within<0, 100>>::new();
+    /// let value = DescribeAdmitted::describe_admitted(&probe);
+    ///
+    /// assert_eq!(value, "int in 0..=100");
+    /// ```
     fn describe_admitted(&self) -> String;
 }
 
@@ -2821,6 +2869,22 @@ where
 /// `Opaque` schema node.
 pub trait DescribeOpaque {
     /// Render the absence marker for a hand-written `refine`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::schema::{AdmittedSet, DescribeOpaque};
+    ///
+    /// enum HandWritten {}
+    ///
+    /// let probe = AdmittedSet::<i32, HandWritten>::new();
+    /// let value =
+    ///     <&AdmittedSet<i32, HandWritten> as DescribeOpaque>::describe_admitted(
+    ///         &&probe,
+    ///     );
+    ///
+    /// assert_eq!(value, "opaque (hand-written refine)");
+    /// ```
     fn describe_admitted(&self) -> String {
         String::from("opaque (hand-written refine)")
     }
