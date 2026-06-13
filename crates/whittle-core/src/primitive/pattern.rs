@@ -160,8 +160,8 @@ impl<const RE: &'static str> SchemaRule<String> for Pattern<RE> {
     /// undecidable inside the kernel (deciding it needs the regex
     /// engine), so the string boundary fold yields no candidates for
     /// it — `refine` stays the only decision procedure, and the
-    /// schema's value is the constructive fragment for derived views
-    /// (descriptions, diffs, `string_regex`-style generation).
+    /// schema's value is the constructive fragment for shipped
+    /// descriptions and future `string_regex`-style generation.
     #[inline]
     fn schema() -> Schema {
         Schema::regex(RE)

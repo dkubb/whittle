@@ -20,8 +20,8 @@ program can trust without re-checking. A single declaration drives:
 - the typed error variants the constructor returns on rejection;
 - the `Deserialize` impl that routes through the constructor, so wire
   payloads cannot bypass the invariant;
-- the reflectable schema describing the rule, from which property
-  generators, JSON Schema, and pretty-printers are derived.
+- the reflectable schema describing expressible rules, which drives
+  boundary matrices, schema cross-checks, and residual-state reports.
 
 The kernel is **parse-don't-validate** with type narrowing: every rule
 is a morphism that maps a larger raw state space into a smaller
@@ -43,8 +43,8 @@ implemented with ordinary Rust constructors that run at the boundary.
    `Deserialize` cannot bypass the constructor.
 4. Make refinement composable: pipelines of normalisation and
    validation steps, library-supplied primitives, user-defined rules.
-5. Derive property generators, JSON Schema, and pretty-printers from
-   the rule's reflectable schema.
+5. Derive boundary probes, schema cross-checks, and residual-state
+   reports from the rule's reflectable schema.
 6. Dogfood against multiple real consumers from day one.
 
 ## Non-Goals
@@ -61,12 +61,15 @@ implemented with ordinary Rust constructors that run at the boundary.
 
 ## The Kernel
 
-Two types and one trait.
+Two types and two traits.
 
 ```rust
 pub trait Rule<T: 'static>: Sized + 'static {
     type Error;
     fn refine(raw: T) -> Result<T, Self::Error>;
+}
+
+pub trait SchemaRule<T: 'static>: Rule<T> {
     fn schema() -> Schema;
 }
 
@@ -87,6 +90,9 @@ impl<T: 'static, R: Rule<T>> Refined<T, R> {
 (consume-and-rebuild) so it may canonicalise — trim whitespace,
 lowercase a scheme, reorder commutative operands — not just inspect.
 Rules whose narrowing is purely a predicate return `Ok(raw)` unchanged.
+`SchemaRule` is the opt-in constructive surface for rules whose
+admitted set fits Whittle's schema vocabulary; rules outside that
+vocabulary have no schema impl rather than an opaque schema node.
 
 `Refined<T, R>` is `#[repr(transparent)]` over `T`. The phantom
 marker is zero-sized. The runtime bytes of `Refined<String, R>` are
@@ -270,14 +276,14 @@ distribution that sums to 1." A second trait expresses these:
 pub trait RuleWith<T: 'static, Env: 'static>: Sized + 'static {
     type Error;
     fn refine_with(env: &Env, raw: T) -> Result<T, Self::Error>;
-    fn schema() -> Schema {
-        Schema::ContextOpaque {
-            ty:     TypeId::of::<T>(),
-            env_ty: TypeId::of::<Env>(),
-        }
-    }
 }
 ```
+
+Contextual rules do not emit a default schema. Their admitted set
+depends on a runtime environment, so the absence of `SchemaRule` is the
+audit boundary: residual-state reports render the rule as
+`opaque (hand-written refine)` by dispatch, with no `Opaque` or
+`ContextOpaque` schema node.
 
 Two carriers, one for borrowed environments and one for owned ones:
 
@@ -307,26 +313,27 @@ relevant state cannot mutate through shared references.
 
 ## Schema reflection drives the rest
 
-Every library-supplied rule and every macro-generated rule emits a
-runtime-introspectable `Schema` description. The schema is enough to
-derive:
+Library-supplied rules and macro-generated rules whose admitted set fits
+the schema vocabulary emit a runtime-introspectable `Schema`
+description through `SchemaRule`. The schema is enough to derive:
 
-- **Property generators** for `proptest::Strategy` that target the
-  admissible region directly. The blanket `Refined<T, R>: Arbitrary`
-  impl does no rejection sampling; primitive and composition strategies
-  may apply bounded filtering where the admissible region is dense or
-  composed. A `u8` refined by `Within<0, 100>` gets a `0..=100` strategy,
-  not a `0..=255` strategy with a `prop_filter`.
-- **JSON Schema** fragments behind the `schemars` feature.
-- **Human-readable rule descriptions** for default `Display` on error
-  types and for generated documentation.
+- **Boundary matrices** that probe schema-derived accept/reject edges
+  against the rule's own `refine` implementation.
+- **Schema cross-checks** that compare generated strategies with the
+  reflected carried set.
+- **Residual-state reports** for macro users, including explicit
+  absence for hand-written or context-dependent rules whose admitted
+  sets are outside the schema vocabulary.
+- **Human-readable rule descriptions** for generated documentation and
+  audit output.
 - **Equality and ordering on schemas** so two refined types with
   identical schemas can be detected as such.
 
 This is the single biggest divergence from `refined`/`witnessed`: the
 rule is not just a checker, it's a *reflectable description* of the
 admissible state space. The reflection is what makes the derived
-integrations possible.
+test oracles possible. External ecosystem exports such as `schemars`
+JSON Schema fragments remain deferred until consumer demand.
 
 ## Zero-cost layout
 
@@ -381,7 +388,7 @@ Open questions are tracked authoritatively in
 - The exact shape of the step-vocabulary registration mechanism for
   cross-crate user-defined named steps.
 - Schema description for contextual rules (currently
-  `Schema::ContextOpaque`).
+  no `SchemaRule` impl).
 - Generic-const-expr implication edges (blocked on stable Rust).
 - `no_std` support for the kernel.
 

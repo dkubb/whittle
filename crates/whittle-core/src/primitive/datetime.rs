@@ -557,6 +557,13 @@ mod tests {
         Bound::Inclusive(Scalar::Int(secs * DATETIME_TICKS_PER_SECOND))
     }
 
+    fn datetime_scalar(value: DateTime<Utc>) -> Scalar {
+        Scalar::Int(
+            i128::from(value.timestamp()) * DATETIME_TICKS_PER_SECOND
+                + i128::from(value.timestamp_subsec_nanos()),
+        )
+    }
+
     #[test]
     fn schema_reads_the_same_bounds_refine_reads() {
         assert_eq!(
@@ -597,13 +604,59 @@ mod tests {
             <Until2030 as crate::Rule<DateTime<Utc>>>::refine(past_bound),
             Err(DateTimeError::OutOfRange { value: past_bound }),
         );
-        let embedded = Scalar::Int(
-            i128::from(past_bound.timestamp()) * DATETIME_TICKS_PER_SECOND
-                + i128::from(past_bound.timestamp_subsec_nanos()),
-        );
         assert_eq!(
             <Until2030 as SchemaRule<DateTime<Utc>>>::schema()
-                .scalar_membership(ScalarKind::DateTime, &embedded),
+                .scalar_membership(ScalarKind::DateTime, &datetime_scalar(past_bound)),
+            Some(false),
+        );
+    }
+
+    /// Leap seconds use nanosecond payloads in
+    /// `1_000_000_000..2_000_000_000` on the previous second. The
+    /// 2e9 tick scale keeps those payloads ordered before the next
+    /// whole second, so schema membership and `DateTime` ordering
+    /// agree at the leap-second edge.
+    #[test]
+    fn schema_membership_orders_leap_second_payloads_before_the_next_second() {
+        type SinceNextMinute = DateTimeAtLeast<60>;
+        type UntilNextMinute = DateTimeAtMost<60>;
+
+        let last_regular = DateTime::<Utc>::from_timestamp(59, 999_999_999).unwrap();
+        let leap = DateTime::<Utc>::from_timestamp(59, 1_500_000_000).unwrap();
+        let next_minute = DateTime::<Utc>::from_timestamp(60, 0).unwrap();
+
+        assert!(last_regular < leap);
+        assert!(leap < next_minute);
+
+        assert_eq!(
+            datetime_scalar(last_regular).as_int(),
+            Some(59 * DATETIME_TICKS_PER_SECOND + 999_999_999),
+        );
+        assert_eq!(
+            datetime_scalar(leap).as_int(),
+            Some(59 * DATETIME_TICKS_PER_SECOND + 1_500_000_000),
+        );
+        assert_eq!(
+            datetime_scalar(next_minute).as_int(),
+            Some(60 * DATETIME_TICKS_PER_SECOND),
+        );
+
+        assert_eq!(
+            <UntilNextMinute as crate::Rule<DateTime<Utc>>>::refine(leap),
+            Ok(leap),
+        );
+        assert_eq!(
+            <SinceNextMinute as crate::Rule<DateTime<Utc>>>::refine(leap),
+            Err(DateTimeError::OutOfRange { value: leap }),
+        );
+        assert_eq!(
+            <UntilNextMinute as SchemaRule<DateTime<Utc>>>::schema()
+                .scalar_membership(ScalarKind::DateTime, &datetime_scalar(leap)),
+            Some(true),
+        );
+        assert_eq!(
+            <SinceNextMinute as SchemaRule<DateTime<Utc>>>::schema()
+                .scalar_membership(ScalarKind::DateTime, &datetime_scalar(leap)),
             Some(false),
         );
     }
@@ -614,13 +667,13 @@ mod tests {
     fn schema_display_renders_ticks_as_seconds() {
         assert_eq!(
             <DateTimeInRange<0, 60> as SchemaRule<DateTime<Utc>>>::schema().to_string(),
-            "datetime(unix seconds) in 0..=60",
+            "datetime(ticks/2e9s) in 0..=60",
         );
         let subsecond = datetime_interval(
             Bound::Inclusive(Scalar::Int(DATETIME_TICKS_PER_SECOND + 1)),
             Bound::Unbounded,
         );
-        assert_eq!(subsecond.to_string(), "datetime(unix seconds) in 1s+1ns..");
+        assert_eq!(subsecond.to_string(), "datetime(ticks/2e9s) in 1s+1ns..");
     }
 
     #[cfg(feature = "proptest")]
@@ -691,9 +744,9 @@ mod tests {
             );
         }
 
-        /// The schema-derived R-T1 boundary matrix over the
-        /// unix-seconds encoding: each endpoint and its ±1-second
-        /// neighbours, placement read off the schema.
+        /// The schema-derived R-T1 boundary matrix over the 2e9-tick
+        /// scalar encoding: each whole-second endpoint and its
+        /// adjacent ticks, placement read off the schema.
         #[test]
         fn boundary_matrices_for_datetime_rules() {
             assert_schema_boundary_matrix::<DateTime<Utc>, DateTimeAtLeast<1_704_067_200>>(

@@ -63,6 +63,19 @@ use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, Sta
 /// let err_right = Refined::<i32, InRange>::try_new(101).unwrap_err();
 /// assert_eq!(err_right, NumericError::OutOfRange { value: 101 });
 /// ```
+///
+/// Composition schemas are intentionally absent when an operand
+/// canonicalises, because the `SchemaRule` set algebra would describe
+/// the accepted preimage instead of the carried set:
+///
+/// ```compile_fail
+/// use whittle_core::{And, SchemaRule};
+/// use whittle_core::primitive::{LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<And<LenChars<3, 3>, Trim<NonEmpty>>>();
+/// ```
 pub struct And<A, B>(PhantomData<(A, B)>);
 
 /// Either rule may accept. `A::refine` runs first; on `Ok` its
@@ -99,6 +112,17 @@ pub struct And<A, B>(PhantomData<(A, B)>);
 /// let err = Refined::<i32, Either>::try_new(50).unwrap_err();
 /// assert_eq!(err[0], NumericError::OutOfRange { value: 50 });
 /// assert_eq!(err[1], NumericError::OutOfRange { value: 50 });
+/// ```
+///
+/// `Or` schemas have the same purity gate as [`And`]:
+///
+/// ```compile_fail
+/// use whittle_core::{Or, SchemaRule};
+/// use whittle_core::primitive::{LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Or<LenChars<3, 3>, Trim<NonEmpty>>>();
 /// ```
 pub struct Or<A, B>(PhantomData<(A, B)>);
 
@@ -260,6 +284,81 @@ pub struct MapErr<R, M>(PhantomData<(R, M)>);
 /// let err = Refined::<i32, SmallNonZero>::try_new(0).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: 0 });
 /// ```
+///
+/// The n-ary schema impl keeps the `PureFilter` bound at every
+/// supported arity:
+///
+/// ```compile_fail
+/// use whittle_core::{All, SchemaRule};
+/// use whittle_core::primitive::{LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<All<(LenChars<0, 64>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{All, SchemaRule};
+/// use whittle_core::primitive::{LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<All<(LenChars<0, 64>, NonEmpty, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{All, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<All<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{All, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<All<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, LenChars<1, 128>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{All, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<All<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, LenChars<1, 128>, LenBytes<1, 256>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{All, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<All<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, LenChars<1, 128>, LenBytes<1, 256>, NonEmpty, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{All, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<All<(
+///     LenChars<0, 64>,
+///     NonEmpty,
+///     LenBytes<0, 128>,
+///     LenChars<1, 128>,
+///     LenBytes<1, 256>,
+///     NonEmpty,
+///     LenChars<2, 256>,
+///     Trim<NonEmpty>,
+/// )>>();
+/// ```
 pub struct All<TUPLE>(PhantomData<fn() -> TUPLE>);
 
 /// Any operand in the tuple may accept. The n-ary generalisation of
@@ -287,6 +386,81 @@ pub struct All<TUPLE>(PhantomData<fn() -> TUPLE>);
 /// // Three rejections, one per operand.
 /// assert_eq!(err.len(), 3);
 /// assert_eq!(err[0], NumericError::OutOfRange { value: 4 });
+/// ```
+///
+/// The n-ary schema impl keeps the `PureFilter` bound at every
+/// supported arity:
+///
+/// ```compile_fail
+/// use whittle_core::{Any, SchemaRule};
+/// use whittle_core::primitive::{LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Any<(LenChars<0, 64>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{Any, SchemaRule};
+/// use whittle_core::primitive::{LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Any<(LenChars<0, 64>, NonEmpty, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{Any, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Any<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{Any, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Any<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, LenChars<1, 128>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{Any, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Any<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, LenChars<1, 128>, LenBytes<1, 256>, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{Any, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Any<(LenChars<0, 64>, NonEmpty, LenBytes<0, 128>, LenChars<1, 128>, LenBytes<1, 256>, NonEmpty, Trim<NonEmpty>)>>();
+/// ```
+///
+/// ```compile_fail
+/// use whittle_core::{Any, SchemaRule};
+/// use whittle_core::primitive::{LenBytes, LenChars, NonEmpty};
+/// use whittle_core::transform::Trim;
+///
+/// fn assert_schema<R: SchemaRule<String>>() {}
+/// assert_schema::<Any<(
+///     LenChars<0, 64>,
+///     NonEmpty,
+///     LenBytes<0, 128>,
+///     LenChars<1, 128>,
+///     LenBytes<1, 256>,
+///     NonEmpty,
+///     LenChars<2, 256>,
+///     Trim<NonEmpty>,
+/// )>>();
 /// ```
 pub struct Any<TUPLE>(PhantomData<fn() -> TUPLE>);
 
@@ -2296,21 +2470,6 @@ mod tests {
                 <Inner as SchemaRule<String>>::schema(),
             );
         }
-
-        /// Composition schemas have no impl when an operand
-        /// canonicalises — the `PureFilter` bound is the compile-time
-        /// absence (design: absence-of-impl over a wrong impl).
-        ///
-        /// ```compile_fail
-        /// use whittle_core::{And, SchemaRule};
-        /// use whittle_core::primitive::{LenChars, NonEmpty};
-        /// use whittle_core::transform::Trim;
-        ///
-        /// fn assert_schema<R: SchemaRule<String>>() {}
-        /// // error[E0277]: Trim<NonEmpty> is not a PureFilter
-        /// assert_schema::<And<LenChars<3, 3>, Trim<NonEmpty>>>();
-        /// ```
-        const _CANONICALISING_OPERANDS_HAVE_NO_SCHEMA: () = ();
 
         #[cfg(feature = "proptest")]
         mod cross_checks {

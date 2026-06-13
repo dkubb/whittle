@@ -4,15 +4,16 @@
 //! [`Rule::refine`] is the *predicative*
 //! description of a rule's admitted set — it tests membership.
 //! [`Schema`] is the *constructive* counterpart: a first-class value
-//! describing the same set, so derived views (generators, boundary
-//! matrices, residual-state reports, schema diffs) can read one
-//! determinant instead of restating the bounds.
+//! describing the same set, so shipped consumers (boundary matrices,
+//! schema cross-checks, residual-state reports, and human-readable
+//! descriptions) can read one determinant instead of restating the
+//! bounds.
 //!
 //! # The scalar universe
 //!
 //! Interval endpoints live in a single scalar universe ([`Scalar`]):
-//! integers (and integer-encoded carriers — days from CE, seconds
-//! since the Unix epoch, decimal mantissas) widen into `i128`; floats
+//! integers (and integer-encoded carriers — days from CE, datetime
+//! ticks, decimal mantissas) widen into `i128`; floats
 //! widen into `f64`. [`ScalarKind`] records which carrier domain an
 //! interval describes, so a date interval and a plain integer
 //! interval never compare equal even when their endpoint numbers
@@ -65,7 +66,7 @@ use crate::rule::Rule;
 /// An endpoint value in the schema's scalar universe.
 ///
 /// Integer-regime carriers (integers, dates as days from CE,
-/// datetimes as seconds since the Unix epoch, decimal mantissas)
+/// datetimes as sub-second ticks, decimal mantissas)
 /// widen into [`Scalar::Int`]; floats widen into [`Scalar::Float`].
 ///
 /// Deliberately transparent: every `Scalar` is valid data (`NaN`
@@ -779,12 +780,12 @@ enum SchemaRepr {
 /// Borrowed read surface of a [`Schema`] tree: one variant per node
 /// shape, with borrowed payloads, returned by [`Schema::view`].
 ///
-/// A view is for READING the canonical tree (derived generators,
-/// boundary matrices, residual-state reports, schema diffs — the
-/// R-S2 consumers): matching is total over the node shapes, but no
-/// view, however assembled, converts back into a [`Schema`] — the
-/// smart constructors stay the only construction paths, so the
-/// canonical-form invariants survive every consumer.
+/// A view is for READING the canonical tree (boundary matrices, schema
+/// cross-checks, residual-state reports, descriptions, and
+/// equality/order): matching is total over the node shapes, but no view,
+/// however assembled, converts back into a [`Schema`] — the smart
+/// constructors stay the only construction paths, so the canonical-form
+/// invariants survive every consumer.
 ///
 /// The enum is a deliberately closed sum: a new node kind is a
 /// breaking change that every consumer match must acknowledge.
@@ -2498,7 +2499,7 @@ fn fmt_interval(
         ScalarKind::Integer => f.write_str("int")?,
         ScalarKind::Float => f.write_str("float")?,
         ScalarKind::Date => f.write_str("date(days from CE)")?,
-        ScalarKind::DateTime => f.write_str("datetime(unix seconds)")?,
+        ScalarKind::DateTime => f.write_str("datetime(ticks/2e9s)")?,
         ScalarKind::Decimal { .. } => f.write_str("decimal")?,
     }
     f.write_str(" in ")?;
@@ -2922,6 +2923,18 @@ mod tests {
             crate::admitted_set!(i32, crate::primitive::NonZero),
             "any of\n  int in ..=-1\n  int in 1..",
         );
+    }
+
+    #[test]
+    fn admitted_set_autoref_prefers_schema_rule_over_opaque_fallback() {
+        #[expect(
+            unused_imports,
+            reason = "both dispatch traits must be in scope to prove the schema arm wins"
+        )]
+        use super::{DescribeAdmitted as _, DescribeOpaque as _};
+
+        let probe = &super::AdmittedSet::<i32, crate::primitive::Within<0, 1>>::new();
+        assert_eq!(probe.describe_admitted(), "int in 0..=1");
     }
 
     #[test]
@@ -5007,7 +5020,7 @@ mod tests {
                 )),
             )
             .to_string(),
-            "datetime(unix seconds) in 0..=1893456000",
+            "datetime(ticks/2e9s) in 0..=1893456000",
         );
         // A sub-second payload is appended only when present.
         assert_eq!(
@@ -5017,7 +5030,7 @@ mod tests {
                 Bound::Unbounded,
             )
             .to_string(),
-            "datetime(unix seconds) in 1s+1ns..",
+            "datetime(ticks/2e9s) in 1s+1ns..",
         );
     }
 

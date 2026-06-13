@@ -76,8 +76,10 @@ a derive or a declarative macro — defines:
 - the typed error variants the constructor returns on rejection;
 - the `Deserialize` impl that routes through the constructor so wire
   payloads cannot bypass the invariant;
-- the reflectable schema describing the rule, from which property
-  generators, JSON Schema, and pretty-printers are derived.
+- the reflectable schema describing the rule, which drives shipped
+  boundary matrices, schema cross-checks, residual-state reports,
+  human-readable descriptions, and equality/order; external exports
+  such as JSON Schema remain follow-ups when consumer demand appears.
 
 The kernel is parse-don't-validate with **type narrowing**: every rule is a
 morphism that maps a larger raw state space into a smaller admissible one,
@@ -175,8 +177,9 @@ The model intentionally distinguishes:
 - the **refined value**, which is the runtime carrier of a successfully
   narrowed value;
 - the **schema**, which is a reflectable runtime description of the rule
-  used by derived integrations (property generators, JSON Schema,
-  pretty-printers).
+  used by shipped introspection and test oracles (boundary matrices,
+  schema cross-checks, residual-state reports, descriptions, and
+  equality/order), with ecosystem exports kept as deferred integrations.
 
 [Amended 2026-06-11: the model's names map onto the
 state-space-minimization formal vocabulary — the admissible state space
@@ -220,10 +223,10 @@ every library-supplied rule; user-defined rules SHOULD discharge it
 by property test as well.
 
 Pure-predicate rules MAY be marked by an additional trait (named
-`PureFilter` in the architecture document) so that derived integrations
-(codec inversion, JSON Schema generation) can exploit the
-information-preserving property. The kernel does not require this
-marker.
+`PureFilter` in the architecture document) so schema composition can
+exploit the information-preserving property. Future external consumers
+such as codec inversion or JSON Schema generation MAY use the same
+marker. The kernel does not require this marker.
 
 ### 5.2. Smart Constructor as the Only Construction Path
 
@@ -422,18 +425,24 @@ but not to the owned carrier, whose env-storage is intentional.
 
 ### 5.9. Reflectable Schema
 
-Every library-supplied rule and every macro-generated rule MUST emit a
-runtime-introspectable schema description. The schema MUST be sufficient
-to drive:
+Every library-supplied rule with an expressible structural vocabulary
+MUST emit a runtime-introspectable schema description. Macro-generated
+refinements inherit schema reflection when their composed rule provides
+it; opaque custom `refine` bodies express schema absence by omitting the
+schema trait. The schema MUST be sufficient to drive:
 
-- derivation of a `proptest::Strategy` (or equivalent) that generates
-  only admissible values, not generates-then-filters values;
-- generation of a JSON Schema fragment when the `schemars` integration
-  is enabled;
+- boundary matrices and schema cross-checks that compare the structural
+  description with the executable rule;
+- residual-state reporting for rules whose admitted set is absent or
+  only partially explainable by the structural vocabulary;
 - generation of a human-readable rule description for error messages,
   documentation, and debugging output;
 - equality and ordering on schemas, so two refined types whose schemas
   are equal can be detected as such.
+
+The schema SHOULD preserve enough structure for future property-strategy
+derivation and JSON Schema export when those integrations have a real
+consumer.
 
 The schema's representation is normative only in its required surface;
 the concrete enum and helper types live in the architecture document
@@ -454,7 +463,7 @@ single source of truth, every artifact a refined named type needs:
   require;
 - the `Deserialize` impl routed through `try_new`;
 - the read-only delegating surface (`AsRef`, `Display`, `Debug`, ...);
-- the schema reflection;
+- the schema reflection when the composed rule provides it;
 - the implication edges declared in the macro input.
 
 [Conformance note 2026-06-11: the `refinement!` error-block form
@@ -464,9 +473,10 @@ impls and a single `ErrorMapper` impl as the one mapping
 determinant), the `Deserialize` impl routed through the rule (so
 ingress rejections carry the domain diagnostics), and the read-only
 delegating surface (`AsRef`, opt-in `Display`, derive passthrough).
-Schema reflection and macro-declared implication edges remain
-planned milestones (ARCHITECTURE §15.1, §15.3); this section is not
-yet fully satisfied.]
+Schema reflection itself ships through `SchemaRule` on the composed rule
+rather than through macro generation (ARCHITECTURE §15.1);
+macro-declared implication edges remain planned (ARCHITECTURE §15.3), so
+this section is not yet fully satisfied.]
 
 The narrowing morphism MUST be expressed as named, ordered steps.
 Type-level composition satisfies this requirement: transformer rules
@@ -502,20 +512,19 @@ MUST generate only admissible values; the rejection-sampling approach
 ("generate any value, then filter through `refine`") is NOT RECOMMENDED
 as the default and MUST NOT be the only available implementation.
 
-Strategies MUST generate only admissible values. Until schema
-reflection (Section 5.9) is implemented, direct per-rule strategies
-(an `ArbitraryRule` trait implemented alongside each rule) are the
-sanctioned mechanism; the carrier's `Arbitrary` implementation MUST
-surface a strategy that emits an inadmissible value as a test-time
-defect, not silently filter it. Once a rule carries a structural
-schema, its generator SHOULD be derived from that schema (or at
-minimum cross-checked against it); direct implementations remain
-sanctioned for rules whose admissible state space exceeds the schema
-vocabulary. [Amended 2026-06-10: the original text required
-derivation from the reflectable schema; per-rule direct strategies
-are the interim mechanism, with schema derivation as the destination
-once Section 5.9 lands — each schema constructor that lands SHOULD
-convert its rule family from hand-written to derived generation.]
+Strategies MUST generate only admissible values. Direct per-rule
+strategies (an `ArbitraryRule` trait implemented alongside each rule)
+are the sanctioned mechanism; the carrier's `Arbitrary` implementation
+MUST surface a strategy that emits an inadmissible value as a test-time
+defect, not silently filter it. Once a rule carries a structural schema,
+its direct generator SHOULD be cross-checked against that schema; direct
+implementations remain sanctioned for rules whose admissible state space
+exceeds the schema vocabulary. [Amended 2026-06-10: the original text
+required derivation from the reflectable schema; per-rule direct
+strategies are the shipped mechanism. Schema-derived generation remains
+the destination once boundary-biased derivation proves equal-or-better
+per family; a schema constructor landing does not by itself require
+replacing that family with derived generation.]
 
 For rules with no structural description (opaque custom `refine`,
 contextual opacity), the library MUST NOT emit a default `Arbitrary`

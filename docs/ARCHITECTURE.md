@@ -1189,9 +1189,11 @@ combinatorially.
 
 [IDEA.md](IDEA.md) §5.1 admits a marker trait (named `PureFilter`) for
 rules whose `refine` is the identity on admissible inputs, so derived
-integrations can exploit byte preservation. No shipped integration
-exploits it yet; add it together with the first consumer (codec
-inversion or JSON Schema generation).
+integrations can exploit byte preservation. It is shipped and consumed
+by schema composition: `And`/`Or`/`All`/`Any` derive schemas only over
+`PureFilter` operands, and canonicalizing transformer schemas require
+the inner rule to preserve bytes on already-admissible inputs. Future
+external consumers remain codec inversion or JSON Schema generation.
 
 ### 15.6. Ecosystem Integrations
 
