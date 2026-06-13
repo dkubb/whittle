@@ -12,7 +12,7 @@
 //! a public API still leaks the composition shape into every
 //! caller's type signature. The fix is unchanged: wrap the
 //! composition in a nominal newtype with a flat domain enum
-//! (see the closing test here, and `flat-domain-error.rs` for the
+//! (see the closing test here, and `flat_domain_error.rs` for the
 //! headline pattern).
 
 #![expect(

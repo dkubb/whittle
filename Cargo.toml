@@ -140,36 +140,36 @@ unicode  = ["whittle-core/unicode"]
 workspace = true
 
 [[test]]
-name             = "hex-and-normalization"
-path             = "tests/hex-and-normalization.rs"
+name             = "hex_and_normalization"
+path             = "tests/hex_and_normalization.rs"
 required-features = ["hex"]
 
 [[test]]
-name             = "transformer-newtype"
-path             = "tests/transformer-newtype.rs"
+name             = "transformer_newtype"
+path             = "tests/transformer_newtype.rs"
 required-features = ["hex"]
 
 [[test]]
-name             = "proptest-arbitrary"
-path             = "tests/proptest-arbitrary.rs"
+name             = "proptest_arbitrary"
+path             = "tests/proptest_arbitrary.rs"
 required-features = ["proptest", "hex"]
 
 [[test]]
-name             = "property-harness"
-path             = "tests/property-harness.rs"
+name             = "property_harness"
+path             = "tests/property_harness.rs"
 required-features = ["proptest"]
 
 [[test]]
-name             = "serde-roundtrip"
-path             = "tests/serde-roundtrip.rs"
+name             = "serde_roundtrip"
+path             = "tests/serde_roundtrip.rs"
 required-features = ["serde"]
 
 [[test]]
-name             = "closed-set-serde"
-path             = "tests/closed-set-serde.rs"
+name             = "closed_set_serde"
+path             = "tests/closed_set_serde.rs"
 required-features = ["serde"]
 
 [[test]]
-name             = "pattern-macro"
-path             = "tests/pattern-macro.rs"
+name             = "pattern_macro"
+path             = "tests/pattern_macro.rs"
 required-features = ["regex"]

@@ -406,8 +406,8 @@ fn handle_request(body: &str) -> Result<(), MyError> {
 ```
 
 Serde and property-test integration are shown in the runnable corpus:
-`tests/serde-roundtrip.rs`, `tests/proptest-arbitrary.rs`, and
-`tests/property-harness.rs`.
+`tests/serde_roundtrip.rs`, `tests/proptest_arbitrary.rs`, and
+`tests/property_harness.rs`.
 
 That's the whole library, at sketch level: a single declaration, one
 constructor surface, a refined value that the rest of the program can

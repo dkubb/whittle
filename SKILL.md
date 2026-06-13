@@ -997,9 +997,9 @@ more `#[test]` functions whose bodies are the demonstration. Run them
 with `cargo nextest run --workspace --all-features` or
 `cargo test --tests --all-features`. Bare `cargo test` and
 `cargo nextest run` also pass: feature-gated integration tests
-(`closed-set-serde`, `hex-and-normalization`, `pattern-macro`,
-`property-harness`, `proptest-arbitrary`, `serde-roundtrip`,
-`transformer-newtype`) are
+(`closed_set_serde`, `hex_and_normalization`, `pattern_macro`,
+`property_harness`, `proptest_arbitrary`, `serde_roundtrip`,
+`transformer_newtype`) are
 declared with `required-features` in the root `Cargo.toml`, so Cargo
 skips them when the relevant feature is off. Nextest's profile defaults
 live in `.config/nextest.toml`. (If absent, the kernel's own doctests in

@@ -10,7 +10,7 @@
 //! rarely the shape a public domain API wants. Wrap the `Or` in a
 //! nominal newtype and collapse the pair into a single named
 //! variant inside `try_new`. The closing test shows the shape;
-//! `flat-domain-error.rs` is the canonical reference.
+//! `flat_domain_error.rs` is the canonical reference.
 //!
 //! Note: `Or` requires `T: Clone` because the original input must
 //! be preserved for the second attempt. This is the only `Clone`

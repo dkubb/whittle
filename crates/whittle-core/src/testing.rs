@@ -35,7 +35,7 @@
 //! than a strategy-returning combinator for use inside `proptest!`.
 //! Two reasons:
 //!
-//! - The existing corpus (`tests/proptest-arbitrary.rs`) writes one
+//! - The existing corpus (`tests/proptest_arbitrary.rs`) writes one
 //!   named `#[test]` per property. A closure-taking function keeps
 //!   that shape — `#[test] fn f_is_total() { prop_total(f); }` —
 //!   with the obligation named at the call site.

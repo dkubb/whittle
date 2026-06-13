@@ -6,7 +6,7 @@
 //!   alphanumeric (no spaces, no lowercase).
 //!
 //! Each is a nominal newtype with a private inner `Refined<...>`
-//! and a flat domain error — the `flat-domain-error.rs` pattern
+//! and a flat domain error — the `flat_domain_error.rs` pattern
 //! applied three times. The parent `Itinerary` struct composes
 //! the three; the type signature alone tells a reader (or another
 //! LLM) which invariants hold.

@@ -129,7 +129,7 @@ impl FlightCode {
 The newtype is the domain. The `Refined<...>` is implementation. The
 rest of the library is a catalogue of rules to plug into that slot.
 A runnable version lives in
-[`tests/flat-domain-error.rs`](tests/flat-domain-error.rs).
+[`tests/flat_domain_error.rs`](tests/flat_domain_error.rs).
 
 ## What ships
 
