@@ -424,6 +424,22 @@ pub trait ArbitraryNumeric: Numeric + Copy {
     /// Callers should not pass ranges that, after clamping, would
     /// be empty for the type they are generating; the rules in this
     /// module never do.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "proptest")] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::primitive::ArbitraryNumeric;
+    ///
+    /// let strategy = i16::arbitrary_in_range(-2, 2);
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!((-2..=2).contains(&value));
+    /// # }
+    /// ```
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy;
 }
 

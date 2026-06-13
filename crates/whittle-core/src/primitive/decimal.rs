@@ -362,6 +362,24 @@ pub trait ArbitraryDecimal: Rule<Decimal> {
     type Strategy: proptest::strategy::Strategy<Value = Decimal>;
 
     /// Build the rule's `Decimal` strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "decimal", feature = "proptest"))] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use rust_decimal::Decimal;
+    /// use whittle_core::Rule;
+    /// use whittle_core::primitive::{ArbitraryDecimal, DecimalPositive};
+    ///
+    /// let strategy = DecimalPositive::arbitrary_decimal();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(<DecimalPositive as Rule<Decimal>>::refine(value).is_ok());
+    /// # }
+    /// ```
     fn arbitrary_decimal() -> Self::Strategy;
 }
 

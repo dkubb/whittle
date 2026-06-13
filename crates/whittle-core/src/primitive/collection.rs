@@ -322,6 +322,38 @@ where
     type Strategy: proptest::strategy::Strategy<Value = T>;
 
     /// Construct the predicate's value-emitting strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "proptest")] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::primitive::collection::{ArbitraryPredicate, Predicate};
+    ///
+    /// struct IsZero;
+    ///
+    /// impl Predicate<i32> for IsZero {
+    ///     fn test(value: &i32) -> bool {
+    ///         *value == 0
+    ///     }
+    /// }
+    ///
+    /// impl ArbitraryPredicate<i32> for IsZero {
+    ///     type Strategy = proptest::strategy::Just<i32>;
+    ///
+    ///     fn arbitrary_matching() -> Self::Strategy {
+    ///         proptest::strategy::Just(0)
+    ///     }
+    /// }
+    ///
+    /// let strategy = IsZero::arbitrary_matching();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(IsZero::test(&value));
+    /// # }
+    /// ```
     fn arbitrary_matching() -> Self::Strategy;
 }
 

@@ -240,6 +240,26 @@ pub trait ArbitraryDateTime: Rule<DateTime<Utc>> {
     type Strategy: proptest::strategy::Strategy<Value = DateTime<Utc>>;
 
     /// Build the rule's `DateTime<Utc>` strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "chrono", feature = "proptest"))] {
+    /// use chrono::{DateTime, Utc};
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::Rule;
+    /// use whittle_core::primitive::{ArbitraryDateTime, DateTimeAtLeast};
+    ///
+    /// type SinceEpoch = DateTimeAtLeast<0>;
+    ///
+    /// let strategy = SinceEpoch::arbitrary_datetime();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(<SinceEpoch as Rule<DateTime<Utc>>>::refine(value).is_ok());
+    /// # }
+    /// ```
     fn arbitrary_datetime() -> Self::Strategy;
 }
 

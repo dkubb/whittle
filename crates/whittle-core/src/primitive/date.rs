@@ -232,6 +232,26 @@ pub trait ArbitraryDate: Rule<NaiveDate> {
     type Strategy: proptest::strategy::Strategy<Value = NaiveDate>;
 
     /// Build the rule's `NaiveDate` strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "chrono", feature = "proptest"))] {
+    /// use chrono::NaiveDate;
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::Rule;
+    /// use whittle_core::primitive::{ArbitraryDate, DateAtLeast};
+    ///
+    /// type SinceCe = DateAtLeast<1>;
+    ///
+    /// let strategy = SinceCe::arbitrary_date();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(<SinceCe as Rule<NaiveDate>>::refine(value).is_ok());
+    /// # }
+    /// ```
     fn arbitrary_date() -> Self::Strategy;
 }
 

@@ -625,6 +625,23 @@ where
     /// `R::refine`. The `Arbitrary` blanket impl `expect`s on the
     /// `try_new` step; a violation surfaces as a panic at test
     /// time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "proptest")] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::{ArbitraryRule, Rule};
+    /// use whittle_core::primitive::Within;
+    ///
+    /// let strategy = <Within<0, 10> as ArbitraryRule<i32>>::arbitrary_strategy();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(<Within<0, 10> as Rule<i32>>::refine(value).is_ok());
+    /// # }
+    /// ```
     fn arbitrary_strategy() -> Self::Strategy;
 }
 

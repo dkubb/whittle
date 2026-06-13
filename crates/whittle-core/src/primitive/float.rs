@@ -186,11 +186,59 @@ pub trait ArbitraryFloat: Float {
     type ClosedRangeStrategy: proptest::strategy::Strategy<Value = Self>;
 
     /// Strategy that emits any value of this float type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "proptest")] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::primitive::ArbitraryFloat;
+    ///
+    /// let strategy = f32::arbitrary_any();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(value.is_finite() || value.is_infinite() || value.is_nan());
+    /// # }
+    /// ```
     fn arbitrary_any() -> Self::AnyStrategy;
     /// Strategy that emits only finite values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "proptest")] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::primitive::ArbitraryFloat;
+    ///
+    /// let strategy = f32::arbitrary_finite();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(value.is_finite());
+    /// # }
+    /// ```
     fn arbitrary_finite() -> Self::FiniteStrategy;
     /// Strategy that emits values within an inclusive `[lo, hi]`
     /// closed range (no NaN; both endpoints inclusive).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "proptest")] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::primitive::ArbitraryFloat;
+    ///
+    /// let strategy = f32::arbitrary_in_closed_range(-1.0, 1.0);
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!((-1.0..=1.0).contains(&value));
+    /// # }
+    /// ```
     fn arbitrary_in_closed_range(lo: Self, hi: Self) -> Self::ClosedRangeStrategy;
 }
 

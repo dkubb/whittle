@@ -273,6 +273,22 @@ pub trait ArbitraryChar: CharPredicate {
     type Strategy: proptest::strategy::Strategy<Value = char>;
 
     /// Construct the predicate's `char`-emitting strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "proptest")] {
+    /// use proptest::strategy::{Strategy as _, ValueTree as _};
+    /// use proptest::test_runner::TestRunner;
+    /// use whittle_core::primitive::{ArbitraryChar, AsciiDigit, CharPredicate};
+    ///
+    /// let strategy = AsciiDigit::arbitrary_char();
+    /// let mut runner = TestRunner::deterministic();
+    /// let value = strategy.new_tree(&mut runner).unwrap().current();
+    ///
+    /// assert!(AsciiDigit::test(value));
+    /// # }
+    /// ```
     fn arbitrary_char() -> Self::Strategy;
 }
 
@@ -319,6 +335,17 @@ pub trait SchemaChar: CharPredicate {
     ///
     /// See the trait docs for the soundness obligation relating the
     /// returned set to [`CharPredicate::test`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::{AsciiDigit, SchemaChar};
+    ///
+    /// let value = AsciiDigit::char_set();
+    ///
+    /// assert!(value.contains('7'));
+    /// assert!(!value.contains('a'));
+    /// ```
     fn char_set() -> CharSet;
 }
 
