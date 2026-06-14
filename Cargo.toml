@@ -172,6 +172,11 @@ path             = "tests/closed_set_serde.rs"
 required-features = ["serde"]
 
 [[test]]
+name             = "serialize_flat"
+path             = "tests/serialize_flat.rs"
+required-features = ["serde"]
+
+[[test]]
 name             = "pattern_macro"
 path             = "tests/pattern_macro.rs"
 required-features = ["regex"]

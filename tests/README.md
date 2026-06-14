@@ -105,6 +105,10 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
   on the outer struct as the recommended pattern.
 - **`closed_set_serde.rs`** — `closed_set!` serde glue using the plain
   wire string shape.
+- **`serialize_flat.rs`** — `serialize_flat!` egress-only serde glue
+  for a domain type backed by a refined tuple carrier, preserving exact
+  flat JSON field order while ingress stays hand-routed through
+  `try_new`.
 
 ### Property-based testing
 

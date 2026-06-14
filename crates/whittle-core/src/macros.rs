@@ -745,6 +745,127 @@ macro_rules! __refinement_serde {
     ($name:ident, $inner:ty, $rule:ty, $error:ident) => {};
 }
 
+/// Implement `serde::Serialize` by projecting a domain value into an
+/// explicit flat field list.
+///
+/// This macro is **egress-only**: it emits no `Deserialize` impl and
+/// does not change the type's construction path. Use it when a domain
+/// wrapper stores refined tuple or struct carriers internally but the
+/// wire shape must stay a flat object with a known field order.
+///
+/// The `as |value|` receiver is required because a declarative item
+/// macro cannot capture method `self` hygienically from the call site.
+/// Each projection expression is serialized directly, so normal serde
+/// semantics apply (`Option::None` becomes `null`, borrowed strings are
+/// not cloned, and no fields are skipped unless the projection itself
+/// encodes that behaviour).
+///
+/// # Syntax
+///
+/// ```text
+/// serialize_flat! {
+///     impl Serialize for Type as |value| {
+///         "field_name" => value.projected_field(),
+///     }
+/// }
+/// ```
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// use whittle_core::{Refined, Rule, serialize_flat};
+///
+/// /// Accepts a non-zero token lifetime.
+/// enum ValidToken {}
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// struct TokenError;
+///
+/// impl Rule<(u64, u64, Option<String>)> for ValidToken {
+///     type Error = TokenError;
+///
+///     fn refine(
+///         raw: (u64, u64, Option<String>),
+///     ) -> Result<(u64, u64, Option<String>), Self::Error> {
+///         if raw.1 > 0 { Ok(raw) } else { Err(TokenError) }
+///     }
+/// }
+///
+/// struct Token {
+///     fields: Refined<(u64, u64, Option<String>), ValidToken>,
+/// }
+///
+/// impl Token {
+///     fn try_new(
+///         created_at: u64,
+///         expires_in: u64,
+///         refresh_token: Option<String>,
+///     ) -> Result<Self, TokenError> {
+///         Refined::try_new((created_at, expires_in, refresh_token))
+///             .map(|fields| Self { fields })
+///     }
+/// }
+///
+/// serialize_flat! {
+///     impl Serialize for Token as |token| {
+///         "created_at" => token.fields.as_inner().0,
+///         "expires_in" => token.fields.as_inner().1,
+///         "refresh_token" => token.fields.as_inner().2.as_ref(),
+///     }
+/// }
+///
+/// let token = Token::try_new(1_700_000_000, 3_600, None).unwrap();
+/// let json = serde_json::to_string(&token).unwrap();
+///
+/// assert_eq!(
+///     json,
+///     r#"{"created_at":1700000000,"expires_in":3600,"refresh_token":null}"#,
+/// );
+/// # }
+/// ```
+#[cfg(feature = "serde")]
+#[macro_export]
+macro_rules! serialize_flat {
+    (
+        impl Serialize for $ty:ty as |$receiver:ident| {
+            $($field:literal => $value:expr),* $(,)?
+        }
+    ) => {
+        impl $crate::serde::Serialize for $ty {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error>
+            where
+                S: $crate::serde::Serializer,
+            {
+                let $receiver = self;
+                let field_count = $crate::__serialize_flat_field_count!($($field),*);
+                let mut state = serializer.serialize_struct(stringify!($ty), field_count)?;
+
+                $(
+                    $crate::serde::ser::SerializeStruct::serialize_field(&mut state, $field, &$value)?;
+                )*
+
+                $crate::serde::ser::SerializeStruct::end(state)
+            }
+        }
+    };
+}
+
+/// Internal `serialize_flat!` helper: count field literals without
+/// evaluating projection expressions.
+#[cfg(feature = "serde")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __serialize_flat_field_count {
+    ($($field:literal),* $(,)?) => {
+        <[()]>::len(&[$($crate::__serialize_flat_field_count!(@unit $field)),*])
+    };
+    (@unit $field:literal) => {
+        ()
+    };
+}
+
 /// Internal `refinement!` helper: emits an `Arbitrary` impl for a
 /// generated newtype by forwarding to its inner `Refined` carrier.
 ///
@@ -1391,6 +1512,98 @@ mod tests {
         let _: &dyn core::error::Error = &TestCodeError::Length { actual: 2 };
         let _: &dyn core::error::Error = &TestScoreError::OutOfRange { value: 101 };
         let _: &dyn core::error::Error = &TestRosterError::BadLength;
+    }
+
+    #[cfg(feature = "serde")]
+    struct TestFlatToken {
+        fields: (u64, Option<&'static str>),
+    }
+
+    #[cfg(feature = "serde")]
+    serialize_flat! {
+        impl Serialize for TestFlatToken as |token| {
+            "created_at" => token.fields.0,
+            "refresh_token" => token.fields.1,
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serialize_flat_macro_writes_flat_fields_in_order() {
+        let token = TestFlatToken {
+            fields: (1_700_000_000, None),
+        };
+
+        serde_test::assert_ser_tokens(
+            &token,
+            &[
+                serde_test::Token::Struct {
+                    name: "TestFlatToken",
+                    len: 2,
+                },
+                serde_test::Token::Str("created_at"),
+                serde_test::Token::U64(1_700_000_000),
+                serde_test::Token::Str("refresh_token"),
+                serde_test::Token::None,
+                serde_test::Token::StructEnd,
+            ],
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serialize_flat_macro_propagates_serialize_struct_error() {
+        let token = TestFlatToken {
+            fields: (1_700_000_000, None),
+        };
+
+        serde_test::assert_ser_tokens_error(
+            &token,
+            &[serde_test::Token::Bool(true)],
+            r#"expected Token::Bool(true) but serialized as Struct { name: "TestFlatToken", len: 2, }"#,
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serialize_flat_macro_propagates_serialize_field_error() {
+        let token = TestFlatToken {
+            fields: (1_700_000_000, None),
+        };
+
+        serde_test::assert_ser_tokens_error(
+            &token,
+            &[
+                serde_test::Token::Struct {
+                    name: "TestFlatToken",
+                    len: 2,
+                },
+                serde_test::Token::Str("wrong"),
+            ],
+            r#"expected Token::Str("wrong") but serialized as Str("created_at")"#,
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serialize_flat_macro_propagates_later_serialize_field_error() {
+        let token = TestFlatToken {
+            fields: (1_700_000_000, None),
+        };
+
+        serde_test::assert_ser_tokens_error(
+            &token,
+            &[
+                serde_test::Token::Struct {
+                    name: "TestFlatToken",
+                    len: 2,
+                },
+                serde_test::Token::Str("created_at"),
+                serde_test::Token::U64(1_700_000_000),
+                serde_test::Token::Str("wrong"),
+            ],
+            r#"expected Token::Str("wrong") but serialized as Str("refresh_token")"#,
+        );
     }
 
     #[test]
