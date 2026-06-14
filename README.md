@@ -187,10 +187,11 @@ Behind Cargo features:
 - `serde` — `Serialize` / `Deserialize` for `Refined<T, R>`.
   Deserialisation routes through `try_new`, so bad payloads are
   rejected with the rule's own error.
-- `proptest` — `Arbitrary` for `Refined<T, R>`. Every generated
-  value satisfies the rule by construction; no `prop_assume!`
-  filtering needed downstream. The `whittle::testing` helpers add
-  property harnesses and schema-derived boundary matrices.
+- `proptest` — `Arbitrary` for `Refined<T, R>` and `refinement!`
+  newtypes. Every generated value satisfies the rule by construction;
+  no `prop_assume!` filtering needed downstream. The
+  `whittle::testing` helpers add property harnesses and schema-derived
+  boundary matrices.
 
 [`SKILL.md`](SKILL.md) has the full primitive catalogue, predicate
 list, and the process for adding a new domain type.

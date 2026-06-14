@@ -382,10 +382,13 @@ Each rule supplies a strategy that emits admissible-by-construction
 values. The blanket `Arbitrary` impl for `Refined<T, R>` maps the
 rule's strategy through `try_new` and, on contract violation, panics
 with the violating rule's `type_name` — a strategy bug surfaces as a
-localized test-time panic, never as silently dropped samples. The
-blanket impl performs no rejection sampling; composition rules MAY
-filter their operands' strategies, primitive rules MUST be
-constructive. This is the per-rule mechanism sanctioned by
+localized test-time panic, never as silently dropped samples.
+`refinement!`-generated newtypes forward their `Arbitrary` impl to
+that inner `Refined` carrier when the domain type implements `Debug`,
+so `proptest::any::<DomainType>()` stays rule-derived. The blanket
+impl performs no rejection sampling; composition rules MAY filter
+their operands' strategies, primitive rules MUST be constructive. This
+is the per-rule mechanism sanctioned by
 [IDEA.md](IDEA.md) §5.11 as amended; derivation from the shipped
 reflected schema remains the destination, with the schema-derived
 cross-check oracles in `whittle_core::testing` as the consistency
@@ -976,9 +979,9 @@ serde deserialisation, and `ArbitraryRule` all inherit it through
 `MapErr` (Section 8.2's default path runs the mapping at deserialize
 time, so ingress rejections carry the domain `Display` text). The
 error-block form also emits `impl AsRef<Inner>`, an opt-in carrier
-`Display` behind the `impl Display;` token, and — behind whittle's
-`serde` feature, like `closed_set!`'s glue — transparent
-`Serialize` / `Deserialize` impls forwarding to the inner `Refined`.
+`Display` behind the `impl Display;` token, and feature-gated glue
+that forwards to the inner `Refined`: transparent `Serialize` /
+`Deserialize` behind `serde`, and `Arbitrary` behind `proptest`.
 
 The `unreachable` arm takes the explicit residual variant list, never
 a `_` catch-all (rejected at expansion time): whittle's error enums
@@ -1168,12 +1171,12 @@ adoption lands rather than speculatively.
 
 [IDEA.md](IDEA.md) §5.10. The error-block form (Section 13.1)
 generates the newtype, the named typed-error enum with mapped
-variants, the `Deserialize` impl, and the read-only delegating
-surface from one declaration. Schema reflection has shipped outside
-the macro (composed rule types carry `SchemaRule` impls directly,
-Section 15.1); the remaining §5.10 artifact — declared implication
-edges — is queued, generated from the same single declaration when
-it lands.
+variants, the `Deserialize` and `Arbitrary` impls, and the read-only
+delegating surface from one declaration. Schema reflection has shipped
+outside the macro (composed rule types carry `SchemaRule` impls
+directly, Section 15.1); the remaining §5.10 artifact — declared
+implication edges — is queued, generated from the same single
+declaration when it lands.
 
 ### 15.4. Enum-Subset Markers
 

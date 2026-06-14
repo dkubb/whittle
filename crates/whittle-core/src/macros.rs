@@ -19,6 +19,13 @@
 /// - `as_inner(&self) -> &Inner`
 /// - `into_inner(self) -> Inner`
 ///
+/// With the `proptest` feature enabled, both forms also implement
+/// `proptest::arbitrary::Arbitrary` by forwarding to the inner
+/// `Refined` carrier's `Arbitrary` impl when the generated newtype
+/// implements `Debug` (a `proptest::Arbitrary` requirement). Generated
+/// samples still go through the rule's `ArbitraryRule` strategy and
+/// `try_new` path.
+///
 /// Standard trait impls — `Debug`, `Clone`, `Hash`, `PartialEq`,
 /// `Eq`, `PartialOrd`, `Ord`, and `Copy` — are forwarded from
 /// `Refined` and selected by the user-supplied `#[derive(...)]`
@@ -55,6 +62,32 @@
 /// `AsRef`, `From`, Serde, and so on stay hand-written in this form:
 /// it covers the construction surface without dictating what the
 /// carrier looks like beyond it.
+///
+/// With the `proptest` feature enabled, the generated newtype can be
+/// used directly with `proptest::arbitrary::any` whenever its rule has
+/// an [`ArbitraryRule`](crate::ArbitraryRule) impl:
+///
+/// ```
+/// # #[cfg(feature = "proptest")] {
+/// use proptest::arbitrary::any;
+/// use proptest::strategy::{Strategy as _, ValueTree as _};
+/// use proptest::test_runner::TestRunner;
+/// use whittle_core::primitive::Within;
+/// use whittle_core::refinement;
+///
+/// refinement! {
+///     /// Percentage, 0..=100.
+///     #[derive(Debug)]
+///     pub Percent: i32, Within<0, 100>;
+/// }
+///
+/// let strategy = any::<Percent>();
+/// let mut runner = TestRunner::deterministic();
+/// let value = strategy.new_tree(&mut runner).unwrap().current();
+///
+/// assert!((0..=100).contains(value.as_inner()));
+/// # }
+/// ```
 ///
 /// # Error-block form
 ///
@@ -437,6 +470,7 @@ macro_rules! refinement {
         }
 
         $crate::__refinement_serde!($name, $inner, $rule, $error);
+        $crate::__refinement_arbitrary!($name, $inner, $crate::MapErr<$rule, $error>);
     };
 
     // ─── Internal: error-block muncher. ───────────────────────────
@@ -656,6 +690,8 @@ macro_rules! refinement {
                 self.0.into_inner()
             }
         }
+
+        $crate::__refinement_arbitrary!($name, $inner, $rule);
     };
 }
 
@@ -707,6 +743,47 @@ macro_rules! __refinement_serde {
 #[macro_export]
 macro_rules! __refinement_serde {
     ($name:ident, $inner:ty, $rule:ty, $error:ident) => {};
+}
+
+/// Internal `refinement!` helper: emits an `Arbitrary` impl for a
+/// generated newtype by forwarding to its inner `Refined` carrier.
+///
+/// The generated strategy is still rule-derived: `Refined<Inner,
+/// Rule>`'s blanket `Arbitrary` impl consumes `Rule`'s
+/// [`ArbitraryRule`](crate::ArbitraryRule) strategy, runs `try_new`,
+/// and panics if that strategy violates its contract.
+#[cfg(feature = "proptest")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __refinement_arbitrary {
+    ($name:ident, $inner:ty, $rule:ty) => {
+        impl $crate::proptest::arbitrary::Arbitrary for $name
+        where
+            $name: ::core::fmt::Debug,
+            $inner: ::core::fmt::Debug + 'static,
+            $rule: $crate::ArbitraryRule<$inner> + 'static,
+        {
+            type Parameters = ();
+            type Strategy = $crate::proptest::strategy::BoxedStrategy<Self>;
+
+            #[inline]
+            fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+                use $crate::proptest::strategy::Strategy as _;
+                <$crate::Refined<$inner, $rule> as $crate::proptest::arbitrary::Arbitrary>::arbitrary_with(())
+                    .prop_map(Self)
+                    .boxed()
+            }
+        }
+    };
+}
+
+/// Internal `refinement!` helper: no-op arm used when whittle's
+/// `proptest` feature is disabled.
+#[cfg(not(feature = "proptest"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __refinement_arbitrary {
+    ($name:ident, $inner:ty, $rule:ty) => {};
 }
 
 /// Implement [`crate::DeserializeRule`] for a rule via the default
@@ -1378,6 +1455,23 @@ mod tests {
             // set — only the error codomain.
             let score = TestScore::try_new(x).unwrap();
             proptest::prop_assert!((0..=100).contains(score.as_inner()));
+        }
+    }
+
+    #[cfg(feature = "proptest")]
+    proptest::proptest! {
+        #[test]
+        fn refinement_simple_form_arbitrary_forwards_inner_refined(
+            value in proptest::arbitrary::any::<TestBounded>()
+        ) {
+            proptest::prop_assert!((0..=100).contains(value.as_inner()));
+        }
+
+        #[test]
+        fn refinement_error_block_arbitrary_forwards_mapped_rule(
+            value in proptest::arbitrary::any::<TestScore>()
+        ) {
+            proptest::prop_assert!((0..=100).contains(value.as_inner()));
         }
     }
 

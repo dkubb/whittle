@@ -108,9 +108,10 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
 
 ### Property-based testing
 
-- **`proptest_arbitrary.rs`** — `Refined<T, R>: Arbitrary`; routing a
-  narrower strategy through `try_new` when the admissible region is
-  sparse under the default sampler.
+- **`proptest_arbitrary.rs`** — `Refined<T, R>: Arbitrary` and
+  `refinement!` newtype forwarding; routing a narrower strategy through
+  `try_new` when the admissible region is sparse under the default
+  sampler.
 - **`property_harness.rs`** — `whittle::testing::prop_total` /
   `whittle::testing::prop_image_refines` plus a schema-derived
   boundary matrix.

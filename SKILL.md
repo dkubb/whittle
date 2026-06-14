@@ -665,12 +665,14 @@ tractable to read.
 
 For a custom rule that wraps the library primitives:
 
-- Delegate to the inner rule's strategy.
-  `refinement! { pub Foo: Inner, Rule; }` does not implement
-  `ArbitraryRule` for the newtype; if you
-  want `proptest::any::<Foo>()` to work, hand-write `ArbitraryRule<...>`
-  on the rule type and call `proptest::strategy::Strategy::prop_map` to
-  wrap the inner value in your newtype.
+- Delegate to the inner rule's strategy. `refinement!`-generated
+  newtypes implement `proptest::arbitrary::Arbitrary` directly when
+  `proptest` is enabled, the newtype implements `Debug`, and the rule
+  implements `ArbitraryRule<Inner>`, so downstream tests can use
+  `proptest::any::<Foo>()` with no wrapper strategy. For hand-written
+  newtypes around `Refined`, call
+  `proptest::strategy::Strategy::prop_map` on the inner
+  `Refined<Inner, Rule>` strategy to wrap the value in your newtype.
 - For composed rules, `And<A, B>` and `Or<A, B>` derive `ArbitraryRule`
   automatically when their components do. `And` uses `A`'s strategy
   filtered through `B::refine`; pick `A` to be the

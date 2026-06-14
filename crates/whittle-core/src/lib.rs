@@ -36,6 +36,12 @@ pub use closed_set::{ClosedSet, ClosedSetError};
 pub use composition::{All, And, Any, ErrorMapper, MapErr, Not, Or, Xor};
 pub use implies::Implies;
 pub use primitive::StableUnderElementMap;
+/// Re-export of `proptest` so [`refinement!`] expansions resolve the
+/// generated `Arbitrary` impl through `$crate` without requiring
+/// downstream crates to depend on `proptest` directly.
+#[cfg(feature = "proptest")]
+#[doc(hidden)]
+pub use proptest;
 #[cfg(feature = "proptest")]
 pub use rule::ArbitraryRule;
 #[cfg(feature = "serde")]

@@ -16,9 +16,15 @@
 //! and trust that every generated value satisfies the rule.
 
 use proptest::proptest;
-use whittle::Refined;
 use whittle::primitive::{HexFixedAny, NonZero, NotNan, Within};
 use whittle::transform::AsciiLowercase;
+use whittle::{Refined, refinement};
+
+refinement! {
+    /// Percentage used by the integration test below.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    Percent: i32, Within<0, 100>;
+}
 
 #[test]
 fn dense_rule_non_zero_arbitrary_admits_every_non_zero_value() {
@@ -57,6 +63,17 @@ fn sparse_rule_within_arbitrary_stays_in_admissible_range() {
 
     proptest!(|(r in proptest::arbitrary::any::<Refined<i32, Within<0, 100>>>())| {
         assert!((0..=100).contains(r.as_inner()));
+    });
+}
+
+#[test]
+fn refinement_newtype_arbitrary_forwards_rule_strategy() {
+    // Generated domain newtypes inherit the same rule-derived
+    // strategy as their inner `Refined` carrier, so downstream tests
+    // can ask proptest for the domain type directly.
+
+    proptest!(|(percent in proptest::arbitrary::any::<Percent>())| {
+        assert!((0..=100).contains(percent.as_inner()));
     });
 }
 
