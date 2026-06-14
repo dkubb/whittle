@@ -813,6 +813,79 @@ impl<T, const MIN: usize, const MAX: usize> Refined<Vec<T>, LenItems<MIN, MAX>> 
     }
 }
 
+impl<T, R> Refined<Vec<T>, R> {
+    /// Return the number of items in the refined vector.
+    ///
+    /// This is the same observation as `as_inner().len()`, but keeps
+    /// the refined carrier borrowed while reading its length. It adds
+    /// no construction, mutation, or proof-erasing path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<0, 3>> =
+    ///     Refined::try_new(vec![10, 20]).unwrap();
+    ///
+    /// assert_eq!(items.len(), 2);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.as_inner().len()
+    }
+
+    /// Return `true` when the refined vector has no items.
+    ///
+    /// This is the same observation as `as_inner().is_empty()`, but
+    /// does not weaken or unwrap the refined carrier.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<0, 3>> =
+    ///     Refined::try_new(Vec::new()).unwrap();
+    ///
+    /// assert!(items.is_empty());
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.as_inner().is_empty()
+    }
+
+    /// Iterate over shared references to the refined vector's items.
+    ///
+    /// The iterator yields `&T` only, never `&mut T`, so it cannot
+    /// invalidate a proof carried by the vector rule.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Refined;
+    /// use whittle_core::primitive::LenItems;
+    ///
+    /// let items: Refined<Vec<i32>, LenItems<0, 3>> =
+    ///     Refined::try_new(vec![10, 20]).unwrap();
+    /// let collected: Vec<_> = items.iter().copied().collect();
+    ///
+    /// assert_eq!(collected, vec![10, 20]);
+    /// ```
+    #[inline]
+    #[expect(
+        clippy::iter_without_into_iter,
+        reason = "R-D7 intentionally exposes read-only iteration without adding IntoIterator"
+    )]
+    pub fn iter(&self) -> core::slice::Iter<'_, T> {
+        self.as_inner().iter()
+    }
+}
+
 impl<T, R> Refined<Vec<T>, R>
 where
     T: 'static,
@@ -1454,6 +1527,30 @@ mod tests {
         let five: Refined<Vec<i32>, LenItems<1, 5>> =
             Refined::try_new(vec![1, 2, 3, 4, 5]).unwrap();
         assert_eq!(five.as_inner(), &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn refined_vec_observers_match_inner_empty_vector() {
+        let items: Refined<Vec<i32>, LenItems<0, 5>> = Refined::try_new(Vec::new()).unwrap();
+
+        assert_eq!(items.len(), items.as_inner().len());
+        assert_eq!(items.is_empty(), items.as_inner().is_empty());
+        assert_eq!(
+            items.iter().copied().collect::<Vec<_>>(),
+            items.as_inner().clone()
+        );
+    }
+
+    #[test]
+    fn refined_vec_observers_match_inner_non_empty_vector() {
+        let items: Refined<Vec<i32>, LenItems<0, 5>> = Refined::try_new(vec![10, 20, 30]).unwrap();
+
+        assert_eq!(items.len(), items.as_inner().len());
+        assert_eq!(items.is_empty(), items.as_inner().is_empty());
+        assert_eq!(
+            items.iter().copied().collect::<Vec<_>>(),
+            items.as_inner().clone()
+        );
     }
 
     #[test]
