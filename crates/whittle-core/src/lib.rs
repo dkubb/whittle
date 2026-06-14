@@ -43,7 +43,7 @@ pub use primitive::StableUnderElementMap;
 #[doc(hidden)]
 pub use proptest;
 #[cfg(feature = "proptest")]
-pub use rule::ArbitraryRule;
+pub use rule::{ArbitraryRule, SizeProfile, profiled_refined};
 #[cfg(feature = "serde")]
 pub use rule::{DeserializeRule, parse_then_refine};
 pub use rule::{PureFilter, Refined, Rule};

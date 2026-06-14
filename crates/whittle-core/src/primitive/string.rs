@@ -12,9 +12,9 @@
 use alloc::string::String;
 use core::marker::PhantomData;
 
-#[cfg(feature = "proptest")]
-use crate::rule::ArbitraryRule;
 use crate::rule::Rule;
+#[cfg(feature = "proptest")]
+use crate::rule::{ArbitraryRule, SizeProfile};
 use crate::schema::{CharSet, LenBound, LenUnit, Schema, SchemaRule};
 use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
 
@@ -2099,6 +2099,19 @@ where
 }
 
 #[cfg(feature = "proptest")]
+fn len_edge_biased_string_profiled<S>(
+    element: S,
+    min: usize,
+    max: usize,
+    profile: SizeProfile,
+) -> proptest::strategy::BoxedStrategy<String>
+where
+    S: proptest::strategy::Strategy<Value = char> + Clone + 'static,
+{
+    len_edge_biased_string(element, min, profile.clamp_inclusive_max(min, max))
+}
+
+#[cfg(feature = "proptest")]
 impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenChars<MIN, MAX> {
     type Strategy = proptest::strategy::BoxedStrategy<String>;
 
@@ -2111,6 +2124,14 @@ impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenChars<MIN,
         // has exactly the requested scalar count. Lengths are
         // edge-biased toward MIN and MAX.
         len_edge_biased_string(proptest::char::any(), MIN, MAX)
+    }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(
+        profile: SizeProfile,
+    ) -> proptest::strategy::BoxedStrategy<String> {
+        const { Self::VALID };
+        len_edge_biased_string_profiled(proptest::char::any(), MIN, MAX, profile)
     }
 }
 
@@ -2127,6 +2148,19 @@ impl<const MIN: usize, const MAX: usize> ArbitraryRule<String> for LenBytes<MIN,
         // and MAX.
         len_edge_biased_string(proptest::char::range('\u{20}', '\u{7E}'), MIN, MAX)
     }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(
+        profile: SizeProfile,
+    ) -> proptest::strategy::BoxedStrategy<String> {
+        const { Self::VALID };
+        len_edge_biased_string_profiled(
+            proptest::char::range('\u{20}', '\u{7E}'),
+            MIN,
+            MAX,
+            profile,
+        )
+    }
 }
 
 #[cfg(feature = "proptest")]
@@ -2139,6 +2173,13 @@ impl ArbitraryRule<String> for NonEmpty {
         proptest::collection::vec(proptest::char::any(), 1_usize..=STRING_ARBITRARY_MAX_LEN)
             .prop_map(collect_chars)
             .boxed()
+    }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(
+        profile: SizeProfile,
+    ) -> proptest::strategy::BoxedStrategy<String> {
+        len_edge_biased_string_profiled(proptest::char::any(), 1, STRING_ARBITRARY_MAX_LEN, profile)
     }
 }
 
@@ -2156,6 +2197,42 @@ where
             .prop_map(collect_chars)
             .boxed()
     }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(
+        profile: SizeProfile,
+    ) -> proptest::strategy::BoxedStrategy<String> {
+        use proptest::strategy::Strategy as _;
+        let max = profile.clamp_inclusive_max(0, STRING_ARBITRARY_MAX_LEN);
+        proptest::collection::vec(P::arbitrary_char(), 0_usize..=max)
+            .prop_map(collect_chars)
+            .boxed()
+    }
+}
+
+#[cfg(feature = "proptest")]
+fn first_char_strategy<P>(max_len: usize) -> proptest::strategy::BoxedStrategy<String>
+where
+    P: ArbitraryChar,
+{
+    use proptest::strategy::Strategy as _;
+    if max_len == 0 {
+        return proptest::strategy::Just(String::new()).boxed();
+    }
+
+    let tail = proptest::collection::vec(proptest::char::any(), 0_usize..max_len);
+    proptest::prop_oneof![
+        proptest::strategy::Just(String::new()),
+        (P::arbitrary_char(), tail).prop_map(|(head, tail)| {
+            let mut out = String::with_capacity(tail.len() + 1);
+            out.push(head);
+            for ch in tail {
+                out.push(ch);
+            }
+            out
+        }),
+    ]
+    .boxed()
 }
 
 #[cfg(feature = "proptest")]
@@ -2167,26 +2244,19 @@ where
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
-        use proptest::strategy::Strategy as _;
         // `FirstChar<P>` admits the empty string. Generate either
         // an empty string or a `P`-admissible head followed by an
         // arbitrary-char tail. `BoxedStrategy` hides the strategy
         // tree from the public type to keep the API surface
         // tractable.
-        let tail =
-            proptest::collection::vec(proptest::char::any(), 0_usize..STRING_ARBITRARY_MAX_LEN);
-        proptest::prop_oneof![
-            proptest::strategy::Just(String::new()),
-            (P::arbitrary_char(), tail).prop_map(|(head, tail)| {
-                let mut out = String::with_capacity(tail.len() + 1);
-                out.push(head);
-                for ch in tail {
-                    out.push(ch);
-                }
-                out
-            }),
-        ]
-        .boxed()
+        first_char_strategy::<P>(STRING_ARBITRARY_MAX_LEN)
+    }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(
+        profile: SizeProfile,
+    ) -> proptest::strategy::BoxedStrategy<String> {
+        first_char_strategy::<P>(profile.clamp_inclusive_max(0, STRING_ARBITRARY_MAX_LEN))
     }
 }
 

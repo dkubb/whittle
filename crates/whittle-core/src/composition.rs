@@ -27,7 +27,7 @@ use core::marker::PhantomData;
 
 use crate::primitive::collection::StableUnderElementMap;
 #[cfg(feature = "proptest")]
-use crate::rule::ArbitraryRule;
+use crate::rule::{ArbitraryRule, SizeProfile};
 use crate::rule::{PureFilter, Rule};
 use crate::schema::{Schema, SchemaInterval, SchemaRule, integer_interval_from_bounds};
 use crate::transform::{StableUnderAsciiLowercase, StableUnderAsciiUppercase, StableUnderTrim};
@@ -1197,6 +1197,8 @@ where
     E: 'static,
     A: ArbitraryRule<T> + Rule<T, Error = E>,
     B: ArbitraryRule<T> + Rule<T, Error = E>,
+    A::Strategy: 'static,
+    B::Strategy: 'static,
 {
     type Strategy = proptest::strategy::BoxedStrategy<T>;
 
@@ -1204,6 +1206,20 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         (A::arbitrary_strategy(), B::arbitrary_strategy())
+            .prop_filter_map(
+                "And: no sampled operand satisfied both rules",
+                |(left, right)| A::refine(right).or_else(|_| B::refine(left)).ok(),
+            )
+            .boxed()
+    }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(profile: SizeProfile) -> proptest::strategy::BoxedStrategy<T> {
+        use proptest::strategy::Strategy as _;
+        (
+            A::arbitrary_strategy_profiled(profile),
+            B::arbitrary_strategy_profiled(profile),
+        )
             .prop_filter_map(
                 "And: no sampled operand satisfied both rules",
                 |(left, right)| A::refine(right).or_else(|_| B::refine(left)).ok(),
@@ -1219,6 +1235,8 @@ where
     E: 'static,
     A: ArbitraryRule<T> + Rule<T, Error = E>,
     B: ArbitraryRule<T> + Rule<T, Error = E>,
+    A::Strategy: 'static,
+    B::Strategy: 'static,
 {
     type Strategy = proptest::strategy::BoxedStrategy<T>;
 
@@ -1226,6 +1244,16 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         proptest::prop_oneof![A::arbitrary_strategy(), B::arbitrary_strategy()].boxed()
+    }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(profile: SizeProfile) -> proptest::strategy::BoxedStrategy<T> {
+        use proptest::strategy::Strategy as _;
+        proptest::prop_oneof![
+            A::arbitrary_strategy_profiled(profile),
+            B::arbitrary_strategy_profiled(profile),
+        ]
+        .boxed()
     }
 }
 
@@ -1258,6 +1286,8 @@ where
     T: crate::primitive::ArbitraryNumeric + core::fmt::Debug,
     A: ArbitraryRule<T> + Rule<T, Error = crate::primitive::NumericError>,
     B: ArbitraryRule<T> + Rule<T, Error = crate::primitive::NumericError>,
+    A::Strategy: 'static,
+    B::Strategy: 'static,
 {
     // Strategy: union of `A` and `B`'s strategies, filtered to the
     // symmetric difference. When `A` and `B`'s admissible regions
@@ -1274,6 +1304,19 @@ where
             })
             .boxed()
     }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(profile: SizeProfile) -> proptest::strategy::BoxedStrategy<T> {
+        use proptest::strategy::Strategy as _;
+        proptest::prop_oneof![
+            A::arbitrary_strategy_profiled(profile),
+            B::arbitrary_strategy_profiled(profile),
+        ]
+        .prop_filter("Xor: exactly one operand must accept", |v| {
+            A::accepts(*v) ^ B::accepts(*v)
+        })
+        .boxed()
+    }
 }
 
 #[cfg(feature = "proptest")]
@@ -1282,12 +1325,18 @@ where
     T: core::fmt::Debug + 'static,
     R: ArbitraryRule<T>,
     M: ErrorMapper<R::Error>,
+    R::Strategy: 'static,
 {
     type Strategy = R::Strategy;
 
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         R::arbitrary_strategy()
+    }
+
+    #[inline]
+    fn arbitrary_strategy_profiled(profile: SizeProfile) -> proptest::strategy::BoxedStrategy<T> {
+        R::arbitrary_strategy_profiled(profile)
     }
 }
 
@@ -1308,6 +1357,7 @@ macro_rules! impl_all_arbitrary_for_arity {
             T: core::fmt::Debug + 'static,
             E: 'static,
             $First: ArbitraryRule<T> + Rule<T, Error = E>,
+            $First::Strategy: 'static,
             $($Rest: Rule<T, Error = E>,)+
         {
             type Strategy = proptest::strategy::BoxedStrategy<T>;
@@ -1316,6 +1366,23 @@ macro_rules! impl_all_arbitrary_for_arity {
             fn arbitrary_strategy() -> Self::Strategy {
                 use proptest::strategy::Strategy as _;
                 $First::arbitrary_strategy()
+                    $(.prop_filter_map(
+                        concat!(
+                            "All: operand ",
+                            stringify!($Rest),
+                            " rejected",
+                        ),
+                        |raw| $Rest::refine(raw).ok(),
+                    ))+
+                    .boxed()
+            }
+
+            #[inline]
+            fn arbitrary_strategy_profiled(
+                profile: SizeProfile,
+            ) -> proptest::strategy::BoxedStrategy<T> {
+                use proptest::strategy::Strategy as _;
+                $First::arbitrary_strategy_profiled(profile)
                     $(.prop_filter_map(
                         concat!(
                             "All: operand ",
@@ -1353,6 +1420,7 @@ macro_rules! impl_any_arbitrary_for_arity {
             T: core::fmt::Debug + Clone + 'static,
             E: 'static,
             $($Ri: ArbitraryRule<T> + Rule<T, Error = E>,)+
+            $($Ri::Strategy: 'static,)+
         {
             type Strategy = proptest::strategy::BoxedStrategy<T>;
 
@@ -1361,6 +1429,16 @@ macro_rules! impl_any_arbitrary_for_arity {
                 use proptest::strategy::Strategy as _;
                 proptest::prop_oneof![
                     $($Ri::arbitrary_strategy()),+
+                ].boxed()
+            }
+
+            #[inline]
+            fn arbitrary_strategy_profiled(
+                profile: SizeProfile,
+            ) -> proptest::strategy::BoxedStrategy<T> {
+                use proptest::strategy::Strategy as _;
+                proptest::prop_oneof![
+                    $($Ri::arbitrary_strategy_profiled(profile)),+
                 ].boxed()
             }
         }

@@ -683,6 +683,137 @@ where
     /// # }
     /// ```
     fn arbitrary_strategy() -> Self::Strategy;
+
+    /// Construct an admissible strategy with an explicit size
+    /// profile.
+    ///
+    /// The default implementation preserves [`Self::arbitrary_strategy`].
+    /// Rule families that can make size meaningful, such as string
+    /// length rules, may override this to clamp generated sizes
+    /// without changing the blanket [`Arbitrary`](proptest::arbitrary::Arbitrary)
+    /// path for [`Refined<T, R>`].
+    fn arbitrary_strategy_profiled(_profile: SizeProfile) -> proptest::strategy::BoxedStrategy<T>
+    where
+        Self::Strategy: 'static,
+    {
+        use proptest::strategy::Strategy as _;
+        Self::arbitrary_strategy().boxed()
+    }
+}
+
+/// Size profile for opt-in proptest strategies.
+///
+/// The default [`Arbitrary`](proptest::arbitrary::Arbitrary) impl for
+/// [`Refined<T, R>`] always uses the rule's complete strategy. Use
+/// [`profiled_refined`] when a property deliberately wants a smaller
+/// admissible subset, for example to avoid sending multi-megabyte
+/// bounded text through serialization-heavy tests.
+///
+/// Consumer-only generators belong in `#[cfg(test)]` or test-support
+/// modules near the properties that use them. Production
+/// [`ArbitraryRule`] impls are public testing surface and should stay
+/// covered like other public behavior.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "proptest")] {
+/// use proptest::strategy::{Strategy as _, ValueTree as _};
+/// use proptest::test_runner::TestRunner;
+/// use whittle_core::primitive::LenChars;
+/// use whittle_core::{profiled_refined, Refined, SizeProfile};
+///
+/// type Body = Refined<String, LenChars<0, 10_000_000>>;
+///
+/// let strategy = profiled_refined::<String, LenChars<0, 10_000_000>>(
+///     SizeProfile::small_valid(16),
+/// );
+/// let mut runner = TestRunner::deterministic();
+/// let body: Body = strategy.new_tree(&mut runner).unwrap().current();
+///
+/// assert!(body.as_inner().chars().count() <= 16);
+/// # }
+/// ```
+#[cfg(feature = "proptest")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeProfile {
+    max_len: Option<usize>,
+}
+
+#[cfg(feature = "proptest")]
+impl SizeProfile {
+    /// Full rule-derived strategy.
+    ///
+    /// This preserves the default [`ArbitraryRule::arbitrary_strategy`]
+    /// behavior, including the existing boundary-inclusive strategy
+    /// for length-bounded rules.
+    pub const FULL_BOUNDARY: Self = Self { max_len: None };
+
+    /// Clamp generated valid sizes to `max_len` where a rule has a
+    /// size dimension.
+    ///
+    /// The clamp never creates invalid samples. If a rule's minimum
+    /// valid size is greater than `max_len`, the generated subset uses
+    /// that minimum so every sample remains admissible.
+    #[inline]
+    #[must_use]
+    pub const fn small_valid(max_len: usize) -> Self {
+        Self {
+            max_len: Some(max_len),
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn clamp_inclusive_max(self, min: usize, max: usize) -> usize {
+        match self.max_len {
+            Some(limit) => {
+                let limited = if max < limit { max } else { limit };
+                if limited < min { min } else { limited }
+            }
+            None => max,
+        }
+    }
+}
+
+/// Build an opt-in profiled strategy for refined values.
+///
+/// This is separate from the blanket
+/// [`Arbitrary`](proptest::arbitrary::Arbitrary) impl so profiles never
+/// weaken the default complete generator. Every emitted value still
+/// routes through [`Refined::try_new`], so a buggy [`ArbitraryRule`]
+/// implementation fails loudly instead of leaking invalid samples.
+///
+/// # Panics
+///
+/// Panics if `R`'s profiled strategy emits a value rejected by
+/// `R::refine`. That panic is the documented diagnostic surface for a
+/// buggy [`ArbitraryRule`] implementation.
+#[cfg(feature = "proptest")]
+#[expect(
+    clippy::panic,
+    reason = "soundness-contract violation: panicking with the violating type name \
+              is the documented diagnostic surface for a buggy ArbitraryRule strategy"
+)]
+pub fn profiled_refined<T, R>(
+    profile: SizeProfile,
+) -> proptest::strategy::BoxedStrategy<Refined<T, R>>
+where
+    T: core::fmt::Debug + 'static,
+    R: ArbitraryRule<T> + 'static,
+    R::Strategy: 'static,
+{
+    use proptest::strategy::Strategy as _;
+    R::arbitrary_strategy_profiled(profile)
+        .prop_map(|raw| {
+            Refined::try_new(raw).unwrap_or_else(|_| {
+                panic!(
+                    "ArbitraryRule for {} must yield admissible values \
+                     (got a value rejected by `Rule::refine`)",
+                    core::any::type_name::<R>(),
+                )
+            })
+        })
+        .boxed()
 }
 
 #[cfg(feature = "proptest")]
@@ -1032,6 +1163,20 @@ mod tests {
             <Refined<i32, AlwaysRejects> as proptest::arbitrary::Arbitrary>::arbitrary_with(());
         let mut runner = TestRunner::default();
         // The `current()` call runs the `prop_map`, which panics.
+        let _value: Refined<i32, AlwaysRejects> = strategy.new_tree(&mut runner).unwrap().current();
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    #[should_panic(expected = "ArbitraryRule for")]
+    fn profiled_refined_panics_on_strategy_bug() {
+        // The opt-in profiled path has the same soundness boundary
+        // as the blanket `Arbitrary` impl.
+        use proptest::strategy::{Strategy as _, ValueTree as _};
+        use proptest::test_runner::TestRunner;
+        let strategy =
+            super::profiled_refined::<i32, AlwaysRejects>(super::SizeProfile::small_valid(1));
+        let mut runner = TestRunner::default();
         let _value: Refined<i32, AlwaysRejects> = strategy.new_tree(&mut runner).unwrap().current();
     }
 

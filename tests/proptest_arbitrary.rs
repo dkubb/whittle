@@ -20,16 +20,19 @@ use whittle::primitive::collection::ArbitraryPredicate;
 use whittle::primitive::{
     AllItems, AnyOf, ArbitraryChar, AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic,
     AsciiLowercase as AsciiLowercaseChar, AsciiUppercase, AtLeast, AtMost, CharEither, CharExcept,
-    CharLiteral, Distinct, EachChar, EqualTo, Finite, FirstChar, GreaterThan, HexChar, HexFixedAny,
-    HexFixedLower, HexFixedNormalized, IdentChar, IdentDashChar, IdentStart, InClosedRange,
-    LenBytes, LenChars, LenItems, LessThan, Negative, NonControl, NonEmpty, NonZero, NoneOf,
-    NotEqualTo, NotInfinite, NotNan, Positive, Predicate, RelativePath, Sorted, UniqueByKey,
-    Within,
+    CharLiteral, CharPredicate, Distinct, EachChar, EqualTo, Finite, FirstChar, GreaterThan,
+    HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized, IdentChar, IdentDashChar, IdentStart,
+    InClosedRange, LenBytes, LenChars, LenItems, LessThan, Negative, NonControl, NonEmpty, NonZero,
+    NoneOf, NotEqualTo, NotInfinite, NotNan, Positive, Predicate, RelativePath, Sorted,
+    UniqueByKey, Within,
 };
 use whittle::transform::{
     AsciiLowercase as LowercaseTransform, AsciiUppercase as UppercaseTransform, Trim,
 };
-use whittle::{All, And, Any, ArbitraryRule, MapErr, Not, Or, Refined, Xor, refinement};
+use whittle::{
+    All, And, Any, ArbitraryRule, MapErr, Not, Or, Refined, SizeProfile, Xor, profiled_refined,
+    refinement,
+};
 
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, NaiveDate, Utc};
@@ -175,6 +178,213 @@ fn sparse_rule_within_arbitrary_stays_in_admissible_range() {
     proptest!(|(r in proptest::arbitrary::any::<Refined<i32, Within<0, 100>>>())| {
         assert!((0..=100).contains(r.as_inner()));
     });
+}
+
+#[test]
+fn profiled_len_chars_small_valid_never_exceeds_the_clamp() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = profiled_refined::<String, LenChars<0, 10_000_000>>(SizeProfile::small_valid(4));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..64 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled LenChars strategy must produce a value tree")
+            .current();
+        assert!(value.as_inner().chars().count() <= 4);
+    }
+}
+
+#[test]
+fn profiled_len_chars_small_valid_above_rule_max_keeps_rule_max() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = profiled_refined::<String, LenChars<0, 4>>(SizeProfile::small_valid(10));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..64 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled LenChars strategy must produce a value tree")
+            .current();
+        assert!(value.as_inner().chars().count() <= 4);
+    }
+}
+
+#[test]
+fn profiled_len_bytes_small_valid_never_exceeds_the_byte_clamp() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = profiled_refined::<String, LenBytes<0, 1024>>(SizeProfile::small_valid(4));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..64 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled LenBytes strategy must produce a value tree")
+            .current();
+        assert!(value.as_inner().len() <= 4);
+    }
+}
+
+#[test]
+fn profiled_len_chars_full_boundary_still_reaches_original_edges() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = profiled_refined::<String, LenChars<2, 8>>(SizeProfile::FULL_BOUNDARY);
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let mut saw_min = false;
+    let mut saw_max = false;
+
+    for _ in 0_u32..256 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled full LenChars strategy must produce a value tree")
+            .current();
+        let len = value.as_inner().chars().count();
+        saw_min |= len == 2;
+        saw_max |= len == 8;
+    }
+
+    assert!(saw_min, "FULL_BOUNDARY must still reach MIN");
+    assert!(saw_max, "FULL_BOUNDARY must still reach MAX");
+}
+
+#[test]
+fn profiled_non_empty_small_valid_below_min_uses_the_minimum() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = profiled_refined::<String, NonEmpty>(SizeProfile::small_valid(0));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..16 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled NonEmpty strategy must produce a value tree")
+            .current();
+        assert_eq!(value.as_inner().chars().count(), 1);
+    }
+}
+
+#[test]
+fn profiled_each_char_small_valid_clamps_and_preserves_predicate() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy =
+        profiled_refined::<String, EachChar<AsciiAlphanumeric>>(SizeProfile::small_valid(3));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..64 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled EachChar strategy must produce a value tree")
+            .current();
+        assert!(value.as_inner().chars().count() <= 3);
+        assert!(
+            value
+                .as_inner()
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric())
+        );
+    }
+}
+
+#[test]
+fn profiled_first_char_zero_cap_emits_empty_string() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = profiled_refined::<String, FirstChar<IdentStart>>(SizeProfile::small_valid(0));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..16 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled FirstChar strategy must produce a value tree")
+            .current();
+        assert!(value.as_inner().is_empty());
+    }
+}
+
+#[test]
+fn profiled_first_char_one_cap_emits_empty_or_valid_head() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = profiled_refined::<String, FirstChar<IdentStart>>(SizeProfile::small_valid(1));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..64 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("profiled FirstChar strategy must produce a value tree")
+            .current();
+        assert!(value.as_inner().chars().count() <= 1);
+        if let Some(head) = value.as_inner().chars().next() {
+            assert!(IdentStart::test(head));
+        }
+    }
+}
+
+#[test]
+fn profiled_numeric_default_strategy_stays_admissible() {
+    proptest!(|(r in profiled_refined::<i32, Within<0, 100>>(SizeProfile::small_valid(4)))| {
+        assert!((0..=100).contains(r.as_inner()));
+    });
+}
+
+#[test]
+fn profiled_composition_strategies_preserve_admissibility() {
+    proptest!(|(
+        all in profiled_refined::<i32, All<(Within<0, 100>, AtLeast<10>, AtMost<90>)>>(
+            SizeProfile::FULL_BOUNDARY,
+        ),
+        any in profiled_refined::<i32, Any<(LessThan<0>, EqualTo<0>, GreaterThan<100>)>>(
+            SizeProfile::small_valid(4),
+        ),
+        or_value in profiled_refined::<i32, Or<LessThan<0>, GreaterThan<100>>>(
+            SizeProfile::small_valid(4),
+        ),
+        xor_value in profiled_refined::<i32, Xor<Within<0, 10>, Within<5, 15>>>(
+            SizeProfile::small_valid(4),
+        ),
+        mapped in profiled_refined::<i32, MapErr<Within<0, 100>, IdentityMap>>(
+            SizeProfile::small_valid(4),
+        ),
+    )| {
+        assert!((10..=90).contains(all.as_inner()));
+        assert!([*any.as_inner() < 0, *any.as_inner() == 0, *any.as_inner() > 100]
+            .into_iter()
+            .any(core::convert::identity));
+        assert!(*or_value.as_inner() < 0 || *or_value.as_inner() > 100);
+        assert!((0..=10).contains(xor_value.as_inner()) ^ (5..=15).contains(xor_value.as_inner()));
+        assert!((0..=100).contains(mapped.as_inner()));
+    });
+}
+
+#[cfg(feature = "unicode")]
+#[test]
+fn profiled_bounded_printable_aliases_preserve_predicates() {
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let line_strategy = profiled_refined::<String, BoundedLine<32>>(SizeProfile::small_valid(4));
+    let text_strategy = profiled_refined::<String, BoundedText<32>>(SizeProfile::small_valid(4));
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+    for _ in 0_u32..64 {
+        let line = line_strategy
+            .new_tree(&mut runner)
+            .expect("profiled BoundedLine strategy must produce a value tree")
+            .current();
+        let text = text_strategy
+            .new_tree(&mut runner)
+            .expect("profiled BoundedText strategy must produce a value tree")
+            .current();
+
+        assert!((1..=4).contains(&line.as_inner().chars().count()));
+        assert!(line.as_inner().chars().all(PrintableLine::test));
+        assert!((1..=4).contains(&text.as_inner().chars().count()));
+        assert!(text.as_inner().chars().all(PrintableMultiline::test));
+    }
 }
 
 #[test]
