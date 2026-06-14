@@ -13,6 +13,8 @@ pub mod path;
 #[cfg(feature = "regex")]
 pub mod pattern;
 pub mod string;
+#[cfg(feature = "url")]
+pub mod url;
 
 pub use collection::{
     AllItems, AnyOf, CapacityFull, CollectionError, Distinct, IdentityKey, KeyOf, LenItems, NoneOf,
@@ -54,3 +56,5 @@ pub use string::{
 pub use string::{BoundedLine, BoundedText, PrintableChar, PrintableLine, PrintableMultiline};
 #[cfg(feature = "hex")]
 pub use string::{HexChar, HexFixedAny, HexFixedLower, HexFixedNormalized};
+#[cfg(feature = "url")]
+pub use url::{HTTP_URL_MAX_LEN, HttpUrl, HttpUrlError};

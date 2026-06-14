@@ -23,7 +23,7 @@ cargo test --tests --all-features
 ```
 
 The feature-gated integration targets currently require `hex`, `proptest`,
-`serde`, or `regex`. They declare `required-features` in the root
+`serde`, `regex`, or `url`. They declare `required-features` in the root
 `Cargo.toml`, so a default-feature run skips only the examples whose API
 surface is not enabled; `--all-features` also exercises feature-gated
 unit and doctest code in the member crates.
@@ -71,6 +71,9 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
   `FloatError`.
 - **`relative_path.rs`** — `RelativePath` admit/reject for every
   `PathError` variant.
+- **`http_url.rs`** — `HttpUrl` as a parsed `url::Url` carrier,
+  including pre-parse length, parser, scheme, host, userinfo, and
+  fragment rejection.
 - **`closed_set.rs`** — `closed_set!` generated enums, including
   parse, `TryFrom<&str>`, `Display`, and typed expected-set errors.
 
@@ -109,6 +112,8 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
   for a domain type backed by a refined tuple carrier, preserving exact
   flat JSON field order while ingress stays hand-routed through
   `try_new`.
+- **`http_url_serde.rs`** — `HttpUrl` serde ingress from a JSON string
+  through `HttpUrl::parse`, and egress through the parsed URL string.
 
 ### Property-based testing
 
@@ -120,6 +125,8 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
 - **`property_harness.rs`** — `whittle::testing::prop_total` /
   `whittle::testing::prop_image_refines` plus a schema-derived
   boundary matrix.
+- **`http_url_proptest.rs`** — constructive `ArbitraryRule<url::Url>`
+  coverage for `HttpUrl`.
 
 ### Regex
 

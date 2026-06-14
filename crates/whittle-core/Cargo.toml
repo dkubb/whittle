@@ -15,8 +15,9 @@ decimal  = ["dep:rust_decimal"]
 hex      = []
 proptest = ["dep:proptest"]
 regex    = ["dep:regex", "dep:whittle-macros"]
-serde    = ["dep:serde"]
+serde    = ["dep:serde", "serde/alloc", "url?/serde"]
 unicode  = ["dep:unicode-general-category"]
+url      = ["dep:url"]
 
 [dependencies]
 chrono                   = { workspace = true, optional = true }
@@ -25,6 +26,7 @@ regex                    = { workspace = true, optional = true }
 rust_decimal             = { workspace = true, optional = true }
 serde                    = { workspace = true, optional = true }
 unicode-general-category = { workspace = true, optional = true }
+url                      = { workspace = true, optional = true }
 whittle-macros           = { workspace = true, optional = true }
 
 [dev-dependencies]

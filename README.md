@@ -54,8 +54,8 @@ whittle = "0.0"
 
 `whittle` is `#![no_std]` with `extern crate alloc`. Default features
 are empty; opt in to `serde`, `proptest`, `hex`, `unicode`,
-`decimal`, `chrono`, or `regex` as needed. The `regex` feature is the
-only feature that pulls in `std`.
+`decimal`, `chrono`, `url`, or `regex` as needed. The `regex` feature
+is the only feature that pulls in `std`.
 
 ## A minute of code
 
@@ -181,6 +181,9 @@ Behind Cargo features:
   `DecimalPrecision<P>`, `DecimalInRange<...>`.
 - `chrono` — `DateAtLeast`, `DateAtMost`, `DateInRange`, plus the
   `DateTime<Utc>` analogues.
+- `url` — `HttpUrl`, a parsed `url::Url` carrier for HTTP/HTTPS URLs
+  with host required, userinfo and fragments rejected, and a pre-parse
+  byte cap on string ingress.
 - `regex` — `Pattern<const RE: &'static str>` and `pattern!`.
   `Pattern` is a whole-string rule for positional grammars that the
   character-class primitives cannot express ergonomically.
@@ -199,8 +202,8 @@ list, and the process for adding a new domain type.
 ## Reach for whittle when
 
 - You'd reach for a domain newtype around a primitive (identifier,
-  percentage, bounded length, hex hash, relative path, non-empty
-  list).
+  percentage, bounded length, hex hash, relative path, HTTP URL,
+  non-empty list).
 - You're hand-rolling `try_new` / `from_str` validators that return
   ad-hoc errors and scattering the same predicate across modules.
 - You want serde to refuse invalid input instead of accepting it and

@@ -27,8 +27,8 @@ operators, the library-supplied primitive rules, the closed-set family,
 the implication trait, and the declarative macros; and `whittle-macros`,
 a proc-macro crate hosting the compile-time-validated `pattern!` macro.
 The kernel is dependency-free by default; `serde`, `proptest`, `regex`,
-`rust_decimal`, `chrono`, and Unicode-category support are opt-in Cargo
-features. The `serde` and `proptest` impls for `Refined<T, R>` live
+`rust_decimal`, `chrono`, `url`, and Unicode-category support are opt-in
+Cargo features. The `serde` and `proptest` impls for `Refined<T, R>` live
 inside `whittle-core` (rather than separate integration crates) because
 implementing a foreign trait for `Refined` from any other crate would
 violate Rust's orphan rule.
@@ -50,7 +50,7 @@ Table of Contents
   [String Transformers](#105-string-transformers),
   [Collection](#106-collection), [Composition](#107-composition),
   [Date](#108-date), [DateTime](#109-datetime), [Path](#1010-path),
-  [Pattern](#1011-pattern))
+  [HTTP URL](#1011-http-url), [Pattern](#1012-pattern))
 - [Section 11: Closed Sets](#11-closed-sets)
 - [Section 12: Implication and Subtyping](#12-implication-and-subtyping)
 - [Section 13: Macros](#13-macros)
@@ -70,8 +70,8 @@ The shipped surface comprises:
 - the kernel: the `Rule<T>` trait and the `Refined<T, R>` carrier, with
   `try_new` as the sole public construction path;
 - library-supplied primitive rules for numerics, floats, decimals,
-  strings, collections, dates, datetimes, relative paths, and regex
-  patterns;
+  strings, collections, dates, datetimes, relative paths, parsed HTTP
+  URLs, and regex patterns;
 - composition operators (`And`, `Or`, `Not`, `Xor`, `MapErr`, and the
   n-ary `All`/`Any`) that keep error types flat;
 - string transformers (`Trim`, `AsciiLowercase`, `AsciiUppercase`) that
@@ -156,12 +156,13 @@ unless noted:
 | `unicode`  | `unicode-general-category`          | `PrintableChar`     |
 | `regex`    | `regex` + `whittle-macros`          | `Pattern`, needs std|
 | `hex`      | (none)                              | hex string rules    |
+| `url`      | `url` (no default features)         | parsed HTTP URLs    |
 
 Error types are hand-written enums implementing `core::error::Error`;
 the library does not depend on `thiserror`, and bounded carriers are
 expressed as rules over `String` / `Vec<T>` rather than via external
 bounded-container crates. Dev-dependencies (test-only) are `proptest`,
-`serde` with derive, `serde_json`, and `serde_test`; the facade
+`serde` with derive, `serde_json`, `serde_test`, and `url`; the facade
 additionally uses `thiserror` in its integration-test corpus.
 
 There is no central limits module. Every bound is a const-generic
@@ -256,7 +257,7 @@ whittle/
 │   │       ├── macros.rs       refinement!, deserialize_rule!, closed_set!
 │   │       ├── testing.rs      prop_total, prop_image_refines (proptest)
 │   │       └── primitive/      numeric, float, decimal, string,
-│   │                           collection, path, pattern, date, datetime
+│   │                           collection, path, url, pattern, date, datetime
 │   └── whittle-macros/         proc-macro crate: pattern!
 └── docs/
     ├── README.md
@@ -496,7 +497,8 @@ The library provides the following primitive rule markers in
 `whittle-core::primitive`. Every rule returns its module's flat error
 enum (`NumericError`, `FloatError`, `DecimalError`, `StringError`,
 `CollectionError`, `DateError`, `DateTimeError`, `PathError`,
-`PatternError`); see the rustdoc for variant-level detail.
+`HttpUrlError`, `PatternError`); see the rustdoc for variant-level
+detail.
 
 ### 10.1. Numeric
 
@@ -783,7 +785,37 @@ absolute paths (Unix `/`-rooted, Windows drive letters, UNC prefixes),
 index in `PathError`. Full cross-platform path handling is out of
 scope.
 
-### 10.11. Pattern
+### 10.11. HTTP URL
+
+Behind the `url` Cargo feature. Carrier: `url::Url`.
+
+```rust
+pub struct HttpUrl;
+pub const HTTP_URL_MAX_LEN: usize = 8_192;
+```
+
+`HttpUrl` is a parsed-carrier rule, not a string validator. String
+ingress goes through `HttpUrl::parse`: reject empty input, reject
+inputs longer than `HTTP_URL_MAX_LEN` bytes before invoking the parser,
+parse with `url::Url::parse`, then refine the parsed `Url`.
+
+The parsed-carrier rule requires a host, `http` or `https` scheme, no
+username/password userinfo, and no fragment. `ParseError::EmptyHost` is
+reported as `HttpUrlError::MissingHost`, so hostless HTTP syntax has
+the same domain diagnostic whether it is caught by the parser or by
+direct `Refined<Url, HttpUrl>::try_new` over an already parsed value.
+
+Serde deserialization reads a string and routes through
+`HttpUrl::parse`; serialization emits the parsed URL's string form.
+The `url` dependency is built with default features disabled; enabling
+Whittle's `serde` feature also enables `serde/alloc` and `url?/serde`
+so URL string codecs work without enabling `std`. `HttpUrl` implements
+`PureFilter` and `ArbitraryRule<Url>`. It deliberately does **not**
+implement `SchemaRule`: Whittle's schema vocabulary cannot express the
+WHATWG URL parser denotation exactly, and partial string schemas would
+over-admit invalid URLs.
+
+### 10.12. Pattern
 
 Behind the `regex` Cargo feature (which requires `std` and the nightly
 const-generics features per Section 4):
@@ -1045,7 +1077,7 @@ type Name = whittle::pattern!(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$");
 A function-like proc-macro (the `whittle-macros` crate's entire
 surface) that parses its argument as a string literal, validates it as
 a regular expression **at compile time**, and expands to the
-const-generic rule type `Pattern::<"...">` (Section 10.11). A malformed
+const-generic rule type `Pattern::<"...">` (Section 10.12). A malformed
 pattern is a compile error at the literal's span instead of a runtime
 panic on first construction. The expansion resolves its path through
 `proc-macro-crate`, so it works for consumers of the facade and of

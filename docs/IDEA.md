@@ -324,6 +324,7 @@ The library MUST provide a set of rule primitives covering at least:
 - length bounds for collections and strings;
 - per-element character-class predicates for strings;
 - non-empty markers for collections and strings;
+- parsed HTTP URL carriers with fixed request-URL policy;
 - closed-set parses for enumerated types: a wire string admitted
   against a single declared injective string ↔ variant table and
   parsed into the enum itself, with the parse, the wire form, the

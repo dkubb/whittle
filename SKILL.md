@@ -14,8 +14,8 @@ Construction is the single boundary; downstream code trusts the type.
 ## When to Activate
 
 - The user wants to introduce a domain newtype (identifier, percentage,
-  bounded length, hex hash, relative path, non-empty list, ...) and is
-  reaching for `String`, `i32`, `Vec<T>` directly.
+  bounded length, hex hash, relative path, HTTP URL, non-empty list,
+  ...) and is reaching for `String`, `i32`, `Vec<T>` directly.
 - The user is hand-rolling `try_new` / `from_str` validators that return
   ad-hoc errors and is about to scatter the same predicate across modules.
 - The user wants `serde` to refuse invalid payloads instead of accepting
@@ -263,6 +263,21 @@ Path (`crates/whittle-core/src/primitive/path.rs`, `Rule<String>`, returns
   segments. Error variants: `PathError::Empty`, `PathError::Absolute`,
   `PathError::ParentTraversal { index }`,
   `PathError::EmptySegment { index }`.
+
+URL (`crates/whittle-core/src/primitive/url.rs`, `Rule<url::Url>`, returns
+`HttpUrlError`; behind the `url` Cargo feature):
+
+- `HttpUrl` — parsed HTTP/HTTPS URL carrier. String ingress uses
+  `HttpUrl::parse`: reject empty input, reject inputs longer than
+  `HTTP_URL_MAX_LEN` bytes before parsing, parse with `url::Url::parse`,
+  then refine the parsed `Url`. The parsed carrier must have a host,
+  scheme `http` or `https`, no username/password userinfo, and no
+  fragment. Serde deserialization reads a string and routes through
+  `HttpUrl::parse`; serialization emits the parsed URL string.
+  `HttpUrl` implements `PureFilter` and constructive
+  `ArbitraryRule<url::Url>`. It intentionally has no `SchemaRule`
+  because Whittle's schema vocabulary cannot express the WHATWG URL
+  parser denotation exactly.
 
 Pattern (`crates/whittle-core/src/primitive/pattern.rs`, `Rule<String>`,
 returns `PatternError`; behind the `regex` Cargo feature):
@@ -796,6 +811,10 @@ Workspace root `Cargo.toml` lists workspace-level features
   feature).
 - `serde` — enables `Serialize`/`Deserialize` impls on `Refined<T, R>`.
 - `proptest` — enables `Arbitrary` impl on `Refined<T, R>`.
+- `url` — enables `HttpUrl` over the parsed `url::Url` carrier. Pulls
+  in `url` with default features disabled; if `serde` is also enabled,
+  Whittle enables `serde/alloc` and `url?/serde` so URL codecs work
+  without enabling `std`.
 - `regex` — enables `Pattern<const RE: &'static str>` and the
   `pattern!` macro. Unlike every other feature, this one pulls in
   `std` (the regex compile cache needs `OnceLock`/`Mutex`) and turns
@@ -1001,8 +1020,8 @@ with `cargo nextest run --workspace --all-features` or
 `cargo test --tests --all-features`. Bare `cargo test` and
 `cargo nextest run` also pass: feature-gated integration tests
 (`closed_set_serde`, `hex_and_normalization`, `pattern_macro`,
-`property_harness`, `proptest_arbitrary`, `serde_roundtrip`,
-`transformer_newtype`) are
+`http_url`, `http_url_proptest`, `http_url_serde`, `property_harness`,
+`proptest_arbitrary`, `serde_roundtrip`, `transformer_newtype`) are
 declared with `required-features` in the root `Cargo.toml`, so Cargo
 skips them when the relevant feature is off. Nextest's profile defaults
 live in `.config/nextest.toml`. (If absent, the kernel's own doctests in

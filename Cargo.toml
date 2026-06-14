@@ -105,6 +105,7 @@ serde_test               = "1"
 syn                      = { version = "2", features = ["full"] }
 thiserror                = "2"
 unicode-general-category = { version = "1.1", default-features = false }
+url                      = { version = "2.5.8", default-features = false }
 whittle-macros           = { version = "0.0.0", path = "crates/whittle-macros" }
 
 [package]
@@ -127,6 +128,7 @@ rust_decimal = { workspace = true }
 serde      = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
+url        = { workspace = true }
 
 [features]
 default  = []
@@ -137,6 +139,7 @@ proptest = ["whittle-core/proptest"]
 regex    = ["whittle-core/regex"]
 serde    = ["whittle-core/serde"]
 unicode  = ["whittle-core/unicode"]
+url      = ["whittle-core/url"]
 
 [lints]
 workspace = true
@@ -180,3 +183,18 @@ required-features = ["serde"]
 name             = "pattern_macro"
 path             = "tests/pattern_macro.rs"
 required-features = ["regex"]
+
+[[test]]
+name             = "http_url"
+path             = "tests/http_url.rs"
+required-features = ["url"]
+
+[[test]]
+name             = "http_url_serde"
+path             = "tests/http_url_serde.rs"
+required-features = ["url", "serde"]
+
+[[test]]
+name             = "http_url_proptest"
+path             = "tests/http_url_proptest.rs"
+required-features = ["url", "proptest"]
