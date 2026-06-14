@@ -23,7 +23,11 @@ use crate::rule::{Refined, Rule};
 /// This is a denial-of-service guard on ingress, not a URL grammar
 /// rule. It runs before `Url::parse` so overlong inputs are rejected
 /// without invoking the parser.
-pub const HTTP_URL_MAX_LEN: usize = 8_192;
+///
+/// `2048` is the conventional safe-interop ceiling for HTTP URLs
+/// (browsers historically cap near 2083, and sitemaps.org uses 2048),
+/// so a longer request URL is almost always hostile or malformed.
+pub const HTTP_URL_MAX_LEN: usize = 2_048;
 
 /// Parsed HTTP or HTTPS URL with no userinfo and no fragment.
 ///
@@ -410,6 +414,19 @@ mod tests {
         let parsed = Url::parse("https://user:pass@example.com/").unwrap();
         let error = Refined::<Url, HttpUrl>::try_new(parsed).unwrap_err();
         assert_eq!(error, HttpUrlError::HasUserinfo);
+    }
+
+    #[test]
+    fn refine_accepts_empty_userinfo_which_the_parser_normalizes_away() {
+        // `http://@host` carries an empty userinfo. The WHATWG parser
+        // drops it, so the carried `Url` has no userinfo and the
+        // policy admits it — the parsed-carrier design makes the
+        // empty-`@` case a non-issue rather than a hand-detected one.
+        let parsed = Url::parse("https://@example.com/path").unwrap();
+        let url = Refined::<Url, HttpUrl>::try_new(parsed).unwrap();
+        assert_eq!(url.as_inner().as_str(), "https://example.com/path");
+        assert_eq!(url.as_inner().username(), "");
+        assert_eq!(url.as_inner().password(), None);
     }
 
     #[test]

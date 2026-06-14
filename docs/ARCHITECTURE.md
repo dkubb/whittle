@@ -791,7 +791,7 @@ Behind the `url` Cargo feature. Carrier: `url::Url`.
 
 ```rust
 pub struct HttpUrl;
-pub const HTTP_URL_MAX_LEN: usize = 8_192;
+pub const HTTP_URL_MAX_LEN: usize = 2_048;
 ```
 
 `HttpUrl` is a parsed-carrier rule, not a string validator. String
