@@ -16,15 +16,126 @@
 //! and trust that every generated value satisfies the rule.
 
 use proptest::proptest;
-use whittle::primitive::{HexFixedAny, NonZero, NotNan, Within};
-use whittle::transform::AsciiLowercase;
-use whittle::{Refined, refinement};
+use whittle::primitive::collection::ArbitraryPredicate;
+use whittle::primitive::{
+    AllItems, AnyOf, ArbitraryChar, AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic,
+    AsciiLowercase as AsciiLowercaseChar, AsciiUppercase, AtLeast, AtMost, CharEither, CharExcept,
+    CharLiteral, Distinct, EachChar, EqualTo, Finite, FirstChar, GreaterThan, HexChar, HexFixedAny,
+    HexFixedLower, HexFixedNormalized, IdentChar, IdentDashChar, IdentStart, InClosedRange,
+    LenBytes, LenChars, LenItems, LessThan, Negative, NonControl, NonEmpty, NonZero, NoneOf,
+    NotEqualTo, NotInfinite, NotNan, Positive, Predicate, RelativePath, Sorted, UniqueByKey,
+    Within,
+};
+use whittle::transform::{
+    AsciiLowercase as LowercaseTransform, AsciiUppercase as UppercaseTransform, Trim,
+};
+use whittle::{All, And, Any, ArbitraryRule, MapErr, Not, Or, Refined, Xor, refinement};
+
+#[cfg(feature = "chrono")]
+use chrono::{DateTime, NaiveDate, Utc};
+#[cfg(feature = "decimal")]
+use rust_decimal::Decimal;
+#[cfg(feature = "regex")]
+use whittle::primitive::Pattern;
+#[cfg(feature = "unicode")]
+use whittle::primitive::{
+    BoundedLine, BoundedText, PrintableChar, PrintableLine, PrintableMultiline,
+};
 
 refinement! {
     /// Percentage used by the integration test below.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     Percent: i32, Within<0, 100>;
 }
+
+struct IsZero;
+
+impl Predicate<i32> for IsZero {
+    fn test(value: &i32) -> bool {
+        *value == 0
+    }
+}
+
+impl ArbitraryPredicate<i32> for IsZero {
+    type Strategy = proptest::strategy::BoxedStrategy<i32>;
+
+    fn arbitrary_matching() -> Self::Strategy {
+        use proptest::strategy::Strategy as _;
+        proptest::strategy::Just(0_i32).boxed()
+    }
+}
+
+struct IdentityMap;
+
+impl<E> whittle::ErrorMapper<E> for IdentityMap {
+    type Error = E;
+
+    fn map_error(error: E) -> Self::Error {
+        error
+    }
+}
+
+const fn assert_rule<T: 'static, R>()
+where
+    R: ArbitraryRule<T>,
+{
+}
+
+const fn assert_char<P>()
+where
+    P: ArbitraryChar,
+{
+}
+
+#[cfg(feature = "chrono")]
+const fn assert_chrono_rule_families() {
+    use whittle::primitive::{
+        DateAtLeast, DateAtMost, DateInRange, DateTimeAtLeast, DateTimeAtMost, DateTimeInRange,
+    };
+
+    assert_rule::<NaiveDate, DateAtLeast<730_120>>();
+    assert_rule::<NaiveDate, DateAtMost<767_009>>();
+    assert_rule::<NaiveDate, DateInRange<730_120, 767_009>>();
+    assert_rule::<DateTime<Utc>, DateTimeAtLeast<1_704_067_200>>();
+    assert_rule::<DateTime<Utc>, DateTimeAtMost<1_893_456_000>>();
+    assert_rule::<DateTime<Utc>, DateTimeInRange<1_704_067_200, 1_893_456_000>>();
+}
+
+#[cfg(not(feature = "chrono"))]
+const fn assert_chrono_rule_families() {}
+
+#[cfg(feature = "decimal")]
+const fn assert_decimal_rule_families() {
+    use whittle::primitive::{DecimalInRange, DecimalPositive, DecimalPrecision, DecimalScale};
+
+    assert_rule::<Decimal, DecimalPositive>();
+    assert_rule::<Decimal, DecimalScale<2>>();
+    assert_rule::<Decimal, DecimalPrecision<6>>();
+    assert_rule::<Decimal, DecimalInRange<0, 10_000, 2>>();
+}
+
+#[cfg(not(feature = "decimal"))]
+const fn assert_decimal_rule_families() {}
+
+#[cfg(feature = "regex")]
+const fn assert_regex_rule_families() {
+    assert_rule::<String, Pattern<"^[A-Z][A-Z0-9]*$">>();
+}
+
+#[cfg(not(feature = "regex"))]
+const fn assert_regex_rule_families() {}
+
+#[cfg(feature = "unicode")]
+const fn assert_unicode_rule_families() {
+    assert_char::<PrintableLine>();
+    assert_char::<PrintableMultiline>();
+    assert_char::<PrintableChar>();
+    assert_rule::<String, BoundedLine<32>>();
+    assert_rule::<String, BoundedText<32>>();
+}
+
+#[cfg(not(feature = "unicode"))]
+const fn assert_unicode_rule_families() {}
 
 #[test]
 fn dense_rule_non_zero_arbitrary_admits_every_non_zero_value() {
@@ -78,6 +189,114 @@ fn refinement_newtype_arbitrary_forwards_rule_strategy() {
 }
 
 #[test]
+fn refinement_newtype_arbitrary_reaches_inner_rule_boundaries() {
+    // `Percent` is a transparent `prop_map(Self)` over the inner
+    // `Refined<i32, Within<0, 100>>` strategy. `prop_map(Self)` is
+    // bijective over the carrier, so the newtype reaches every value
+    // the inner strategy reaches; this deterministic sample pins
+    // both endpoints directly.
+
+    use proptest::strategy::{Strategy as _, ValueTree as _};
+
+    let strategy = proptest::arbitrary::any::<Percent>();
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let mut saw_min = false;
+    let mut saw_max = false;
+
+    for _ in 0_u32..256 {
+        let value = strategy
+            .new_tree(&mut runner)
+            .expect("Percent strategy must produce a value tree")
+            .current();
+        saw_min |= *value.as_inner() == 0;
+        saw_max |= *value.as_inner() == 100;
+    }
+
+    assert!(saw_min, "newtype Arbitrary must reach the lower bound");
+    assert!(saw_max, "newtype Arbitrary must reach the upper bound");
+}
+
+#[test]
+fn public_rule_families_have_arbitrary_rule_impls() {
+    // Compile-time coverage audit for the public facade: every
+    // library rule family intended for rule-derived generation must
+    // satisfy `ArbitraryRule` under its feature gate. Aliases are
+    // checked by their public spelling so inherited impls stay pinned.
+
+    // Numeric primitives and aliases.
+    assert_rule::<i32, Within<0, 100>>();
+    assert_rule::<i32, AtLeast<0>>();
+    assert_rule::<i32, AtMost<100>>();
+    assert_rule::<i32, GreaterThan<0>>();
+    assert_rule::<i32, LessThan<100>>();
+    assert_rule::<i32, EqualTo<42>>();
+    assert_rule::<i32, NotEqualTo<0>>();
+    assert_rule::<i32, NonZero>();
+    assert_rule::<i32, Positive>();
+    assert_rule::<i32, Negative>();
+
+    // Float primitives.
+    assert_rule::<f64, NotNan>();
+    assert_rule::<f64, NotInfinite>();
+    assert_rule::<f64, Finite>();
+    assert_rule::<f64, InClosedRange<0, 1, 10, 1>>();
+
+    // String-length, character, and hex primitives.
+    assert_rule::<String, LenChars<1, 8>>();
+    assert_rule::<String, LenBytes<1, 8>>();
+    assert_rule::<String, NonEmpty>();
+    assert_rule::<String, EachChar<AsciiAlphanumeric>>();
+    assert_rule::<String, FirstChar<IdentStart>>();
+    assert_rule::<String, HexFixedLower<4>>();
+    assert_rule::<String, HexFixedAny<4>>();
+    assert_rule::<String, HexFixedNormalized<4>>();
+    assert_rule::<String, RelativePath>();
+
+    // Character predicates used by `EachChar` and `FirstChar`.
+    assert_char::<CharLiteral<'x'>>();
+    assert_char::<CharEither<CharLiteral<'x'>, CharLiteral<'-'>>>();
+    assert_char::<CharExcept<AsciiGraphic, CharLiteral<'/'>>>();
+    assert_char::<AsciiGraphic>();
+    assert_char::<AsciiAlphanumeric>();
+    assert_char::<AsciiAlphabetic>();
+    assert_char::<AsciiUppercase>();
+    assert_char::<AsciiLowercaseChar>();
+    assert_char::<AsciiDigit>();
+    assert_char::<IdentChar>();
+    assert_char::<IdentStart>();
+    assert_char::<NonControl>();
+    assert_char::<HexChar>();
+    assert_char::<IdentDashChar>();
+
+    // Collection primitives and aliases.
+    assert_rule::<Vec<i32>, LenItems<1, 5>>();
+    assert_rule::<Vec<i32>, AllItems<Within<0, 100>>>();
+    assert_rule::<Vec<i32>, UniqueByKey<i32, whittle::primitive::IdentityKey<i32>>>();
+    assert_rule::<Vec<i32>, Distinct<i32>>();
+    assert_rule::<Vec<i32>, Sorted<i32, whittle::primitive::IdentityKey<i32>>>();
+    assert_rule::<Vec<i32>, NoneOf<IsZero>>();
+    assert_rule::<Vec<i32>, AnyOf<IsZero>>();
+
+    // Composition rules.
+    assert_rule::<i32, And<AtLeast<0>, AtMost<100>>>();
+    assert_rule::<i32, Or<LessThan<0>, GreaterThan<100>>>();
+    assert_rule::<i32, Not<EqualTo<0>>>();
+    assert_rule::<i32, Xor<Within<0, 10>, Within<5, 15>>>();
+    assert_rule::<i32, MapErr<Within<0, 100>, IdentityMap>>();
+    assert_rule::<i32, All<(Within<0, 100>, AtLeast<10>, AtMost<90>)>>();
+    assert_rule::<i32, Any<(LessThan<0>, EqualTo<0>, GreaterThan<100>)>>();
+
+    // Transformers.
+    assert_rule::<String, LowercaseTransform<HexFixedAny<4>>>();
+    assert_rule::<String, UppercaseTransform<EachChar<AsciiAlphanumeric>>>();
+    assert_rule::<String, Trim<EachChar<AsciiAlphanumeric>>>();
+    assert_chrono_rule_families();
+    assert_decimal_rule_families();
+    assert_regex_rule_families();
+    assert_unicode_rule_families();
+}
+
+#[test]
 fn transformer_rule_canonicalises_arbitrary_input_inside_try_new() {
     // ─── Transformer rule: the post-transform invariant.  ───────
     //
@@ -87,7 +306,7 @@ fn transformer_rule_canonicalises_arbitrary_input_inside_try_new() {
     // strategy generates mixed-case input; the transformer runs
     // inside `try_new`, so the stored carrier is canonical.
 
-    proptest!(|(r in proptest::arbitrary::any::<Refined<String, AsciiLowercase<HexFixedAny<2>>>>())| {
+    proptest!(|(r in proptest::arbitrary::any::<Refined<String, LowercaseTransform<HexFixedAny<2>>>>())| {
         assert_eq!(r.as_inner(), &r.as_inner().to_ascii_lowercase());
     });
 }

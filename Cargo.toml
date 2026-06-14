@@ -121,7 +121,9 @@ description = "Parse-don't-validate types in Rust: narrow values at the boundary
 whittle-core = { version = "0.0.0", path = "crates/whittle-core" }
 
 [dev-dependencies]
+chrono     = { workspace = true }
 proptest   = { workspace = true }
+rust_decimal = { workspace = true }
 serde      = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }

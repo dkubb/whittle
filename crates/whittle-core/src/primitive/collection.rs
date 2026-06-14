@@ -1373,21 +1373,30 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         // Generate a guaranteed-matching seed and an arbitrary
-        // tail; concat with the seed at a random index so the
-        // match is not always at the head.
+        // tail, then insert the seed at a generated index so the
+        // match can appear anywhere in the collection. Completeness
+        // up to `COLLECTION_ARBITRARY_MAX_LEN` follows directly: for
+        // any admissible vector, choose any matching item as the
+        // seed, use the remaining items as `rest`, and choose that
+        // item's original index as `raw_index`.
         (
             P::arbitrary_matching(),
             proptest::collection::vec(
                 proptest::arbitrary::any::<T>(),
-                0_usize..=COLLECTION_ARBITRARY_MAX_LEN,
+                0_usize..COLLECTION_ARBITRARY_MAX_LEN,
             ),
+            proptest::arbitrary::any::<usize>(),
         )
-            .prop_map(|(seed, mut rest)| {
-                rest.push(seed);
-                rest
-            })
+            .prop_map(|(seed, rest, raw_index)| insert_seed_at_index(seed, rest, raw_index))
             .boxed()
     }
+}
+
+#[cfg(feature = "proptest")]
+fn insert_seed_at_index<T>(seed: T, mut rest: Vec<T>, raw_index: usize) -> Vec<T> {
+    let index = raw_index.min(rest.len());
+    rest.insert(index, seed);
+    rest
 }
 
 #[cfg(test)]
@@ -2292,6 +2301,13 @@ mod tests {
     fn dedup_by_key_drops_duplicates_preserving_first_occurrence() {
         let deduped = super::dedup_by_key::<i32, IdentityKey<i32>>(vec![1_i32, 2, 1, 3, 2]);
         assert_eq!(deduped, vec![1, 2, 3]);
+    }
+
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn any_of_seed_can_be_inserted_before_the_tail() {
+        let generated = super::insert_seed_at_index(0_i32, vec![1, 2], 1);
+        assert_eq!(generated, vec![1, 0, 2]);
     }
 
     #[cfg(feature = "proptest")]

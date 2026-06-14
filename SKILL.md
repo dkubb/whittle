@@ -653,7 +653,8 @@ Four sub-traits expose building blocks rule strategies need:
   `PrintableLine`, `PrintableMultiline`, `PrintableChar`) has an
   `ArbitraryChar` impl.
 - `ArbitraryPredicate<T>` — per-`Predicate<T>` value strategy used by
-  `AnyOf<P>` to seed the generated collection with a guaranteed match.
+  `AnyOf<P>` to seed the generated collection with a guaranteed match
+  at a generated position.
 
 Every public `Strategy` associated type resolves to
 `proptest::strategy::BoxedStrategy<T>`, so consumers see an opaque
