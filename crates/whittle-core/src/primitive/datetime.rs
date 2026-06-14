@@ -257,7 +257,7 @@ pub trait ArbitraryDateTime: Rule<DateTime<Utc>> {
     /// let mut runner = TestRunner::deterministic();
     /// let value = strategy.new_tree(&mut runner).unwrap().current();
     ///
-    /// assert!(<SinceEpoch as Rule<DateTime<Utc>>>::refine(value).is_ok());
+    /// assert!(SinceEpoch::accepts(value));
     /// # }
     /// ```
     fn arbitrary_datetime() -> Self::Strategy;

@@ -567,7 +567,7 @@ mod tests {
                 let weak: Refined<i32, Within<0, 100>> = strong.weaken();
                 proptest::prop_assert_eq!(*weak.as_inner(), value);
                 proptest::prop_assert!(
-                    <Within<0, 100> as Rule<i32>>::refine(weak.into_inner()).is_ok()
+                    Within::<0, 100>::accepts(weak.into_inner())
                 );
             }
 
@@ -579,7 +579,7 @@ mod tests {
                 let weak: Refined<i32, AtLeast<10>> = strong.weaken();
                 proptest::prop_assert_eq!(*weak.as_inner(), value);
                 proptest::prop_assert!(
-                    <AtLeast<10> as Rule<i32>>::refine(weak.into_inner()).is_ok()
+                    AtLeast::<10>::accepts(weak.into_inner())
                 );
             }
 
@@ -591,7 +591,7 @@ mod tests {
                 let weak: Refined<i32, AtMost<20>> = strong.weaken();
                 proptest::prop_assert_eq!(*weak.as_inner(), value);
                 proptest::prop_assert!(
-                    <AtMost<20> as Rule<i32>>::refine(weak.into_inner()).is_ok()
+                    AtMost::<20>::accepts(weak.into_inner())
                 );
             }
 
@@ -603,7 +603,7 @@ mod tests {
                 let weak: Refined<i32, AtLeast<5>> = strong.weaken();
                 proptest::prop_assert_eq!(*weak.as_inner(), value);
                 proptest::prop_assert!(
-                    <AtLeast<5> as Rule<i32>>::refine(weak.into_inner()).is_ok()
+                    AtLeast::<5>::accepts(weak.into_inner())
                 );
             }
 
@@ -615,7 +615,7 @@ mod tests {
                 let weak: Refined<i32, AtMost<20>> = strong.weaken();
                 proptest::prop_assert_eq!(*weak.as_inner(), value);
                 proptest::prop_assert!(
-                    <AtMost<20> as Rule<i32>>::refine(weak.into_inner()).is_ok()
+                    AtMost::<20>::accepts(weak.into_inner())
                 );
             }
 
@@ -627,7 +627,7 @@ mod tests {
                 let weak: Refined<i32, GreaterThan<5>> = strong.weaken();
                 proptest::prop_assert_eq!(*weak.as_inner(), value);
                 proptest::prop_assert!(
-                    <GreaterThan<5> as Rule<i32>>::refine(weak.into_inner()).is_ok()
+                    GreaterThan::<5>::accepts(weak.into_inner())
                 );
             }
 
@@ -639,7 +639,7 @@ mod tests {
                 let weak: Refined<i32, LessThan<20>> = strong.weaken();
                 proptest::prop_assert_eq!(*weak.as_inner(), value);
                 proptest::prop_assert!(
-                    <LessThan<20> as Rule<i32>>::refine(weak.into_inner()).is_ok()
+                    LessThan::<20>::accepts(weak.into_inner())
                 );
             }
 
@@ -651,7 +651,7 @@ mod tests {
                 let weak: Refined<String, LenChars<0, 10>> = strong.weaken();
                 proptest::prop_assert_eq!(weak.as_inner(), &value);
                 proptest::prop_assert!(
-                    <LenChars<0, 10> as Rule<String>>::refine(weak.into_inner()).is_ok()
+                    LenChars::<0, 10>::accepts(weak.into_inner())
                 );
             }
 
@@ -663,7 +663,7 @@ mod tests {
                 let weak: Refined<String, LenBytes<0, 10>> = strong.weaken();
                 proptest::prop_assert_eq!(weak.as_inner(), &value);
                 proptest::prop_assert!(
-                    <LenBytes<0, 10> as Rule<String>>::refine(weak.into_inner()).is_ok()
+                    LenBytes::<0, 10>::accepts(weak.into_inner())
                 );
             }
 
@@ -675,7 +675,7 @@ mod tests {
                 let weak: Refined<Vec<u8>, LenItems<0, 10>> = strong.weaken();
                 proptest::prop_assert_eq!(weak.as_inner(), &value);
                 proptest::prop_assert!(
-                    <LenItems<0, 10> as Rule<Vec<u8>>>::refine(weak.into_inner()).is_ok()
+                    LenItems::<0, 10>::accepts(weak.into_inner())
                 );
             }
         }

@@ -377,7 +377,7 @@ pub trait ArbitraryDecimal: Rule<Decimal> {
     /// let mut runner = TestRunner::deterministic();
     /// let value = strategy.new_tree(&mut runner).unwrap().current();
     ///
-    /// assert!(<DecimalPositive as Rule<Decimal>>::refine(value).is_ok());
+    /// assert!(DecimalPositive::accepts(value));
     /// # }
     /// ```
     fn arbitrary_decimal() -> Self::Strategy;

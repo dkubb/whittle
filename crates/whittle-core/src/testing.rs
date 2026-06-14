@@ -152,7 +152,7 @@ where
 
 /// Property: `f` is total over `S(A)` *and* every output lies in
 /// `S(B)` as declared by rule `RB` — membership checked via
-/// `RB::refine(output).is_ok()`.
+/// `RB::accepts(output)`.
 ///
 /// DOGFOODING §2.5 obligation 2, both halves, for functions whose
 /// return type does not already carry the output invariant.
@@ -295,7 +295,7 @@ where
                 let embeds_back = embed(&value) == (boundary.kind, boundary.value);
                 ScalarMatrixOutcome {
                     rendered,
-                    refine_admits: R::refine(value).is_ok(),
+                    refine_admits: R::accepts(value),
                     embeds_back,
                 }
             });
@@ -932,7 +932,7 @@ pub fn assert_collection_boundary_matrix<T, R>(
             let candidate: Vec<T> = (0..boundary.len).map(make_element).collect();
             CollectionMatrixRow {
                 boundary,
-                refine_admits: R::refine(candidate).is_ok(),
+                refine_admits: R::accepts(candidate),
             }
         })
         .collect();
@@ -956,9 +956,9 @@ pub fn assert_collection_boundary_matrix<T, R>(
                 Some(None) => None,
                 Some(Some(outsider)) => {
                     candidate.push(outsider);
-                    Some(R::refine(candidate).is_ok())
+                    Some(R::accepts(candidate))
                 }
-                None => Some(R::refine(candidate).is_ok()),
+                None => Some(R::accepts(candidate)),
             };
             (probe.description, verdict)
         })

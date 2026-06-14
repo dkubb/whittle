@@ -550,7 +550,7 @@ where
         // consumes it. The widened i128 form of the offending
         // value is what `NumericError::OutOfRange` carries.
         let widened = raw.into_i128();
-        if R::refine(raw).is_ok() {
+        if R::accepts(raw) {
             Err(crate::primitive::NumericError::OutOfRange { value: widened })
         } else {
             T::from_i128(widened)
@@ -573,8 +573,8 @@ where
         // value is what `NumericError::OutOfRange` carries when
         // either both accept or both reject.
         let widened = raw.into_i128();
-        let a_ok = A::refine(raw).is_ok();
-        let b_ok = B::refine(raw).is_ok();
+        let a_ok = A::accepts(raw);
+        let b_ok = B::accepts(raw);
         if a_ok ^ b_ok {
             T::from_i128(widened)
         } else {
@@ -1247,9 +1247,7 @@ where
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
         T::arbitrary_in_range(i128::MIN, i128::MAX)
-            .prop_filter("Not: inner rule unexpectedly accepted", |v| {
-                R::refine(*v).is_err()
-            })
+            .prop_filter("Not: inner rule unexpectedly accepted", |v| !R::accepts(*v))
             .boxed()
     }
 }
@@ -1272,7 +1270,7 @@ where
         use proptest::strategy::Strategy as _;
         proptest::prop_oneof![A::arbitrary_strategy(), B::arbitrary_strategy()]
             .prop_filter("Xor: exactly one operand must accept", |v| {
-                A::refine(*v).is_ok() ^ B::refine(*v).is_ok()
+                A::accepts(*v) ^ B::accepts(*v)
             })
             .boxed()
     }

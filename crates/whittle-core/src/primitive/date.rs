@@ -249,7 +249,7 @@ pub trait ArbitraryDate: Rule<NaiveDate> {
     /// let mut runner = TestRunner::deterministic();
     /// let value = strategy.new_tree(&mut runner).unwrap().current();
     ///
-    /// assert!(<SinceCe as Rule<NaiveDate>>::refine(value).is_ok());
+    /// assert!(SinceCe::accepts(value));
     /// # }
     /// ```
     fn arbitrary_date() -> Self::Strategy;

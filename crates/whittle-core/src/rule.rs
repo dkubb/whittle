@@ -67,6 +67,28 @@ where
     /// assert_eq!(*ok.as_inner(), 7);
     /// ```
     fn refine(raw: T) -> Result<T, Self::Error>;
+
+    /// Return whether `raw` can be narrowed by this rule.
+    ///
+    /// This is the by-value boolean projection of [`Self::refine`].
+    /// It consumes `raw` for the same reason `refine` does: a rule
+    /// may canonicalise its input before accepting it. Callers that
+    /// need to keep the original value must make that choice
+    /// explicitly with `Copy` or `Clone`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::Rule;
+    /// use whittle_core::primitive::Within;
+    ///
+    /// assert!(Within::<0, 100>::accepts(42_i32));
+    /// assert!(!Within::<0, 100>::accepts(101_i32));
+    /// ```
+    #[inline]
+    fn accepts(raw: T) -> bool {
+        Self::refine(raw).is_ok()
+    }
 }
 
 /// Marker: rules whose `refine` is the IDENTITY on admissible input.
@@ -657,7 +679,7 @@ where
     /// let mut runner = TestRunner::deterministic();
     /// let value = strategy.new_tree(&mut runner).unwrap().current();
     ///
-    /// assert!(<Within<0, 10> as Rule<i32>>::refine(value).is_ok());
+    /// assert!(Within::<0, 10>::accepts(value));
     /// # }
     /// ```
     fn arbitrary_strategy() -> Self::Strategy;
@@ -807,6 +829,20 @@ mod tests {
     fn try_new_rejects_inadmissible_input() {
         let result: Result<Refined<i32, NonNeg>, _> = Refined::try_new(-1);
         assert_eq!(result.unwrap_err(), Negative);
+    }
+
+    #[test]
+    fn accepts_matches_refine_for_admissible_input() {
+        let raw = 42;
+
+        assert_eq!(NonNeg::accepts(raw), NonNeg::refine(raw).is_ok());
+    }
+
+    #[test]
+    fn accepts_matches_refine_for_rejected_input() {
+        let raw = -1;
+
+        assert_eq!(NonNeg::accepts(raw), NonNeg::refine(raw).is_ok());
     }
 
     #[test]
