@@ -2637,10 +2637,10 @@ impl core::fmt::Display for CharSet {
 /// set).
 ///
 /// The schema is interpreted *within the carrier's embedding* into
-/// the scalar universe: `⟦schema()⟧ ∩ ⟦T⟧ = range(refine)`. A bound
-/// wider than `T`'s own range (an `AtMost<300>` carried by `u8`)
-/// still describes the admitted set exactly, because the values
-/// outside `T` are outside the embedding.
+/// the scalar universe: `⟦schema()⟧ ∩ ⟦T⟧ = range(refine)`. Numeric
+/// bounds that are wider than `T`'s own range fail at
+/// monomorphisation, so a numeric schema is only constructed after
+/// the rule's const parameters fit the carrier.
 ///
 /// Like [`Rule::refine`]'s own soundness obligation, implementers
 /// discharge this by reading the SAME const generics `refine` reads;

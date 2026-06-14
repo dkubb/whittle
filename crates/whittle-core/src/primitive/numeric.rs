@@ -4,6 +4,12 @@
 //! and sign / non-zero markers (`NonZero`, `Positive`, `Negative`).
 //! Each primitive carries a typed error variant that includes the
 //! offending value so callers can construct precise diagnostics.
+//!
+//! Bounds are `i128` const generics, then checked against the chosen
+//! carrier at monomorphisation. Inline literals are the normal spelling:
+//! `Refined<u16, Within<1, 500>>`. For named constants with narrower
+//! types, cast in the const-generic position: `Within<1, { MAX as i128 }>`
+//! where `const MAX: u16 = 500`.
 
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
@@ -40,6 +46,22 @@ use crate::schema::{Schema, SchemaInterval, SchemaRule, integer_interval_from_bo
 /// // Reject below MIN.
 /// let err = Refined::<i32, Within<0, 100>>::try_new(-1).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: -1 });
+///
+/// // Natural literals work for narrow carriers when they fit.
+/// let ok: Refined<u16, Within<1, 500>> = Refined::try_new(500).unwrap();
+/// assert_eq!(*ok.as_inner(), 500);
+///
+/// let err = Refined::<u16, Within<1, 500>>::try_new(501).unwrap_err();
+/// assert_eq!(err, NumericError::OutOfRange { value: 501 });
+/// ```
+///
+/// Bounds wider than the chosen carrier fail to compile:
+///
+/// ```compile_fail
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::Within;
+///
+/// let _ = Refined::<u16, Within<1, 70_000>>::try_new(42_u16);
 /// ```
 pub struct Within<const MIN: i128, const MAX: i128>;
 
@@ -121,8 +143,8 @@ pub struct LessThan<const MAX: i128>;
 ///
 /// Useful for marker fields (a fixed protocol version, a known
 /// status code, a sentinel constant). `N` must fit in the carrier
-/// type for the rule to admit any value at all; `EqualTo<300>` over
-/// `u8` admits nothing because 300 exceeds `u8::MAX`.
+/// type; over-width singleton rules fail to compile when used with
+/// that carrier.
 ///
 /// # Examples
 ///
@@ -258,6 +280,37 @@ impl core::error::Error for NumericError {}
 /// exist; the impl panics in that case rather than carrying a
 /// permanently-dead error path through every `Rule::refine` site.
 pub trait Numeric: Sized + 'static {
+    /// Smallest value representable by this carrier, widened to
+    /// `i128`.
+    ///
+    /// Numeric rule bounds are `i128` const generics. Bounded rules
+    /// compare their bounds to `NATIVE_MIN` / [`Self::NATIVE_MAX`]
+    /// at monomorphisation so over-width rules fail to compile for
+    /// the chosen carrier.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Numeric;
+    ///
+    /// assert_eq!(<i8 as Numeric>::NATIVE_MIN, -128);
+    /// assert_eq!(<u16 as Numeric>::NATIVE_MIN, 0);
+    /// ```
+    const NATIVE_MIN: i128;
+
+    /// Largest value representable by this carrier, widened to
+    /// `i128`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use whittle_core::primitive::Numeric;
+    ///
+    /// assert_eq!(<i8 as Numeric>::NATIVE_MAX, 127);
+    /// assert_eq!(<u16 as Numeric>::NATIVE_MAX, 65_535);
+    /// ```
+    const NATIVE_MAX: i128;
+
     /// Widen `self` into an `i128`.
     ///
     /// # Examples
@@ -298,6 +351,9 @@ pub trait Numeric: Sized + 'static {
 macro_rules! impl_numeric_signed {
     ($($ty:ty),+) => { $(
         impl Numeric for $ty {
+            const NATIVE_MIN: i128 = <$ty>::MIN as i128;
+            const NATIVE_MAX: i128 = <$ty>::MAX as i128;
+
             #[inline]
             fn into_i128(self) -> i128 {
                 i128::from(self)
@@ -314,6 +370,9 @@ macro_rules! impl_numeric_signed {
 macro_rules! impl_numeric_unsigned {
     ($($ty:ty),+) => { $(
         impl Numeric for $ty {
+            const NATIVE_MIN: i128 = <$ty>::MIN as i128;
+            const NATIVE_MAX: i128 = <$ty>::MAX as i128;
+
             #[inline]
             fn into_i128(self) -> i128 {
                 i128::from(self)
@@ -333,6 +392,9 @@ impl_numeric_unsigned!(u8, u16, u32, u64);
 // i128 needs its own impl because i128::from(self) doesn't exist
 // (it would be identity); ditto round-trip.
 impl Numeric for i128 {
+    const NATIVE_MIN: Self = Self::MIN;
+    const NATIVE_MAX: Self = Self::MAX;
+
     #[inline]
     fn into_i128(self) -> i128 {
         self
@@ -349,6 +411,12 @@ impl Numeric for i128 {
 // on the corresponding fixed-width primitive without any
 // fallible-conversion path.
 impl Numeric for usize {
+    const NATIVE_MIN: i128 = 0;
+    const NATIVE_MAX: i128 = {
+        assert!(Self::BITS <= 64, "usize wider than 64 bits is unsupported");
+        Self::MAX as i128
+    };
+
     #[inline]
     fn into_i128(self) -> i128 {
         const {
@@ -363,6 +431,15 @@ impl Numeric for usize {
 }
 
 impl Numeric for isize {
+    const NATIVE_MIN: i128 = {
+        assert!(Self::BITS <= 64, "isize wider than 64 bits is unsupported");
+        Self::MIN as i128
+    };
+    const NATIVE_MAX: i128 = {
+        assert!(Self::BITS <= 64, "isize wider than 64 bits is unsupported");
+        Self::MAX as i128
+    };
+
     #[inline]
     fn into_i128(self) -> i128 {
         const {
@@ -473,8 +550,8 @@ macro_rules! impl_numeric_arbitrary {
             #[inline]
             fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
                 use proptest::strategy::Strategy as _;
-                let ty_min = i128::from(<$ty>::MIN);
-                let ty_max = i128::from(<$ty>::MAX);
+                let ty_min = <$ty as Numeric>::NATIVE_MIN;
+                let ty_max = <$ty as Numeric>::NATIVE_MAX;
                 let lo = if min < ty_min { ty_min } else { min };
                 let hi = if max > ty_max { ty_max } else { max };
                 // `lo, hi` are clamped to `[ty_min, ty_max]`,
@@ -517,13 +594,12 @@ impl ArbitraryNumeric for usize {
     #[inline]
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
         use proptest::strategy::Strategy as _;
-        let ty_min: i128 = 0;
-        let ty_max: i128 = i128::from(u64::MAX);
+        let ty_min = <Self as Numeric>::NATIVE_MIN;
+        let ty_max = <Self as Numeric>::NATIVE_MAX;
         let lo = if min < ty_min { ty_min } else { min };
         let hi = if max > ty_max { ty_max } else { max };
-        // `lo, hi` are clamped to `[0, u64::MAX]`; both fit usize
-        // on every supported platform (BITS <= 64 enforced
-        // elsewhere).
+        // `lo, hi` are clamped to `usize`'s native range, so both
+        // fit by construction.
         let lo = Self::try_from(lo).unwrap_or(0);
         let hi = Self::try_from(hi).unwrap_or(Self::MAX);
         edge_biased_range!(lo, hi)
@@ -537,8 +613,8 @@ impl ArbitraryNumeric for isize {
     #[inline]
     fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
         use proptest::strategy::Strategy as _;
-        let ty_min: i128 = i128::from(i64::MIN);
-        let ty_max: i128 = i128::from(i64::MAX);
+        let ty_min = <Self as Numeric>::NATIVE_MIN;
+        let ty_max = <Self as Numeric>::NATIVE_MAX;
         let lo = if min < ty_min { ty_min } else { min };
         let hi = if max > ty_max { ty_max } else { max };
         let lo = Self::try_from(lo).unwrap_or(Self::MIN);
@@ -564,7 +640,7 @@ macro_rules! const_within_constructor {
         /// outside the inclusive range.
         #[inline]
         pub const fn $method(raw: $ty) -> Result<Refined<$ty, Self>, NumericError> {
-            const { Self::VALID };
+            Self::assert_native_bounds::<$ty>();
             let widened = raw as i128;
             if widened < MIN || widened > MAX {
                 Err(NumericError::OutOfRange { value: widened })
@@ -580,6 +656,18 @@ impl<const MIN: i128, const MAX: i128> Within<MIN, MAX> {
     /// from `Rule::refine` and `ArbitraryRule::arbitrary_strategy`
     /// via `const { Self::VALID }`.
     const VALID: () = assert!(MIN <= MAX, "Within: MIN must be <= MAX");
+
+    /// Assert that both range endpoints fit the selected carrier.
+    #[inline]
+    const fn assert_native_bounds<T: Numeric>() {
+        const { Self::VALID };
+        const {
+            assert!(
+                MIN >= T::NATIVE_MIN && MAX <= T::NATIVE_MAX,
+                "Within: bounds must fit in the carrier type",
+            );
+        }
+    }
 
     const_within_constructor!(
         /// Const-capable construction for `i8` carriers.
@@ -832,8 +920,21 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
-        const { Self::VALID };
+        Self::assert_native_bounds::<T>();
         <crate::composition::And<AtLeast<MIN>, AtMost<MAX>> as Rule<T>>::refine(raw)
+    }
+}
+
+impl<const MIN: i128> AtLeast<MIN> {
+    /// Assert that the lower bound fits the selected carrier.
+    #[inline]
+    const fn assert_native_bound<T: Numeric>() {
+        const {
+            assert!(
+                MIN >= T::NATIVE_MIN && MIN <= T::NATIVE_MAX,
+                "AtLeast: MIN must fit in the carrier type",
+            );
+        }
     }
 }
 
@@ -845,11 +946,25 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
+        Self::assert_native_bound::<T>();
         let widened = raw.into_i128();
         if widened < MIN {
             return Err(NumericError::OutOfRange { value: widened });
         }
         T::from_i128(widened)
+    }
+}
+
+impl<const MAX: i128> AtMost<MAX> {
+    /// Assert that the upper bound fits the selected carrier.
+    #[inline]
+    const fn assert_native_bound<T: Numeric>() {
+        const {
+            assert!(
+                MAX >= T::NATIVE_MIN && MAX <= T::NATIVE_MAX,
+                "AtMost: MAX must fit in the carrier type",
+            );
+        }
     }
 }
 
@@ -861,6 +976,7 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
+        Self::assert_native_bound::<T>();
         let widened = raw.into_i128();
         if widened > MAX {
             return Err(NumericError::OutOfRange { value: widened });
@@ -878,6 +994,18 @@ impl<const MIN: i128> GreaterThan<MIN> {
         MIN < i128::MAX,
         "GreaterThan: MIN must be less than i128::MAX",
     );
+
+    /// Assert that the open lower bound fits the selected carrier.
+    #[inline]
+    const fn assert_native_bound<T: Numeric>() {
+        const { Self::VALID };
+        const {
+            assert!(
+                MIN >= T::NATIVE_MIN && MIN <= T::NATIVE_MAX,
+                "GreaterThan: MIN must fit in the carrier type",
+            );
+        }
+    }
 }
 
 impl<T, const MIN: i128> Rule<T> for GreaterThan<MIN>
@@ -888,7 +1016,7 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
-        const { Self::VALID };
+        Self::assert_native_bound::<T>();
         let widened = raw.into_i128();
         if widened <= MIN {
             return Err(NumericError::OutOfRange { value: widened });
@@ -906,6 +1034,18 @@ impl<const MAX: i128> LessThan<MAX> {
         MAX > i128::MIN,
         "LessThan: MAX must be greater than i128::MIN",
     );
+
+    /// Assert that the open upper bound fits the selected carrier.
+    #[inline]
+    const fn assert_native_bound<T: Numeric>() {
+        const { Self::VALID };
+        const {
+            assert!(
+                MAX >= T::NATIVE_MIN && MAX <= T::NATIVE_MAX,
+                "LessThan: MAX must fit in the carrier type",
+            );
+        }
+    }
 }
 
 impl<T, const MAX: i128> Rule<T> for LessThan<MAX>
@@ -916,12 +1056,25 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
-        const { Self::VALID };
+        Self::assert_native_bound::<T>();
         let widened = raw.into_i128();
         if widened >= MAX {
             return Err(NumericError::OutOfRange { value: widened });
         }
         T::from_i128(widened)
+    }
+}
+
+impl<const N: i128> EqualTo<N> {
+    /// Assert that the singleton value fits the selected carrier.
+    #[inline]
+    const fn assert_native_bound<T: Numeric>() {
+        const {
+            assert!(
+                N >= T::NATIVE_MIN && N <= T::NATIVE_MAX,
+                "EqualTo: N must fit in the carrier type",
+            );
+        }
     }
 }
 
@@ -933,6 +1086,7 @@ where
 
     #[inline]
     fn refine(raw: T) -> Result<T, Self::Error> {
+        Self::assert_native_bound::<T>();
         let widened = raw.into_i128();
         if widened == N {
             T::from_i128(widened)
@@ -1005,10 +1159,10 @@ impl<const N: i128> crate::rule::PureFilter for EqualTo<N> {}
 //
 // Each schema reads the SAME const generics `refine` reads — the
 // bound itself is the single determinant — and is interpreted within
-// the carrier's embedding (`AtMost<300>` over `u8` still describes
-// the admitted set exactly; values above `u8::MAX` are outside the
-// embedding). Open bounds normalise to the adjacent inclusive bound,
-// exactly as `refine`'s `<`/`>` comparisons admit them.
+// the carrier's embedding. Over-width bounds fail at
+// monomorphisation before a schema can be constructed. Open bounds
+// normalise to the adjacent inclusive bound, exactly as `refine`'s
+// `<`/`>` comparisons admit them.
 
 impl<T, const MIN: i128, const MAX: i128> SchemaRule<T> for Within<MIN, MAX>
 where
@@ -1084,7 +1238,7 @@ where
 {
     #[inline]
     fn interval_bounds() -> (Option<i128>, Option<i128>) {
-        const { Self::VALID };
+        Self::assert_native_bounds::<T>();
         (Some(MIN), Some(MAX))
     }
 }
@@ -1095,6 +1249,7 @@ where
 {
     #[inline]
     fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        Self::assert_native_bound::<T>();
         (Some(MIN), None)
     }
 }
@@ -1105,6 +1260,7 @@ where
 {
     #[inline]
     fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        Self::assert_native_bound::<T>();
         (None, Some(MAX))
     }
 }
@@ -1115,7 +1271,7 @@ where
 {
     #[inline]
     fn interval_bounds() -> (Option<i128>, Option<i128>) {
-        const { Self::VALID };
+        Self::assert_native_bound::<T>();
         // `MIN + 1` is the smallest admitted integer; VALID
         // guarantees the addition does not overflow (the same
         // invariant the strategy relies on).
@@ -1129,7 +1285,7 @@ where
 {
     #[inline]
     fn interval_bounds() -> (Option<i128>, Option<i128>) {
-        const { Self::VALID };
+        Self::assert_native_bound::<T>();
         // `MAX - 1` is the largest admitted integer; VALID
         // guarantees the subtraction does not underflow.
         (None, Some(MAX - 1))
@@ -1142,6 +1298,7 @@ where
 {
     #[inline]
     fn interval_bounds() -> (Option<i128>, Option<i128>) {
+        Self::assert_native_bound::<T>();
         (Some(N), Some(N))
     }
 }
@@ -1164,7 +1321,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const { Self::VALID };
+        Self::assert_native_bounds::<T>();
         T::arbitrary_in_range(MIN, MAX).boxed()
     }
 }
@@ -1179,6 +1336,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
+        Self::assert_native_bound::<T>();
         T::arbitrary_in_range(MIN, i128::MAX).boxed()
     }
 }
@@ -1193,6 +1351,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
+        Self::assert_native_bound::<T>();
         T::arbitrary_in_range(i128::MIN, MAX).boxed()
     }
 }
@@ -1207,7 +1366,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const { Self::VALID };
+        Self::assert_native_bound::<T>();
         // `MIN + 1` is the smallest admissible value; VALID
         // guarantees `MIN < i128::MAX` so the addition does not
         // overflow.
@@ -1225,7 +1384,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
-        const { Self::VALID };
+        Self::assert_native_bound::<T>();
         // `MAX - 1` is the largest admissible value; VALID
         // guarantees `MAX > i128::MIN` so the subtraction does not
         // underflow.
@@ -1247,6 +1406,7 @@ where
     #[inline]
     fn arbitrary_strategy() -> Self::Strategy {
         use proptest::strategy::Strategy as _;
+        Self::assert_native_bound::<T>();
         let value: T = T::from_i128(N).expect("EqualTo<N>: N must fit in the carrier type T");
         proptest::strategy::Just(value).boxed()
     }
@@ -1404,6 +1564,19 @@ mod tests {
     }
 
     #[test]
+    fn width_guarded_u16_within_accepts_and_rejects() {
+        type TicketBand = Within<1, 500>;
+
+        let ok: Refined<u16, TicketBand> = Refined::try_new(500_u16).unwrap();
+        assert_eq!(*ok.as_inner(), 500_u16);
+        assert!(TicketBand::accepts(1_u16));
+
+        let err = Refined::<u16, TicketBand>::try_new(501_u16).unwrap_err();
+        assert_eq!(err, NumericError::OutOfRange { value: 501 });
+        assert!(!TicketBand::accepts(501_u16));
+    }
+
+    #[test]
     fn within_try_new_u16_rejects_out_of_range() {
         const ERR: Result<Refined<u16, Within<100, 599>>, NumericError> =
             Within::<100, 599>::try_new_u16(99);
@@ -1552,6 +1725,33 @@ mod tests {
     // every variant through Within to exercise both `into_i128` and
     // `from_i128`. The cases here are deliberately minimal: a single
     // admissible round-trip per type is enough to take all branches.
+
+    #[test]
+    fn numeric_native_bounds_match_supported_carriers() {
+        assert_eq!(<i8 as super::Numeric>::NATIVE_MIN, i128::from(i8::MIN));
+        assert_eq!(<i8 as super::Numeric>::NATIVE_MAX, i128::from(i8::MAX));
+        assert_eq!(<i16 as super::Numeric>::NATIVE_MIN, i128::from(i16::MIN));
+        assert_eq!(<i16 as super::Numeric>::NATIVE_MAX, i128::from(i16::MAX));
+        assert_eq!(<i32 as super::Numeric>::NATIVE_MIN, i128::from(i32::MIN));
+        assert_eq!(<i32 as super::Numeric>::NATIVE_MAX, i128::from(i32::MAX));
+        assert_eq!(<i64 as super::Numeric>::NATIVE_MIN, i128::from(i64::MIN));
+        assert_eq!(<i64 as super::Numeric>::NATIVE_MAX, i128::from(i64::MAX));
+        assert_eq!(<i128 as super::Numeric>::NATIVE_MIN, i128::MIN);
+        assert_eq!(<i128 as super::Numeric>::NATIVE_MAX, i128::MAX);
+        assert_eq!(<isize as super::Numeric>::NATIVE_MIN, isize::MIN as i128);
+        assert_eq!(<isize as super::Numeric>::NATIVE_MAX, isize::MAX as i128);
+
+        assert_eq!(<u8 as super::Numeric>::NATIVE_MIN, i128::from(u8::MIN));
+        assert_eq!(<u8 as super::Numeric>::NATIVE_MAX, i128::from(u8::MAX));
+        assert_eq!(<u16 as super::Numeric>::NATIVE_MIN, i128::from(u16::MIN));
+        assert_eq!(<u16 as super::Numeric>::NATIVE_MAX, i128::from(u16::MAX));
+        assert_eq!(<u32 as super::Numeric>::NATIVE_MIN, i128::from(u32::MIN));
+        assert_eq!(<u32 as super::Numeric>::NATIVE_MAX, i128::from(u32::MAX));
+        assert_eq!(<u64 as super::Numeric>::NATIVE_MIN, i128::from(u64::MIN));
+        assert_eq!(<u64 as super::Numeric>::NATIVE_MAX, i128::from(u64::MAX));
+        assert_eq!(<usize as super::Numeric>::NATIVE_MIN, 0);
+        assert_eq!(<usize as super::Numeric>::NATIVE_MAX, usize::MAX as i128);
+    }
 
     #[test]
     fn within_round_trip_i16() {
@@ -1948,6 +2148,20 @@ mod tests {
         assert!(saw_max, "edge-biased Within must emit MAX");
     }
 
+    #[cfg(feature = "proptest")]
+    #[test]
+    fn width_guarded_u16_arbitrary_rule_emits_in_range() {
+        use proptest::strategy::{Strategy as _, ValueTree as _};
+
+        let strategy = <Within<1, 500> as crate::rule::ArbitraryRule<u16>>::arbitrary_strategy();
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+
+        for _ in 0_u32..64 {
+            let value = strategy.new_tree(&mut runner).unwrap().current();
+            assert!((1..=500).contains(&value));
+        }
+    }
+
     // ─── SchemaRule: the constructive descriptions. ────────────────
     //
     // Each schema must read the same const generics `refine` reads;
@@ -2002,6 +2216,22 @@ mod tests {
         // The singleton rule is the degenerate interval.
         assert_eq!(<EqualTo<42> as SchemaRule<i32>>::schema(), closed(42, 42));
         assert_eq!(<EqualTo<42> as SchemaRule<u8>>::schema(), closed(42, 42));
+    }
+
+    #[test]
+    fn width_guarded_u16_schemas_keep_the_same_bounds() {
+        assert_eq!(
+            <Within<1, 500> as SchemaRule<u16>>::schema(),
+            closed(1, 500)
+        );
+        assert_eq!(<AtLeast<1> as SchemaRule<u16>>::schema(), at_least(1));
+        assert_eq!(<AtMost<500> as SchemaRule<u16>>::schema(), at_most(500));
+        assert_eq!(<GreaterThan<1> as SchemaRule<u16>>::schema(), at_least(2));
+        assert_eq!(<LessThan<500> as SchemaRule<u16>>::schema(), at_most(499));
+        assert_eq!(
+            <EqualTo<500> as SchemaRule<u16>>::schema(),
+            closed(500, 500)
+        );
     }
 
     /// The `SchemaInterval` bounds are the single determinant the
