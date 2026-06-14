@@ -116,6 +116,28 @@ pub struct AtMost<const MAX: i128>;
 /// let err = Refined::<i32, GreaterThan<10>>::try_new(10).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: 10 });
 /// ```
+///
+/// The largest strict lower bound that still leaves a `u16` value
+/// is valid:
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::GreaterThan;
+///
+/// let ok: Refined<u16, GreaterThan<{ u16::MAX as i128 - 1 }>> =
+///     Refined::try_new(u16::MAX).unwrap();
+/// assert_eq!(*ok.as_inner(), u16::MAX);
+/// ```
+///
+/// A strict lower bound at the carrier maximum leaves no admissible
+/// value and fails to compile:
+///
+/// ```compile_fail
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::GreaterThan;
+///
+/// let _ = Refined::<u16, GreaterThan<{ u16::MAX as i128 }>>::try_new(u16::MAX);
+/// ```
 pub struct GreaterThan<const MIN: i128>;
 
 /// Open upper-bound rule: `value < MAX`.
@@ -136,6 +158,28 @@ pub struct GreaterThan<const MIN: i128>;
 /// // The bound itself is rejected.
 /// let err = Refined::<i32, LessThan<100>>::try_new(100).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: 100 });
+/// ```
+///
+/// The smallest strict upper bound that still leaves a `u16` value
+/// is valid:
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::LessThan;
+///
+/// let ok: Refined<u16, LessThan<{ u16::MIN as i128 + 1 }>> =
+///     Refined::try_new(u16::MIN).unwrap();
+/// assert_eq!(*ok.as_inner(), u16::MIN);
+/// ```
+///
+/// A strict upper bound at the carrier minimum leaves no admissible
+/// value and fails to compile:
+///
+/// ```compile_fail
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::LessThan;
+///
+/// let _ = Refined::<u16, LessThan<{ u16::MIN as i128 }>>::try_new(u16::MIN);
 /// ```
 pub struct LessThan<const MAX: i128>;
 
@@ -1001,8 +1045,8 @@ impl<const MIN: i128> GreaterThan<MIN> {
         const { Self::VALID };
         const {
             assert!(
-                MIN >= T::NATIVE_MIN && MIN <= T::NATIVE_MAX,
-                "GreaterThan: MIN must fit in the carrier type",
+                MIN >= T::NATIVE_MIN && MIN < T::NATIVE_MAX,
+                "GreaterThan: MIN must leave an admissible carrier value",
             );
         }
     }
@@ -1041,8 +1085,8 @@ impl<const MAX: i128> LessThan<MAX> {
         const { Self::VALID };
         const {
             assert!(
-                MAX >= T::NATIVE_MIN && MAX <= T::NATIVE_MAX,
-                "LessThan: MAX must fit in the carrier type",
+                MAX > T::NATIVE_MIN && MAX <= T::NATIVE_MAX,
+                "LessThan: MAX must leave an admissible carrier value",
             );
         }
     }
@@ -1673,6 +1717,17 @@ mod tests {
             zero.unwrap_err(),
             NumericError::OutOfRange { value: 0_i128 },
         );
+    }
+
+    #[test]
+    fn strict_u16_edges_allow_the_single_remaining_value() {
+        let max: Refined<u16, GreaterThan<{ u16::MAX as i128 - 1 }>> =
+            Refined::try_new(u16::MAX).unwrap();
+        assert_eq!(*max.as_inner(), u16::MAX);
+
+        let min: Refined<u16, LessThan<{ u16::MIN as i128 + 1 }>> =
+            Refined::try_new(u16::MIN).unwrap();
+        assert_eq!(*min.as_inner(), u16::MIN);
     }
 
     #[test]
