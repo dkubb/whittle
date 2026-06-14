@@ -584,6 +584,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "serde_test",
  "thiserror",
  "url",
  "whittle-core",

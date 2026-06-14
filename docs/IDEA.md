@@ -485,6 +485,15 @@ rather than through macro generation (ARCHITECTURE §15.1);
 macro-declared implication edges remain planned (ARCHITECTURE §15.3), so
 this section is not yet fully satisfied.]
 
+[Conformance note 2026-06-14: the `record!` macro covers the
+product-relation case that a bare composed rule type cannot make
+ergonomic: it generates an opaque named record over a refined tuple, the
+validate-only joint rule, a typed error enum, read-only field accessors,
+`Deserialize` routed through `try_new`, flat `Serialize`, and
+feature-gated `Arbitrary`. Schema reflection remains absent for
+opaque cross-field rule bodies unless a rule author supplies a
+sound structural `SchemaRule` implementation.]
+
 The narrowing morphism MUST be expressed as named, ordered steps.
 Type-level composition satisfies this requirement: transformer rules
 (`Trim<R>`, `AsciiLowercase<R>`, ...) and validation rules
@@ -539,6 +548,15 @@ impl that uses rejection sampling. Users MAY provide a hand-written
 strategy; in its absence, the corresponding refined type does NOT
 implement `Arbitrary`. The library MUST NOT block manual
 implementations.
+
+[Amended 2026-06-14: `record!` product relations are the explicit
+exception. A generated record strategy MAY generate the field product
+from the fields' own `Arbitrary` implementations and filter through the
+joint rule, because Rust cannot derive an admissible-by-construction
+strategy for an arbitrary relation over multiple fields. This filtering
+MUST remain visible in the macro documentation and is confined to the
+generated record strategy; downstream tests still receive only
+admissible records and do not use `prop_assume!`.]
 
 ### 5.12. Bidirectional Codecs
 

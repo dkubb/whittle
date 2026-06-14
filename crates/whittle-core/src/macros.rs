@@ -745,6 +745,809 @@ macro_rules! __refinement_serde {
     ($name:ident, $inner:ty, $rule:ty, $error:ident) => {};
 }
 
+/// Define an opaque record carrier for a cross-field invariant.
+///
+/// `record!` is the named-field front door for product relations such
+/// as `from <= to`, `origin != destination`, or `base + tax` staying in
+/// range. It generates an opaque wrapper around
+/// `Refined<(Field1, Field2, ...), Name>`, where the generated record
+/// type itself is the rule marker for the tuple carrier. Construction
+/// goes through `try_new`; named accessors return shared references;
+/// `into_parts` consumes the proof and returns the raw tuple.
+///
+/// Field-level invariants belong in the field types. The `rule(...)`
+/// block is validate-only and owns only the cross-field relation. Its
+/// parameters are shared references to the tuple fields, in order, and
+/// the block must return `Result<(), Error>`.
+///
+/// With the `serde` feature enabled, `record!` emits flat object
+/// `Serialize` and `Deserialize` impls. Deserialization rejects unknown,
+/// duplicate, and missing fields, then routes through `try_new`, so
+/// wire ingress cannot bypass the joint invariant. `Option` fields are
+/// still required as keys; use `null` for `None`.
+///
+/// With the `proptest` feature enabled, `record!` implements
+/// `ArbitraryRule` for the tuple carrier and `Arbitrary` for the record
+/// by generating fields independently and filtering through the joint
+/// rule. Cross-field relations are the one rule family where rejection
+/// may be unavoidable; the filtering is explicit rather than hidden in
+/// callers. The acceptance rate is the density of the relation over
+/// the independent field strategies, so very sparse relations can hit
+/// Proptest's filter budget.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::record;
+///
+/// record! {
+///     /// Inclusive integer range whose lower endpoint is not above
+///     /// its upper endpoint.
+///     #[derive(Debug, Clone, PartialEq, Eq)]
+///     pub struct IntRange {
+///         /// Lower endpoint.
+///         from: i32,
+///         /// Upper endpoint.
+///         to: i32,
+///     }
+///
+///     rule(from, to) {
+///         if from > to {
+///             return Err(IntRangeError::Reversed);
+///         }
+///         Ok(())
+///     }
+///
+///     /// Error returned by [`IntRange::try_new`].
+///     error IntRangeError {
+///         /// Lower endpoint is greater than the upper endpoint.
+///         Reversed => "from must be on or before to",
+///     }
+/// }
+///
+/// let range = IntRange::try_new(1, 3).unwrap();
+/// assert_eq!(range.from(), &1);
+/// assert_eq!(range.to(), &3);
+/// assert_eq!(range.into_parts(), (1, 3));
+///
+/// let err = IntRange::try_new(4, 3).unwrap_err();
+/// assert_eq!(err, IntRangeError::Reversed);
+/// ```
+///
+/// The generated carrier is opaque outside its declaring module; a
+/// caller cannot bypass `try_new` with a struct literal or tuple
+/// constructor:
+///
+/// ```compile_fail
+/// mod domain {
+///     whittle_core::record! {
+///         /// Ordered pair.
+///         #[derive(Debug)]
+///         pub struct OrderedPair {
+///             /// Left value.
+///             left: i32,
+///             /// Right value.
+///             right: i32,
+///         }
+///
+///         rule(left, right) {
+///             if left > right {
+///                 return Err(OrderedPairError::Reversed);
+///             }
+///             Ok(())
+///         }
+///
+///         /// Ordered-pair error.
+///         error OrderedPairError {
+///             /// Left value is greater than right value.
+///             Reversed => "left must be <= right",
+///         }
+///     }
+/// }
+///
+/// let _bypass = domain::OrderedPair(todo!());
+/// ```
+///
+/// The `rule(...)` binding list must repeat the record fields in
+/// declaration order. Swapped or renamed bindings are rejected at
+/// expansion time:
+///
+/// ```compile_fail
+/// whittle_core::record! {
+///     /// Badly declared ordered pair.
+///     #[derive(Debug)]
+///     pub struct BadPair {
+///         /// Left value.
+///         left: i32,
+///         /// Right value.
+///         right: i32,
+///     }
+///
+///     rule(right, left) {
+///         Ok(())
+///     }
+///
+///     /// Ordered-pair error.
+///     error BadPairError {
+///         /// Left value is greater than right value.
+///         Reversed => "left must be <= right",
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! record {
+    (
+        $(#[$attr:meta])*
+        $vis:vis struct $name:ident {
+            $($(#[$fattr:meta])* $field:ident : $fty:ty),+ $(,)?
+        }
+
+        rule($($rfield:ident),+ $(,)?) $rule:block
+
+        $(#[$eattr:meta])*
+        error $error:ident {
+            $($ebody:tt)+
+        }
+    ) => {
+        $crate::record! {
+            @dispatch
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [$(($field: $fty)),+],
+            rule_fields = [$($rfield),+],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [($f1:ident: $t1:ty), ($f2:ident: $t2:ty)],
+        rule_fields = [$r1:ident, $r2:ident],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $crate::record! {
+            @emit
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [
+                ($f1: $t1, $r1, Field0, 0),
+                ($f2: $t2, $r2, Field1, 1)
+            ],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [($f1:ident: $t1:ty), ($f2:ident: $t2:ty), ($f3:ident: $t3:ty)],
+        rule_fields = [$r1:ident, $r2:ident, $r3:ident],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $crate::record! {
+            @emit
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [
+                ($f1: $t1, $r1, Field0, 0),
+                ($f2: $t2, $r2, Field1, 1),
+                ($f3: $t3, $r3, Field2, 2)
+            ],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [
+            ($f1:ident: $t1:ty),
+            ($f2:ident: $t2:ty),
+            ($f3:ident: $t3:ty),
+            ($f4:ident: $t4:ty)
+        ],
+        rule_fields = [$r1:ident, $r2:ident, $r3:ident, $r4:ident],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $crate::record! {
+            @emit
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [
+                ($f1: $t1, $r1, Field0, 0),
+                ($f2: $t2, $r2, Field1, 1),
+                ($f3: $t3, $r3, Field2, 2),
+                ($f4: $t4, $r4, Field3, 3)
+            ],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [
+            ($f1:ident: $t1:ty),
+            ($f2:ident: $t2:ty),
+            ($f3:ident: $t3:ty),
+            ($f4:ident: $t4:ty),
+            ($f5:ident: $t5:ty)
+        ],
+        rule_fields = [$r1:ident, $r2:ident, $r3:ident, $r4:ident, $r5:ident],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $crate::record! {
+            @emit
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [
+                ($f1: $t1, $r1, Field0, 0),
+                ($f2: $t2, $r2, Field1, 1),
+                ($f3: $t3, $r3, Field2, 2),
+                ($f4: $t4, $r4, Field3, 3),
+                ($f5: $t5, $r5, Field4, 4)
+            ],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [
+            ($f1:ident: $t1:ty),
+            ($f2:ident: $t2:ty),
+            ($f3:ident: $t3:ty),
+            ($f4:ident: $t4:ty),
+            ($f5:ident: $t5:ty),
+            ($f6:ident: $t6:ty)
+        ],
+        rule_fields = [
+            $r1:ident,
+            $r2:ident,
+            $r3:ident,
+            $r4:ident,
+            $r5:ident,
+            $r6:ident
+        ],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $crate::record! {
+            @emit
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [
+                ($f1: $t1, $r1, Field0, 0),
+                ($f2: $t2, $r2, Field1, 1),
+                ($f3: $t3, $r3, Field2, 2),
+                ($f4: $t4, $r4, Field3, 3),
+                ($f5: $t5, $r5, Field4, 4),
+                ($f6: $t6, $r6, Field5, 5)
+            ],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [
+            ($f1:ident: $t1:ty),
+            ($f2:ident: $t2:ty),
+            ($f3:ident: $t3:ty),
+            ($f4:ident: $t4:ty),
+            ($f5:ident: $t5:ty),
+            ($f6:ident: $t6:ty),
+            ($f7:ident: $t7:ty)
+        ],
+        rule_fields = [
+            $r1:ident,
+            $r2:ident,
+            $r3:ident,
+            $r4:ident,
+            $r5:ident,
+            $r6:ident,
+            $r7:ident
+        ],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $crate::record! {
+            @emit
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [
+                ($f1: $t1, $r1, Field0, 0),
+                ($f2: $t2, $r2, Field1, 1),
+                ($f3: $t3, $r3, Field2, 2),
+                ($f4: $t4, $r4, Field3, 3),
+                ($f5: $t5, $r5, Field4, 4),
+                ($f6: $t6, $r6, Field5, 5),
+                ($f7: $t7, $r7, Field6, 6)
+            ],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [
+            ($f1:ident: $t1:ty),
+            ($f2:ident: $t2:ty),
+            ($f3:ident: $t3:ty),
+            ($f4:ident: $t4:ty),
+            ($f5:ident: $t5:ty),
+            ($f6:ident: $t6:ty),
+            ($f7:ident: $t7:ty),
+            ($f8:ident: $t8:ty)
+        ],
+        rule_fields = [
+            $r1:ident,
+            $r2:ident,
+            $r3:ident,
+            $r4:ident,
+            $r5:ident,
+            $r6:ident,
+            $r7:ident,
+            $r8:ident
+        ],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $crate::record! {
+            @emit
+            attrs = [$(#[$attr])*],
+            vis = [$vis],
+            name = [$name],
+            fields = [
+                ($f1: $t1, $r1, Field0, 0),
+                ($f2: $t2, $r2, Field1, 1),
+                ($f3: $t3, $r3, Field2, 2),
+                ($f4: $t4, $r4, Field3, 3),
+                ($f5: $t5, $r5, Field4, 4),
+                ($f6: $t6, $r6, Field5, 5),
+                ($f7: $t7, $r7, Field6, 6),
+                ($f8: $t8, $r8, Field7, 7)
+            ],
+            rule = [$rule],
+            error_attrs = [$(#[$eattr])*],
+            error = [$error],
+            error_body = [$($ebody)+],
+        }
+    };
+
+    (
+        @dispatch
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [$($fields:tt)*],
+        rule_fields = [$($rfields:tt)*],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        ::core::compile_error!("record!: expected 2 to 8 fields and matching rule(...) bindings");
+    };
+
+    (
+        @emit
+        attrs = [$(#[$attr:meta])*],
+        vis = [$vis:vis],
+        name = [$name:ident],
+        fields = [
+            $(($field:ident: $fty:ty, $rfield:ident, $field_variant:ident, $idx:tt)),+
+        ],
+        rule = [$rule:block],
+        error_attrs = [$(#[$eattr:meta])*],
+        error = [$error:ident],
+        error_body = [$($ebody:tt)+],
+    ) => {
+        $(#[$attr])*
+        $vis struct $name($crate::Refined<($($fty,)+), $name>);
+
+        const _: () = {
+            macro_rules! __whittle_record_rule_fields_must_match_declared_fields {
+                ($($field),+) => {};
+            }
+            __whittle_record_rule_fields_must_match_declared_fields!($($rfield),+);
+        };
+
+        impl $name {
+            /// Validate the fields against the record rule and wrap.
+            ///
+            /// # Errors
+            ///
+            /// Returns the record error when the fields do not satisfy
+            /// the cross-field invariant.
+            #[inline]
+            pub fn try_new($($field: $fty),+) -> ::core::result::Result<Self, $error> {
+                $crate::Refined::try_new(($($field,)+)).map(Self)
+            }
+
+            $(
+                /// Borrow a record field.
+                #[inline]
+                #[must_use]
+                pub const fn $field(&self) -> &$fty {
+                    &self.0.as_inner().$idx
+                }
+            )+
+
+            /// Consume the record and return its field tuple.
+            #[inline]
+            #[must_use]
+            pub fn into_parts(self) -> ($($fty,)+) {
+                self.0.into_inner()
+            }
+        }
+
+        impl $crate::Rule<($($fty,)+)> for $name {
+            type Error = $error;
+
+            #[inline]
+            fn refine(raw: ($($fty,)+)) -> ::core::result::Result<($($fty,)+), Self::Error> {
+                $(let $rfield = &raw.$idx;)+
+
+                let validation: ::core::result::Result<(), Self::Error> = $rule;
+                validation?;
+                ::core::result::Result::Ok(raw)
+            }
+        }
+
+        impl $crate::PureFilter for $name {}
+
+        $crate::record! {
+            @record_error_block
+            attrs = [$(#[$eattr])*],
+            vis = [$vis],
+            error = [$error],
+            converted = [],
+            $($ebody)+
+        }
+
+        $crate::__record_serde!(
+            $name,
+            [$(($field, $idx)),+],
+            [$($fty),+],
+            [$($field_variant),+]
+        );
+        $crate::__record_arbitrary!($name, ($($fty),+));
+    };
+
+    (
+        @record_error_block
+        attrs = [$(#[$eattr:meta])*],
+        vis = [$vis:vis],
+        error = [$error:ident],
+        converted = [$($converted:tt)*],
+    ) => {
+        $crate::refinement! {
+            @error_block
+            attrs = [$(#[$eattr])*],
+            vis = [$vis],
+            error = [$error],
+            source = [$error],
+            formatter = [f],
+            variants = [],
+            displays = [],
+            maps = [],
+            $($converted)*
+        }
+    };
+
+    (
+        @record_error_block
+        attrs = [$(#[$eattr:meta])*],
+        vis = [$vis:vis],
+        error = [$error:ident],
+        converted = [$($converted:tt)*],
+        $(#[$vattr:meta])*
+        $variant:ident $({
+            $($(#[$fattr:meta])* $field:ident : $fty:ty),+ $(,)?
+        })? => $display:literal
+        $(, $($rest:tt)*)?
+    ) => {
+        $crate::record! {
+            @record_error_block
+            attrs = [$(#[$eattr])*],
+            vis = [$vis],
+            error = [$error],
+            converted = [
+                $($converted)*
+                $(#[$vattr])*
+                $error::$variant $({ $($field),+ })? => $variant $({ $($(#[$fattr])* $field: $fty),+ })? : $display,
+            ],
+            $($($rest)*)?
+        }
+    };
+}
+
+/// Internal `record!` helper: emits flat `Serialize` /
+/// `Deserialize` impls for a generated record.
+#[cfg(feature = "serde")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __record_serde {
+    (
+        $name:ident,
+        [$(($field:ident, $idx:tt)),+],
+        [$($fty:ty),+],
+        [$($field_variant:ident),+]
+    ) => {
+        impl $crate::serde::Serialize for $name {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error>
+            where
+                S: $crate::serde::Serializer,
+            {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                let mut state = serializer.serialize_struct(stringify!($name), FIELDS.len())?;
+
+                $(
+                    let serialized = $crate::serde::ser::SerializeStruct::serialize_field(
+                        &mut state,
+                        stringify!($field),
+                        self.$field(),
+                    );
+                    serialized?;
+                )+
+
+                $crate::serde::ser::SerializeStruct::end(state)
+            }
+        }
+
+        impl<'de> $crate::serde::Deserialize<'de> for $name {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
+            where
+                D: $crate::serde::Deserializer<'de>,
+            {
+                enum Field {
+                    $($field_variant),+
+                }
+
+                struct FieldVisitor;
+
+                impl<'de> $crate::serde::de::Visitor<'de> for FieldVisitor {
+                    type Value = Field;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut ::core::fmt::Formatter<'_>,
+                    ) -> ::core::fmt::Result {
+                        formatter.write_str("record field")
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> ::core::result::Result<Self::Value, E>
+                    where
+                        E: $crate::serde::de::Error,
+                    {
+                        match value {
+                            $(stringify!($field) => ::core::result::Result::Ok(Field::$field_variant),)+
+                            _ => ::core::result::Result::Err(
+                                $crate::serde::de::Error::unknown_field(value, FIELDS),
+                            ),
+                        }
+                    }
+                }
+
+                impl<'de> $crate::serde::Deserialize<'de> for Field {
+                    fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
+                    where
+                        D: $crate::serde::Deserializer<'de>,
+                    {
+                        deserializer.deserialize_identifier(FieldVisitor)
+                    }
+                }
+
+                struct RecordVisitor;
+
+                impl<'de> $crate::serde::de::Visitor<'de> for RecordVisitor {
+                    type Value = $name;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut ::core::fmt::Formatter<'_>,
+                    ) -> ::core::fmt::Result {
+                        formatter.write_str(concat!("struct ", stringify!($name)))
+                    }
+
+                    fn visit_map<M>(self, mut map: M) -> ::core::result::Result<Self::Value, M::Error>
+                    where
+                        M: $crate::serde::de::MapAccess<'de>,
+                    {
+                        $(let mut $field: ::core::option::Option<$fty> = ::core::option::Option::None;)+
+
+                        while let ::core::option::Option::Some(key) = map.next_key::<Field>()? {
+                            match key {
+                                $(
+                                    Field::$field_variant => {
+                                        if $field.is_some() {
+                                            return ::core::result::Result::Err(
+                                                $crate::serde::de::Error::duplicate_field(stringify!($field)),
+                                            );
+                                        }
+                                        $field = ::core::option::Option::Some(map.next_value()?);
+                                    }
+                                )+
+                            }
+                        }
+
+                        $(
+                            let $field = match $field {
+                                ::core::option::Option::Some(value) => value,
+                                ::core::option::Option::None => {
+                                    return ::core::result::Result::Err(
+                                        $crate::serde::de::Error::missing_field(stringify!($field)),
+                                    );
+                                }
+                            };
+                        )+
+
+                        $name::try_new($($field),+).map_err($crate::serde::de::Error::custom)
+                    }
+
+                    fn visit_seq<A>(self, mut seq: A) -> ::core::result::Result<Self::Value, A::Error>
+                    where
+                        A: $crate::serde::de::SeqAccess<'de>,
+                    {
+                        $(
+                            let $field: $fty = seq
+                                .next_element()?
+                                .ok_or_else(|| $crate::serde::de::Error::invalid_length($idx, &self))?;
+                        )+
+
+                        $name::try_new($($field),+).map_err($crate::serde::de::Error::custom)
+                    }
+                }
+
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                deserializer.deserialize_struct(stringify!($name), FIELDS, RecordVisitor)
+            }
+        }
+    };
+}
+
+/// Internal `record!` helper: no-op arm used when whittle's
+/// `serde` feature is disabled.
+#[cfg(not(feature = "serde"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __record_serde {
+    (
+        $name:ident,
+        [$(($field:ident, $idx:tt)),+],
+        [$($fty:ty),+],
+        [$($field_variant:ident),+]
+    ) => {};
+}
+
+/// Internal `record!` helper: emits proptest generation for a
+/// generated record and its tuple rule.
+#[cfg(feature = "proptest")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __record_arbitrary {
+    ($name:ident, ($($fty:ty),+)) => {
+        impl $crate::ArbitraryRule<($($fty,)+)> for $name
+        where
+            $(
+                $fty: $crate::proptest::arbitrary::Arbitrary
+                    + ::core::fmt::Debug
+                    + 'static,
+                <$fty as $crate::proptest::arbitrary::Arbitrary>::Strategy: 'static,
+            )+
+        {
+            type Strategy = $crate::proptest::strategy::BoxedStrategy<($($fty,)+)>;
+
+            #[inline]
+            fn arbitrary_strategy() -> Self::Strategy {
+                use $crate::proptest::strategy::Strategy as _;
+
+                ($($crate::proptest::arbitrary::any::<$fty>()),+)
+                    .prop_filter_map(
+                        concat!(stringify!($name), " fields must satisfy the record rule"),
+                        |raw| <$name as $crate::Rule<($($fty,)+)>>::refine(raw).ok(),
+                    )
+                    .boxed()
+            }
+        }
+
+        impl $crate::proptest::arbitrary::Arbitrary for $name
+        where
+            $name: ::core::fmt::Debug,
+            ($($fty,)+): ::core::fmt::Debug + 'static,
+            $name: $crate::ArbitraryRule<($($fty,)+)> + 'static,
+        {
+            type Parameters = ();
+            type Strategy = $crate::proptest::strategy::BoxedStrategy<Self>;
+
+            #[inline]
+            fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
+                use $crate::proptest::strategy::Strategy as _;
+
+                <$crate::Refined<($($fty,)+), $name> as $crate::proptest::arbitrary::Arbitrary>::arbitrary_with(())
+                    .prop_map(Self)
+                    .boxed()
+            }
+        }
+    };
+}
+
+/// Internal `record!` helper: no-op arm used when whittle's
+/// `proptest` feature is disabled.
+#[cfg(not(feature = "proptest"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __record_arbitrary {
+    ($name:ident, ($($fty:ty),+)) => {};
+}
+
 /// Implement `serde::Serialize` by projecting a domain value into an
 /// explicit flat field list.
 ///

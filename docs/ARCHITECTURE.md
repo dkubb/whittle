@@ -79,8 +79,8 @@ The shipped surface comprises:
 - the closed-set family (`ClosedSet`, `closed_set!`) for parsing wire
   strings into plain enums;
 - the `Implies` trait and the `weaken` upcast;
-- declarative macros (`refinement!`, `deserialize_rule!`, `closed_set!`)
-  and the procedural `pattern!` macro;
+- declarative macros (`refinement!`, `deserialize_rule!`,
+  `closed_set!`, `record!`) and the procedural `pattern!` macro;
 - behind the `serde` feature, deserialization gated through the rule,
   with streaming bound enforcement for length-bounded collections;
 - behind the `proptest` feature, per-rule admissible-by-construction
@@ -254,7 +254,8 @@ whittle/
 │   │       ├── transform.rs    Trim, AsciiLowercase/Uppercase, StableUnder*
 │   │       ├── implies.rs      Implies, weaken, library edges
 │   │       ├── closed_set.rs   ClosedSet, parse/as_str, codec, strategies
-│   │       ├── macros.rs       refinement!, deserialize_rule!, closed_set!
+│   │       ├── macros.rs       refinement!, deserialize_rule!, closed_set!,
+│   │       │                   record!
 │   │       ├── testing.rs      prop_total, prop_image_refines (proptest)
 │   │       └── primitive/      numeric, float, decimal, string,
 │   │                           collection, path, url, pattern, date, datetime
@@ -829,7 +830,7 @@ only when the regex matches the **entire** input — the rule enforces
 the full span itself, so unanchored and anchored patterns behave
 identically. Compiled regexes are cached in a keyed `OnceLock`. A bare
 `Pattern<RE>` with a malformed `RE` panics on first construction;
-prefer the `pattern!` macro (Section 13.4), which turns the malformed
+prefer the `pattern!` macro (Section 13.5), which turns the malformed
 pattern into a compile error. `Pattern` is the escape hatch for
 positional grammars the composable character-class rules cannot express
 ergonomically.
@@ -1068,7 +1069,58 @@ codec. Generating enum and table from one declaration list makes
 "variant without a wire string", "wire string without a variant", and
 "variant declared twice" unrepresentable in the declaration artifact.
 
-### 13.4. pattern!
+### 13.4. record!
+
+```rust
+record! {
+    /// Inclusive integer range.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct IntRange {
+        from: i32,
+        to: i32,
+    }
+
+    rule(from, to) {
+        if from > to {
+            return Err(IntRangeError::Reversed);
+        }
+        Ok(())
+    }
+
+    /// Range construction error.
+    error IntRangeError {
+        Reversed => "from must be on or before to",
+    }
+}
+```
+
+Declarative codegen for static product relations: generates an opaque
+record wrapper around `Refined<(Field1, Field2, ...), Name>`, where the
+record type itself is the tuple rule marker. The generated surface is
+`try_new(named fields)`, named shared-reference accessors,
+`into_parts`, an `impl Rule<(...)>` that binds the rule block's
+field names to tuple positions, `PureFilter`, and a domain error enum
+through the same error-block machinery used by `refinement!`.
+
+When the `serde` feature is enabled, `record!` emits a flat object
+codec whose field set and order come from the record declaration.
+Deserialization rejects unknown, duplicate, and missing fields and then
+routes through `try_new`; `Option` fields are still required keys, with
+`null` representing `None`. When the `proptest` feature is enabled,
+the record implements `ArbitraryRule` for its tuple and `Arbitrary` for
+the record by generating fields independently and filtering through
+the joint rule. That explicit filtering is confined to cross-field
+relations, where Rust cannot construct arbitrary dependent products
+without a predicate check. The generated strategy's acceptance rate is
+the relation density over the independent field strategies, so very
+sparse relations may still exhaust Proptest's filter budget.
+
+`record!` is not a schema-reflection shortcut. A hand-written
+cross-field relation has no `SchemaRule` impl unless the rule author
+supplies one; absence is the honest representation for relations that
+the current structural vocabulary cannot express.
+
+### 13.5. pattern!
 
 ```rust
 type Name = whittle::pattern!(r"^(?:[A-Z])(?:-?[A-Za-z]+)*$");
@@ -1121,6 +1173,8 @@ would, including:
 - serde round-trips and rejection fixtures proving invariant-violating
   payloads are rejected with typed errors ([IDEA.md](IDEA.md) §5.3);
 - the closed-set codec and the derived reject-input generator;
+- the `record!` macro's opaque product carrier, flat serde, and
+  cross-field `Arbitrary` routing;
 - the `Arbitrary` derivations and the property harness;
 - the domain-newtype, transformer, and composition patterns;
 - the `pattern!` macro (expansion and compile-fail).

@@ -167,9 +167,13 @@ can map 1:1 into its domain variants.
 - **Closed sets** — `ClosedSet` plus `closed_set!` for provider wire
   tokens where the enum itself is the constructive target, not a
   `Refined<String, _>` wrapper.
+- **Records** — `record!` for static product relations such as
+  `from <= to`, preserving an opaque tuple-carrier proof while exposing
+  named fields and flat serde.
 - **Macros** — `refinement!` for nominal newtypes,
   `deserialize_rule!` for default serde gating, `closed_set!`, and
-  feature-gated `pattern!` for compile-time-validated regex rules.
+  `record!`, plus feature-gated `pattern!` for compile-time-validated
+  regex rules.
 
 Behind Cargo features:
 
@@ -192,7 +196,11 @@ Behind Cargo features:
   rejected with the rule's own error.
 - `proptest` — `Arbitrary` for `Refined<T, R>` and `refinement!`
   newtypes. Every generated value satisfies the rule by construction;
-  no `prop_assume!` filtering needed downstream. The
+  no `prop_assume!` filtering needed downstream. `record!` is the
+  cross-field exception: it filters the independently generated field
+  product through the joint rule inside the generated strategy. Its
+  acceptance rate is the relation's density over that product, so very
+  sparse relations can still exhaust Proptest's filter budget. The
   `whittle::testing` helpers add property harnesses and schema-derived
   boundary matrices.
 
@@ -210,13 +218,16 @@ list, and the process for adding a new domain type.
   panicking later.
 - You want `proptest::Arbitrary` strategies that emit valid domain
   values without `prop_assume!` filtering downstream.
+- You have a static cross-field relation over owned fields and want an
+  opaque product carrier with named accessors and flat serde; use
+  `record!` instead of an open struct plus ad-hoc `try_new`.
 
 ## Skip whittle when
 
 - The invariant is dynamic — depends on a runtime config, another
-  field, or a database row. Whittle rules are pure functions on a
-  single value; cross-field invariants belong in a smart constructor
-  on the parent struct.
+  aggregate, or a database row. Whittle rules are pure functions on a
+  single carried value; relations that cannot be owned by a refined
+  value still belong in a parent smart constructor.
 - The carrier should mutate in place after construction. Whittle
   exposes only `into_inner` → mutate → `try_new`; there is no
   `as_mut`.

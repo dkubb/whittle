@@ -3,8 +3,8 @@
 A runnable corpus that demonstrates every public surface of `whittle` — the
 `Rule` trait, the `Refined<T, R>` carrier, the library-supplied primitives,
 the composition operators, the string transformers, the closed-set family,
-the schema-derived test helpers, `refinement!`, `pattern!`, and the optional
-`serde` / `proptest` adapters. The
+the schema-derived test helpers, `refinement!`, `record!`, `pattern!`, and
+the optional `serde` / `proptest` adapters. The
 corpus is structured so a reader (human or LLM) can find a working example
 of any whittle pattern in under a minute.
 
@@ -108,10 +108,9 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
   on the outer struct as the recommended pattern.
 - **`closed_set_serde.rs`** — `closed_set!` serde glue using the plain
   wire string shape.
-- **`serialize_flat.rs`** — `serialize_flat!` egress-only serde glue
-  for a domain type backed by a refined tuple carrier, preserving exact
-  flat JSON field order while ingress stays hand-routed through
-  `try_new`.
+- **`serialize_flat.rs`** — `record!` generated flat serde for a
+  domain type backed by an opaque refined tuple carrier, preserving
+  exact JSON field order while ingress routes through `try_new`.
 - **`http_url_serde.rs`** — `HttpUrl` serde ingress from a JSON string
   through `HttpUrl::parse`, and egress through the parsed URL string.
 
@@ -119,9 +118,10 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
 
 - **`proptest_arbitrary.rs`** — `Refined<T, R>: Arbitrary`,
   `SizeProfile` / `profiled_refined`, and `refinement!` newtype
-  forwarding; public `ArbitraryRule` coverage audit; routing a
-  narrower strategy through `try_new` when the admissible region is
-  sparse or a property opts into a smaller valid sample.
+  forwarding; `record!` cross-field filtering; public
+  `ArbitraryRule` coverage audit; routing a narrower strategy through
+  `try_new` when the admissible region is sparse or a property opts
+  into a smaller valid sample.
 - **`property_harness.rs`** — `whittle::testing::prop_total` /
   `whittle::testing::prop_image_refines` plus a schema-derived
   boundary matrix.
@@ -137,8 +137,9 @@ Run `cargo fmt --all` and re-stage if the hook rejects a commit.
 
 - **`parse_from_string.rs`** — `FromStr` / `TryFrom` for domain
   newtypes at CLI/config/env-style string boundaries.
-- **`cross_field_invariant.rs`** — parent-struct checks for invariants
-  that span multiple refined fields.
+- **`cross_field_invariant.rs`** — parent-struct checks for aggregate
+  or lifecycle invariants that span multiple refined fields and should
+  not be owned by a whittle record.
 
 ### Real-world domains
 

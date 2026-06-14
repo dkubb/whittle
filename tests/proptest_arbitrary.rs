@@ -16,6 +16,8 @@
 //! and trust that every generated value satisfies the rule.
 
 use proptest::proptest;
+#[cfg(feature = "serde")]
+use serde_test::{Token as SerdeToken, assert_ser_tokens, assert_ser_tokens_error};
 use whittle::primitive::collection::ArbitraryPredicate;
 use whittle::primitive::{
     AllItems, AnyOf, ArbitraryChar, AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic,
@@ -31,7 +33,7 @@ use whittle::transform::{
 };
 use whittle::{
     All, And, Any, ArbitraryRule, MapErr, Not, Or, Refined, SizeProfile, Xor, profiled_refined,
-    refinement,
+    record, refinement,
 };
 
 #[cfg(feature = "chrono")]
@@ -49,6 +51,26 @@ refinement! {
     /// Percentage used by the integration test below.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     Percent: i32, Within<0, 100>;
+}
+
+record! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct OrderedPair {
+        left: i8,
+        right: i8,
+    }
+
+    rule(left, right) {
+        if left > right {
+            return Err(OrderedPairError::Reversed);
+        }
+
+        Ok(())
+    }
+
+    error OrderedPairError {
+        Reversed => "left must be less than or equal to right",
+    }
 }
 
 struct IsZero;
@@ -424,6 +446,94 @@ fn refinement_newtype_arbitrary_reaches_inner_rule_boundaries() {
 
     assert!(saw_min, "newtype Arbitrary must reach the lower bound");
     assert!(saw_max, "newtype Arbitrary must reach the upper bound");
+}
+
+#[test]
+fn record_arbitrary_emits_only_jointly_admissible_values() {
+    proptest!(|(pair in proptest::arbitrary::any::<OrderedPair>())| {
+        assert!(pair.left() <= pair.right());
+    });
+}
+
+#[test]
+fn record_rule_arbitrary_filters_field_product_through_joint_rule() {
+    assert_rule::<(i8, i8), OrderedPair>();
+
+    proptest!(|(fields in <OrderedPair as ArbitraryRule<(i8, i8)>>::arbitrary_strategy())| {
+        assert!(fields.0 <= fields.1);
+        let pair = OrderedPair::try_new(fields.0, fields.1)
+            .expect("record ArbitraryRule must emit jointly admissible fields");
+        assert_eq!(pair.into_parts(), fields);
+    });
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn record_serde_for_ordered_pair_routes_generated_serializer() {
+    let pair = OrderedPair::try_new(1, 2).expect("ordered pair fixture is admissible");
+
+    assert_ser_tokens(
+        &pair,
+        &[
+            SerdeToken::Struct {
+                name: "OrderedPair",
+                len: 2,
+            },
+            SerdeToken::Str("left"),
+            SerdeToken::I8(1),
+            SerdeToken::Str("right"),
+            SerdeToken::I8(2),
+            SerdeToken::StructEnd,
+        ],
+    );
+
+    assert_ser_tokens_error(
+        &pair,
+        &[SerdeToken::Bool(true)],
+        r#"expected Token::Bool(true) but serialized as Struct { name: "OrderedPair", len: 2, }"#,
+    );
+
+    assert_ser_tokens_error(
+        &pair,
+        &[
+            SerdeToken::Struct {
+                name: "OrderedPair",
+                len: 2,
+            },
+            SerdeToken::Str("left"),
+            SerdeToken::I8(1),
+            SerdeToken::Str("wrong"),
+        ],
+        r#"expected Token::Str("wrong") but serialized as Str("right")"#,
+    );
+
+    let decoded: OrderedPair =
+        serde_json::from_str(r#"{"left":1,"right":2}"#).expect("ordered pair JSON is valid");
+    assert_eq!(decoded, pair);
+
+    let bad_left = serde_json::from_str::<OrderedPair>(r#"{"left":"bad","right":2}"#)
+        .expect_err("left must be an i8");
+    assert!(bad_left.to_string().contains("invalid type"));
+
+    let bad_right = serde_json::from_str::<OrderedPair>(r#"{"left":1,"right":"bad"}"#)
+        .expect_err("right must be an i8");
+    assert!(bad_right.to_string().contains("invalid type"));
+
+    let missing_left =
+        serde_json::from_str::<OrderedPair>(r#"{"right":2}"#).expect_err("left is required");
+    assert!(missing_left.to_string().contains("left"));
+
+    let missing_right =
+        serde_json::from_str::<OrderedPair>(r#"{"left":1}"#).expect_err("right is required");
+    assert!(missing_right.to_string().contains("right"));
+
+    let duplicate_left = serde_json::from_str::<OrderedPair>(r#"{"left":1,"left":2,"right":2}"#)
+        .expect_err("left may only appear once");
+    assert!(duplicate_left.to_string().contains("left"));
+
+    let duplicate_right = serde_json::from_str::<OrderedPair>(r#"{"left":1,"right":2,"right":3}"#)
+        .expect_err("right may only appear once");
+    assert!(duplicate_right.to_string().contains("right"));
 }
 
 #[test]

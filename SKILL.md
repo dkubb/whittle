@@ -23,20 +23,23 @@ Construction is the single boundary; downstream code trusts the type.
   emit valid domain values without `prop_assume!` filtering downstream.
 - The user is replacing primitive-typed fields on a struct ("`age: u8`",
   "`name: String`", "`path: String`") with stronger types.
+- The user has a static relation across owned fields (`from <= to`,
+  `origin != destination`, `base + tax` bounded) and wants a named,
+  opaque product carrier; use `record!`.
 - The user already uses whittle in this repo and is adding another bounded
   type, fixing an error-leak, or stacking transformers / rules.
 
 ## When Not to Use
 
 - The invariant is dynamic — depends on runtime configuration, another
-  field, a database lookup, or a value the type system cannot witness at
-  the boundary. Use a constructor-side check; whittle's `Rule` is a pure
-  function on a single value.
+  aggregate, a database lookup, or a value the type system cannot witness
+  at the boundary. Use a constructor-side check; whittle's `Rule` is a
+  pure function on one carried value.
 - The carrier should mutate in place after construction. Whittle exposes
   only `into_inner` → mutate → `try_new`; there is no `as_mut`.
-- The invariant is a multi-field consistency check on a struct. Whittle
-  refines one value at a time; cross-field invariants belong in a smart
-  constructor on the struct itself.
+- The multi-field check belongs to a wider aggregate lifecycle rather
+  than to an owned product value. Use a parent smart constructor there;
+  use `record!` only when the record itself is the boundary.
 - You want a `&str` carrier. Whittle's `Rule<T>` requires `T: 'static`;
   every string primitive is `Rule<String>`.
 - You want to embed user-friendly localised error text. Whittle errors are
@@ -134,6 +137,14 @@ the domain; `Refined<T, R>` is implementation.
   `FromStr`/`TryFrom<&str>`/`Display` plus serde impls forwarding to
   `closed_set::parse` / `closed_set::as_str`. See the closed-set
   pattern below for when to choose it over `Pattern` or a plain enum.
+- `record!` (macro, `crates/whittle-core/src/macros.rs`): opaque named
+  product carriers for static cross-field relations. The macro
+  generates a private wrapper around `Refined<(Field1, ...), Name>`,
+  `try_new(named fields)`, named shared-reference accessors,
+  `into_parts`, the tuple `Rule` impl, a flat domain error enum, flat
+  serde behind `serde`, and cross-field `Arbitrary` behind `proptest`.
+  Field-level invariants come from the field types; the rule block owns
+  only the relation across fields.
 - `And<A, B>` (`crates/whittle-core/src/composition.rs`): both rules
   must accept; `A::refine` runs first, output threaded into `B::refine`.
   Both rules must share `Rule::Error = E`. `Self::Error = E` — the
@@ -529,6 +540,7 @@ Least-power decision table:
 |---|---|
 | Fixed wire tokens ↔ enum variants | `closed_set!` |
 | Enum with no wire form | plain enum |
+| Static product relation over owned fields | `record!` |
 | Positional string grammar (prefixes, segments) | `pattern!` |
 | Bounded / char-class string | `Refined<String, …>` newtype |
 | Subset of a foreign enum | smaller local enum + `From` impl |
@@ -878,17 +890,64 @@ Row by row:
   pre-tested inside whittle and add zero uncovered regions downstream;
   a custom `refine` body adds branches every consumer must cover.
 
+### Product records (`record!`)
+
+Use `record!` when the domain value is a product and the invariant is a
+pure relation over its fields. The macro keeps the tuple-carrier proof
+private while exposing named accessors and flat serde:
+
+```rust
+whittle::record! {
+    /// Inclusive integer range.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct IntRange {
+        /// Lower endpoint.
+        from: i32,
+        /// Upper endpoint.
+        to: i32,
+    }
+
+    rule(from, to) {
+        if from > to {
+            return Err(IntRangeError::Reversed);
+        }
+        Ok(())
+    }
+
+    /// Range construction error.
+    error IntRangeError {
+        /// Lower endpoint is greater than upper endpoint.
+        Reversed => "from must be on or before to",
+    }
+}
+
+let range = IntRange::try_new(1, 3)?;
+assert_eq!(range.from(), &1);
+assert_eq!(range.into_parts(), (1, 3));
+```
+
+Do not add per-field rule clauses to `record!`: use refined field types
+instead. The record rule is validate-only and returns `Result<(), E>`.
+Serde ingress rejects unknown, duplicate, and missing keys before
+calling `try_new`; `Option` fields are required keys whose absent value
+is encoded as `null`. The proptest integration generates the field
+product and filters through the joint rule, which is the one place
+where rejection can be the correct least-power implementation. The
+acceptance rate is the relation's density over the independent field
+product; very sparse relations may still exhaust Proptest's filter
+budget.
+
 ### When NOT to use whittle
 
 The "When Not to Use" list at the top covers the mechanical limits
-(dynamic invariants, in-place mutation, cross-field checks, `&str`
+(dynamic invariants, aggregate-owned checks, in-place mutation, `&str`
 carriers, localised errors). Beyond those, do not reach for
 `Refined` when a weaker artifact already proves the invariant:
 
 - **A stdlib smart-constructor type proves the exact invariant**
   (`NonZeroU16`, `NonZeroUsize`, ...): keep the stdlib type.
   Whittle `Refined` is for invariants stdlib can't express —
-  bounded/charset text, cross-field tuples, a real sub-range like
+  bounded/charset text, cross-field records, a real sub-range like
   `Within<1, 500>`.
 - **The admitted set is a finite nominal token set**: use
   `closed_set!` — the enum is the constructive target; no `Refined`
