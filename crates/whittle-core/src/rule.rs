@@ -447,9 +447,13 @@ where
 ///   bounded inputs; §7: the constructor surface must be robust
 ///   against resource-exhausting payloads).
 ///
-/// Whatever the strategy, the accept/reject set and the rejection
-/// diagnostics MUST be identical to the parse-then-refine path —
-/// only the allocation profile may differ. There is still no
+/// Whatever the strategy, the accept/reject set MUST be identical to
+/// the parse-then-refine path — only the allocation profile and, in
+/// narrow corners, the rejection *diagnostic* may differ. (A
+/// streaming bounded-collection hook may, for an over-`MAX` payload
+/// whose drained tail is also malformed, report the length error
+/// where parse-then-refine reports the element error; both reject,
+/// always in the over-rejecting direction.) There is still no
 /// admissible code path that produces a `Refined` without the rule's
 /// admissibility predicate holding (IDEA §5.3).
 ///

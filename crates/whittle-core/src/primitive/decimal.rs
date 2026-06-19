@@ -217,13 +217,16 @@ impl<const S: u8> Rule<Decimal> for DecimalScale<S> {
 /// Require a value's significant-digit count (precision) to be at
 /// most `P`.
 ///
-/// Precision is the count of significant digits in the canonical
-/// unscaled mantissa, matching SQL `DECIMAL(P, S)` semantics:
+/// Precision is the count of significant digits in the **stored**
+/// unscaled mantissa (as `rust_decimal` keeps it — it does not strip
+/// trailing zeros), matching SQL `DECIMAL(P, S)` storage:
 ///
 /// - `Decimal::ZERO` is treated as 0 significant digits — admitted
 ///   for every `P`.
 /// - `123.45` has precision 5 (the mantissa is `12345`).
 /// - `0.001` has precision 1 (leading zeros do not count).
+/// - `1.00` has precision 3 (the mantissa is `100`; trailing zeros
+///   are significant and **do** count).
 ///
 /// # Examples
 ///
