@@ -4,8 +4,11 @@
 //! "this string is a sandbox-relative path" guarantee that
 //! configuration files, manifests, and content-addressable stores
 //! require. The rules treat the input as a logical, slash-delimited
-//! path; full cross-platform path handling (Windows `\` separators,
-//! reserved device names, case-folded volume letters) is out of
+//! path and reject anything that is not portably slash-relative —
+//! including backslashes and control characters — so an untrusted
+//! string cannot smuggle a `..\`-style traversal or an embedded NUL
+//! past the segment guard. Richer cross-platform path handling
+//! (reserved device names, case-folded volume letters) is out of
 //! scope and would require `camino`'s `Utf8PathBuf`.
 
 use alloc::string::String;
@@ -19,8 +22,12 @@ use crate::rule::Rule;
 /// A path is admissible when **all** of the following hold:
 ///
 /// - it is non-empty,
-/// - it is not absolute — does not start with `/`, a Windows drive
-///   letter (`C:`-style), or a UNC prefix (`\\`),
+/// - it contains no control character (including NUL),
+/// - it contains no backslash (`\`) — the path is forward-slash
+///   only, so a `..\`-style traversal cannot bypass the segment
+///   guard,
+/// - it is not absolute — does not start with `/` or a Windows
+///   drive letter (`C:`-style),
 /// - no segment is empty (i.e., there is no `//`, no trailing `/`,
 ///   and no leading `/`),
 /// - no segment equals `..` (parent traversal is forbidden).
@@ -67,6 +74,19 @@ use crate::rule::Rule;
 ///     "foo//bar".to_string(),
 /// ).unwrap_err();
 /// assert_eq!(err, PathError::EmptySegment { index: 1 });
+///
+/// // Reject: a backslash (here a `..\` traversal) — forward-slash
+/// // only, so it can't bypass the `..` segment guard.
+/// let err = Refined::<String, RelativePath>::try_new(
+///     "..\\escape".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, PathError::Backslash { offset: 2 });
+///
+/// // Reject: embedded control character (here NUL).
+/// let err = Refined::<String, RelativePath>::try_new(
+///     "a\0b".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, PathError::ControlChar { offset: 1 });
 /// ```
 pub struct RelativePath;
 
@@ -77,8 +97,9 @@ pub enum PathError {
     /// non-empty input.
     Empty,
 
-    /// Path is absolute. Includes `/`-rooted Unix paths, Windows
-    /// drive-letter prefixes (`C:`), and UNC prefixes (`\\`).
+    /// Path is absolute: a `/`-rooted Unix path or a Windows
+    /// drive-letter prefix (`C:`). A UNC `\\` prefix is rejected
+    /// earlier as [`PathError::Backslash`].
     Absolute,
 
     /// A segment equal to `..` (parent traversal) is forbidden.
@@ -95,6 +116,22 @@ pub enum PathError {
         /// Position of the empty segment.
         index: usize,
     },
+
+    /// A control character (including NUL) appears in the path.
+    /// `offset` is its byte offset in the input.
+    ControlChar {
+        /// Byte offset of the control character.
+        offset: usize,
+    },
+
+    /// A backslash (`\`) appears in the path. `RelativePath` is
+    /// forward-slash only; a backslash is rejected so a `..\`-style
+    /// traversal cannot bypass the segment guard. `offset` is its
+    /// byte offset in the input.
+    Backslash {
+        /// Byte offset of the backslash.
+        offset: usize,
+    },
 }
 
 impl core::fmt::Display for PathError {
@@ -107,6 +144,12 @@ impl core::fmt::Display for PathError {
             }
             Self::EmptySegment { index } => {
                 write!(f, "path segment {index} is empty")
+            }
+            Self::ControlChar { offset } => {
+                write!(f, "path contains a control character at byte {offset}")
+            }
+            Self::Backslash { offset } => {
+                write!(f, "path contains a backslash at byte {offset}")
             }
         }
     }
@@ -122,11 +165,23 @@ impl Rule<String> for RelativePath {
         if raw.is_empty() {
             return Err(PathError::Empty);
         }
-        // Absolute-path detection covers three shapes:
+        // Reject forbidden characters anywhere first: control
+        // characters (including NUL, which truncates C strings and
+        // can slip past filesystem APIs) and backslash (a `..\`
+        // would otherwise defeat the `/`-only segment guard below,
+        // and a leading `\\` is a Windows UNC root).
+        for (offset, ch) in raw.char_indices() {
+            if ch.is_control() {
+                return Err(PathError::ControlChar { offset });
+            }
+            if ch == '\\' {
+                return Err(PathError::Backslash { offset });
+            }
+        }
+        // Absolute-path detection covers two shapes:
         //   - Unix-style leading `/`,
-        //   - Windows UNC `\\` prefix,
         //   - Windows drive letter `X:` where `X` is ASCII alpha.
-        if raw.starts_with('/') || raw.starts_with("\\\\") || is_windows_drive_prefix(&raw) {
+        if raw.starts_with('/') || is_windows_drive_prefix(&raw) {
             return Err(PathError::Absolute);
         }
         for (index, segment) in raw.split('/').enumerate() {
@@ -322,10 +377,34 @@ mod tests {
     }
 
     #[test]
-    fn relative_path_rejects_unc_prefix() {
+    fn relative_path_rejects_unc_backslash_prefix() {
+        // A Windows UNC `\\` root is rejected as a backslash (the
+        // path is forward-slash only) at byte 0.
         let result: Result<Refined<String, RelativePath>, _> =
             Refined::try_new("\\\\server\\share".to_string());
-        assert_eq!(result.unwrap_err(), PathError::Absolute);
+        assert_eq!(result.unwrap_err(), PathError::Backslash { offset: 0 });
+    }
+
+    #[test]
+    fn relative_path_rejects_backslash_traversal() {
+        // `..\escape` must not slip past the `/`-only segment guard;
+        // the backslash at byte 2 is rejected directly.
+        let result: Result<Refined<String, RelativePath>, _> =
+            Refined::try_new("..\\escape".to_string());
+        assert_eq!(result.unwrap_err(), PathError::Backslash { offset: 2 });
+    }
+
+    #[test]
+    fn relative_path_rejects_embedded_nul() {
+        let result: Result<Refined<String, RelativePath>, _> = Refined::try_new("a\0b".to_string());
+        assert_eq!(result.unwrap_err(), PathError::ControlChar { offset: 1 });
+    }
+
+    #[test]
+    fn relative_path_rejects_embedded_newline_control() {
+        let result: Result<Refined<String, RelativePath>, _> =
+            Refined::try_new("foo\nbar".to_string());
+        assert_eq!(result.unwrap_err(), PathError::ControlChar { offset: 3 });
     }
 
     #[test]
@@ -370,6 +449,14 @@ mod tests {
         assert_eq!(
             PathError::EmptySegment { index: 2 }.to_string(),
             "path segment 2 is empty",
+        );
+        assert_eq!(
+            PathError::ControlChar { offset: 3 }.to_string(),
+            "path contains a control character at byte 3",
+        );
+        assert_eq!(
+            PathError::Backslash { offset: 0 }.to_string(),
+            "path contains a backslash at byte 0",
         );
         let dyn_err: &dyn core::error::Error = &PathError::Empty;
         assert!(dyn_err.source().is_none());
