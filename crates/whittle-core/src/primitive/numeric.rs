@@ -11,6 +11,8 @@
 //! types, cast in the const-generic position: `Within<1, { MAX as i128 }>`
 //! where `const MAX: u16 = 500`.
 
+use core::num::NonZeroUsize;
+
 #[cfg(feature = "proptest")]
 use crate::rule::ArbitraryRule;
 use crate::rule::{Refined, Rule};
@@ -53,6 +55,14 @@ use crate::schema::{Schema, SchemaInterval, SchemaRule, integer_interval_from_bo
 ///
 /// let err = Refined::<u16, Within<1, 500>>::try_new(501).unwrap_err();
 /// assert_eq!(err, NumericError::OutOfRange { value: 501 });
+///
+/// // `NonZeroUsize` is a first-class carrier: its native minimum is
+/// // `1`, so the non-zero guarantee is structural while `Within`
+/// // pins the upper bound.
+/// use core::num::NonZeroUsize;
+/// let cap: Refined<NonZeroUsize, Within<1, 1024>> =
+///     Refined::try_new(NonZeroUsize::new(1024).unwrap()).unwrap();
+/// assert_eq!(cap.as_inner().get(), 1024);
 /// ```
 ///
 /// Bounds wider than the chosen carrier fail to compile:
@@ -62,6 +72,20 @@ use crate::schema::{Schema, SchemaInterval, SchemaRule, integer_interval_from_bo
 /// use whittle_core::primitive::Within;
 ///
 /// let _ = Refined::<u16, Within<1, 70_000>>::try_new(42_u16);
+/// ```
+///
+/// A zero-inclusive bound on the non-zero carrier also fails to
+/// compile — `NonZeroUsize`'s native minimum is `1`, so `0` is
+/// unrepresentable rather than admitted-then-rejected:
+///
+/// ```compile_fail
+/// use core::num::NonZeroUsize;
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::Within;
+///
+/// let _ = Refined::<NonZeroUsize, Within<0, 5>>::try_new(
+///     NonZeroUsize::new(3).unwrap(),
+/// );
 /// ```
 pub struct Within<const MIN: i128, const MAX: i128>;
 
@@ -497,6 +521,37 @@ impl Numeric for isize {
     }
 }
 
+// `NonZeroUsize` is a first-class numeric carrier whose `NATIVE_MIN`
+// is `1`, not `0`: the non-zero guarantee lives in the carrier, so a
+// zero-inclusive bound (e.g. `Within<0, _>`) fails to compile for
+// this carrier instead of being a representable-but-rejected value.
+// Widening mirrors `usize` (architecture size, `BITS <= 64`).
+// `from_i128` rounds the conversion out: `0` does not fit a
+// `NonZeroUsize`, so it is rejected at the carrier boundary just like
+// an out-of-range magnitude.
+impl Numeric for NonZeroUsize {
+    const NATIVE_MIN: i128 = 1;
+    const NATIVE_MAX: i128 = {
+        assert!(usize::BITS <= 64, "usize wider than 64 bits is unsupported");
+        usize::MAX as i128
+    };
+
+    #[inline]
+    fn into_i128(self) -> i128 {
+        const {
+            assert!(usize::BITS <= 64, "usize wider than 64 bits is unsupported");
+        };
+        i128::from(self.get() as u64)
+    }
+    #[inline]
+    fn from_i128(value: i128) -> Result<Self, NumericError> {
+        usize::try_from(value)
+            .ok()
+            .and_then(Self::new)
+            .ok_or(NumericError::OutOfRange { value })
+    }
+}
+
 // ─── Proptest support: `ArbitraryNumeric`. ───────────────────────
 //
 // Each numeric `Rule` admits a contiguous (or near-contiguous)
@@ -664,6 +719,28 @@ impl ArbitraryNumeric for isize {
         let lo = Self::try_from(lo).unwrap_or(Self::MIN);
         let hi = Self::try_from(hi).unwrap_or(Self::MAX);
         edge_biased_range!(lo, hi)
+    }
+}
+
+// The clamped lower bound is at least `NATIVE_MIN == 1`, so every
+// generated `usize` is non-zero and `NonZeroUsize::new` never returns
+// `None` — the `expect` is unreachable by construction.
+#[cfg(feature = "proptest")]
+impl ArbitraryNumeric for NonZeroUsize {
+    type RangeStrategy = proptest::strategy::BoxedStrategy<Self>;
+
+    #[inline]
+    fn arbitrary_in_range(min: i128, max: i128) -> Self::RangeStrategy {
+        use proptest::strategy::Strategy as _;
+        let ty_min = <Self as Numeric>::NATIVE_MIN;
+        let ty_max = <Self as Numeric>::NATIVE_MAX;
+        let lo = if min < ty_min { ty_min } else { min };
+        let hi = if max > ty_max { ty_max } else { max };
+        let lo = usize::try_from(lo).unwrap_or(1);
+        let hi = usize::try_from(hi).unwrap_or(usize::MAX);
+        edge_biased_range!(lo, hi)
+            .prop_map(|value| Self::new(value).expect("clamped lower bound is at least one"))
+            .boxed()
     }
 }
 
@@ -1467,6 +1544,7 @@ where
 )]
 mod tests {
     use alloc::string::ToString;
+    use core::num::NonZeroUsize;
 
     use super::{
         AtLeast, AtMost, EqualTo, GreaterThan, LessThan, Negative, NonZero, NotEqualTo,
@@ -1806,6 +1884,81 @@ mod tests {
         assert_eq!(<u64 as super::Numeric>::NATIVE_MAX, i128::from(u64::MAX));
         assert_eq!(<usize as super::Numeric>::NATIVE_MIN, 0);
         assert_eq!(<usize as super::Numeric>::NATIVE_MAX, usize::MAX as i128);
+
+        // `NonZeroUsize`'s native minimum is `1`, not `0`: the
+        // non-zero guarantee is carried by the type, so a zero-
+        // inclusive bound fails the carrier-width guard at compile
+        // time rather than being admitted-then-rejected.
+        assert_eq!(<NonZeroUsize as super::Numeric>::NATIVE_MIN, 1);
+        assert_eq!(
+            <NonZeroUsize as super::Numeric>::NATIVE_MAX,
+            usize::MAX as i128,
+        );
+    }
+
+    #[test]
+    fn non_zero_usize_from_i128_accepts_in_range() {
+        assert_eq!(
+            <NonZeroUsize as super::Numeric>::from_i128(42),
+            Ok(NonZeroUsize::new(42).expect("forty-two is non-zero")),
+        );
+    }
+
+    #[test]
+    fn non_zero_usize_from_i128_rejects_zero_at_the_carrier_boundary() {
+        assert_eq!(
+            <NonZeroUsize as super::Numeric>::from_i128(0),
+            Err(super::NumericError::OutOfRange { value: 0 }),
+        );
+    }
+
+    #[test]
+    fn non_zero_usize_from_i128_rejects_negative() {
+        assert_eq!(
+            <NonZeroUsize as super::Numeric>::from_i128(-1),
+            Err(super::NumericError::OutOfRange { value: -1 }),
+        );
+    }
+
+    #[test]
+    fn non_zero_usize_from_i128_rejects_above_carrier_maximum() {
+        let over = (usize::MAX as i128) + 1;
+        assert_eq!(
+            <NonZeroUsize as super::Numeric>::from_i128(over),
+            Err(super::NumericError::OutOfRange { value: over }),
+        );
+    }
+
+    #[test]
+    fn non_zero_usize_into_i128_widens() {
+        let value = NonZeroUsize::new(42).expect("forty-two is non-zero");
+        assert_eq!(<NonZeroUsize as super::Numeric>::into_i128(value), 42);
+    }
+
+    #[test]
+    fn within_accepts_non_zero_usize_within_bounds() {
+        let lower: Refined<NonZeroUsize, Within<1, 1000>> =
+            Refined::try_new(NonZeroUsize::new(1).expect("one is non-zero")).unwrap();
+        assert_eq!(lower.as_inner().get(), 1);
+
+        let upper: Refined<NonZeroUsize, Within<1, 1000>> =
+            Refined::try_new(NonZeroUsize::new(1000).expect("one thousand is non-zero")).unwrap();
+        assert_eq!(upper.as_inner().get(), 1000);
+    }
+
+    #[test]
+    fn within_rejects_non_zero_usize_above_maximum() {
+        let result: Result<Refined<NonZeroUsize, Within<1, 1000>>, _> =
+            Refined::try_new(NonZeroUsize::new(1001).expect("one thousand one is non-zero"));
+        assert_eq!(result, Err(super::NumericError::OutOfRange { value: 1001 }));
+    }
+
+    #[test]
+    fn within_schema_over_non_zero_usize_matches_bounds() {
+        assert_eq!(
+            <Within<1, 10> as crate::schema::SchemaRule<NonZeroUsize>>::schema(),
+            <Within<1, 10> as crate::schema::SchemaRule<usize>>::schema(),
+        );
     }
 
     #[test]
@@ -2003,6 +2156,36 @@ mod tests {
             // admissible by construction without rejection
             // sampling against the full `i32` range.
             proptest::prop_assert!((0..=100).contains(r.as_inner()));
+        }
+
+        #[test]
+        fn arbitrary_within_non_zero_usize_is_in_range(
+            r in proptest::arbitrary::any::<Refined<NonZeroUsize, Within<1, 1000>>>()
+        ) {
+            // The `NonZeroUsize` carrier makes the lower bound
+            // structural: every generated value is non-zero and in
+            // `[1, 1000]` by construction.
+            proptest::prop_assert!((1..=1000).contains(&r.as_inner().get()));
+        }
+
+        #[test]
+        fn arbitrary_at_least_non_zero_usize_clamps_open_maximum(
+            r in proptest::arbitrary::any::<Refined<NonZeroUsize, AtLeast<5>>>()
+        ) {
+            // `AtLeast` passes `i128::MAX` as the upper bound, which
+            // exceeds the carrier maximum and exercises the upper
+            // clamp; the result stays a valid `NonZeroUsize >= 5`.
+            proptest::prop_assert!(r.as_inner().get() >= 5);
+        }
+
+        #[test]
+        fn arbitrary_at_most_non_zero_usize_clamps_open_minimum(
+            r in proptest::arbitrary::any::<Refined<NonZeroUsize, AtMost<1000>>>()
+        ) {
+            // `AtMost` passes `i128::MIN` as the lower bound, which is
+            // below the carrier minimum and exercises the lower clamp
+            // up to `NATIVE_MIN == 1`; the result stays non-zero.
+            proptest::prop_assert!((1..=1000).contains(&r.as_inner().get()));
         }
 
         #[test]
