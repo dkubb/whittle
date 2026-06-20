@@ -599,6 +599,54 @@ impl ArbitraryChar for AsciiGraphic {
     }
 }
 
+/// Predicate: any ASCII character (`U+0000`–`U+007F`).
+///
+/// Admits every ASCII code point, including control characters and
+/// whitespace — the byte-oriented counterpart of [`str::is_ascii`]. Reach
+/// for a narrower predicate such as [`AsciiGraphic`] when control characters
+/// must be rejected. Unlike [`AsciiGraphic`], `Ascii` does not reject leading
+/// or trailing whitespace.
+///
+/// # Examples
+///
+/// ```
+/// use whittle_core::Refined;
+/// use whittle_core::primitive::{Ascii, EachChar, StringError};
+///
+/// let ok: Refined<String, EachChar<Ascii>>
+///     = Refined::try_new("HEAD\tv1.0\n".to_string()).unwrap();
+/// assert_eq!(ok.as_inner(), "HEAD\tv1.0\n");
+///
+/// let err = Refined::<String, EachChar<Ascii>>::try_new(
+///     "caf\u{e9}".to_string(),
+/// ).unwrap_err();
+/// assert_eq!(err, StringError::BadChar { offset: 3 });
+/// ```
+pub struct Ascii;
+impl CharPredicate for Ascii {
+    #[inline]
+    fn test(ch: char) -> bool {
+        ch.is_ascii()
+    }
+}
+
+impl SchemaChar for Ascii {
+    #[inline]
+    fn char_set() -> CharSet {
+        CharSet::from_ranges([('\0', '\u{7f}')])
+    }
+}
+
+#[cfg(feature = "proptest")]
+impl ArbitraryChar for Ascii {
+    type Strategy = proptest::char::CharStrategy<'static>;
+
+    #[inline]
+    fn arbitrary_char() -> Self::Strategy {
+        char_strategy_from_ranges(alloc::vec!['\0'..='\u{7f}'])
+    }
+}
+
 /// Predicate: ASCII alphanumeric (`A`–`Z`, `a`–`z`, `0`–`9`).
 ///
 /// # Examples
@@ -2304,7 +2352,7 @@ mod tests {
     use alloc::string::{String, ToString};
 
     use super::{
-        AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase,
+        Ascii, AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase,
         AsciiUppercase, CharEither, CharExcept, CharLiteral, CharPredicate, EachChar, FirstChar,
         IdentChar, IdentDashChar, IdentStart, LenBytes, LenChars, NonControl, NonEmpty,
         StringError,
@@ -3081,6 +3129,17 @@ mod tests {
     }
 
     #[test]
+    fn ascii_admits_every_ascii_code_point_and_rejects_beyond() {
+        assert!(<Ascii as CharPredicate>::test('\0'));
+        assert!(<Ascii as CharPredicate>::test('\t'));
+        assert!(<Ascii as CharPredicate>::test(' '));
+        assert!(<Ascii as CharPredicate>::test('~'));
+        assert!(<Ascii as CharPredicate>::test('\u{7f}'));
+        assert!(!<Ascii as CharPredicate>::test('\u{80}'));
+        assert!(!<Ascii as CharPredicate>::test('é'));
+    }
+
+    #[test]
     fn refinement_macro_label_admits_and_rejects() {
         // Macro-generated newtype: admit a clean alnum label and
         // reject one with a forbidden character.
@@ -3322,6 +3381,13 @@ mod tests {
             r in proptest::arbitrary::any::<Refined<String, EachChar<AsciiGraphic>>>()
         ) {
             proptest::prop_assert!(r.as_inner().chars().all(|c| c.is_ascii_graphic()));
+        }
+
+        #[test]
+        fn arbitrary_each_char_ascii_admissible(
+            r in proptest::arbitrary::any::<Refined<String, EachChar<Ascii>>>()
+        ) {
+            proptest::prop_assert!(r.as_inner().is_ascii());
         }
 
         #[test]
@@ -3688,7 +3754,7 @@ mod tests {
     #[cfg(feature = "proptest")]
     mod schema_char {
         use super::super::{
-            AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase,
+            Ascii, AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase,
             AsciiUppercase, CharEither, CharExcept, CharLiteral, IdentChar, IdentDashChar,
             IdentStart, NonControl, SchemaChar,
         };
@@ -3705,6 +3771,7 @@ mod tests {
             assert_schema_char::<AsciiLowercase>();
             assert_schema_char::<AsciiDigit>();
             assert_schema_char::<AsciiGraphic>();
+            assert_schema_char::<Ascii>();
             assert_schema_char::<IdentChar>();
             assert_schema_char::<IdentStart>();
             assert_schema_char::<IdentDashChar>();

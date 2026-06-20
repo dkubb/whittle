@@ -47,10 +47,10 @@ pub use pattern::{Pattern, PatternError};
 #[cfg(feature = "proptest")]
 pub use string::ArbitraryChar;
 pub use string::{
-    AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase, AsciiUppercase,
-    CharEither, CharExcept, CharLiteral, CharPredicate, EachChar, FirstChar, IdentChar,
-    IdentDashChar, IdentStart, LenBytes, LenChars, NonControl, NonEmpty, RejectsTrimWhitespace,
-    SchemaChar, StringError,
+    Ascii, AsciiAlphabetic, AsciiAlphanumeric, AsciiDigit, AsciiGraphic, AsciiLowercase,
+    AsciiUppercase, CharEither, CharExcept, CharLiteral, CharPredicate, EachChar, FirstChar,
+    IdentChar, IdentDashChar, IdentStart, LenBytes, LenChars, NonControl, NonEmpty,
+    RejectsTrimWhitespace, SchemaChar, StringError,
 };
 #[cfg(feature = "unicode")]
 pub use string::{BoundedLine, BoundedText, PrintableChar, PrintableLine, PrintableMultiline};
